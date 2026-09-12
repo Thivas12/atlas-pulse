@@ -35,7 +35,7 @@ export function fetchReplay(after?: string, signal?: AbortSignal): Promise<Repla
 }
 
 interface CurrentSignalsQuery {
-  source?: "usgs" | "nws" | "firms";
+  source?: "usgs" | "nws" | "firms" | "gdelt";
   bounds?: ViewportBounds;
   includeAreaOnly?: boolean;
 }

@@ -223,4 +223,43 @@ describe("AtlasPulse dashboard", () => {
       ),
     );
   });
+
+  it("filters and explains GDELT media observations without claiming verified incidents", async () => {
+    const user = userEvent.setup();
+    const conflict = makeEnvelope({
+      streamId: "5000-0",
+      eventId: "1234567890",
+      source: "gdelt",
+      place: "Test City",
+      conflictPriority: "High",
+      conflictRootCode: "19",
+      goldsteinScale: -7,
+      location: { latitude: 31.7683, longitude: 35.2137, altitude_km: null },
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementation(() => Promise.resolve(jsonResponse(signalsResponse([conflict]))));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp(<App />);
+    await user.click(screen.getByRole("button", { name: "Conflict" }));
+    await user.click(await screen.findByRole("button", { name: /Fight: GOVERNMENT → REBELS/ }));
+
+    const detail = screen.getByRole("complementary", { name: "Selected signal details" });
+    expect(within(detail).getByText("CAMEO 19")).toBeInTheDocument();
+    expect(within(detail).getByText("Detected")).toBeInTheDocument();
+    expect(within(detail).getByText("-7.0")).toBeInTheDocument();
+    expect(within(detail).getByText("GOVERNMENT → REBELS")).toBeInTheDocument();
+    expect(within(detail).getByText(/12 mentions · 4 sources · 7 articles/)).toBeInTheDocument();
+    expect(within(detail).getByText(/not an independently verified incident/)).toBeInTheDocument();
+    expect(
+      within(detail).getByRole("link", { name: /Open GDELT report evidence/ }),
+    ).toHaveAttribute("href", "https://news.example.org/reports/123");
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/signals?limit=500&active_only=true&source=gdelt&include_area_only=true",
+        expect.any(Object),
+      ),
+    );
+  });
 });

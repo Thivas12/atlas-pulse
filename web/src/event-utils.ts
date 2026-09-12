@@ -14,6 +14,12 @@ const FIRE_CONFIDENCE_RANKS = {
   High: 3,
 } as const;
 
+const CONFLICT_PRIORITY_RANKS = {
+  Elevated: 2,
+  High: 3,
+  Critical: 4,
+} as const;
+
 export function magnitudeOf(event: AtlasEvent): number | null {
   const magnitude = event.payload.magnitude;
   return typeof magnitude === "number" && Number.isFinite(magnitude) ? magnitude : null;
@@ -32,6 +38,10 @@ export function isFireDetection(event: AtlasEvent): boolean {
   return event.source === "firms" && event.event_type === "fire.thermal_anomaly";
 }
 
+export function isGeopoliticalEvent(event: AtlasEvent): boolean {
+  return event.source === "gdelt" && event.event_type === "geopolitical.gdelt_event";
+}
+
 export function fireRadiativePowerOf(event: AtlasEvent): number | null {
   const value = event.payload.fire_radiative_power_mw;
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -47,6 +57,28 @@ export function fireConfidenceOf(event: AtlasEvent): keyof typeof FIRE_CONFIDENC
 export function fireConfidenceRankOf(event: AtlasEvent): number {
   const confidence = fireConfidenceOf(event);
   return confidence ? FIRE_CONFIDENCE_RANKS[confidence] : 0;
+}
+
+export function conflictPriorityOf(event: AtlasEvent): keyof typeof CONFLICT_PRIORITY_RANKS | null {
+  const priority = event.payload.priority;
+  return typeof priority === "string" && priority in CONFLICT_PRIORITY_RANKS
+    ? (priority as keyof typeof CONFLICT_PRIORITY_RANKS)
+    : null;
+}
+
+export function conflictPriorityRankOf(event: AtlasEvent): number {
+  const priority = conflictPriorityOf(event);
+  return priority ? CONFLICT_PRIORITY_RANKS[priority] : 0;
+}
+
+export function goldsteinScaleOf(event: AtlasEvent): number | null {
+  const value = event.payload.goldstein_scale;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function cameoRootCodeOf(event: AtlasEvent): string | null {
+  const value = event.payload.cameo_root_code;
+  return typeof value === "string" && /^\d{2}$/.test(value) ? value : null;
 }
 
 export function alertTypeOf(event: AtlasEvent): string | null {
@@ -67,7 +99,7 @@ export function severityRankOf(event: AtlasEvent): number {
 }
 
 export function titleOf(event: AtlasEvent): string {
-  if (isFireDetection(event)) {
+  if (isFireDetection(event) || isGeopoliticalEvent(event)) {
     const title = event.payload.title;
     if (typeof title === "string" && title.trim()) return title;
   }

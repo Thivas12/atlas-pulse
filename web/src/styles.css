@@ -231,7 +231,7 @@ input:focus-visible {
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(7, 1fr);
   border-bottom: 1px solid var(--line);
 }
 
@@ -383,6 +383,10 @@ input:focus-visible {
   margin-left: 6px;
 }
 
+.map-legend .conflict-legend {
+  margin-left: 6px;
+}
+
 .map-legend .weather-moderate,
 .map-legend .weather-severe {
   border-radius: 1px;
@@ -399,6 +403,11 @@ input:focus-visible {
 .map-legend .fire-high {
   background: #ff5e42;
   box-shadow: 0 0 8px rgba(255, 94, 66, 0.55);
+}
+
+.map-legend .conflict-high {
+  background: #a855f7;
+  box-shadow: 0 0 8px rgba(168, 85, 247, 0.55);
 }
 
 .map-message {
@@ -535,6 +544,22 @@ input:focus-visible {
   background: rgba(255, 66, 100, 0.12);
 }
 
+.signal-marker.conflict {
+  color: #dec4ff;
+  border-color: rgba(189, 124, 255, 0.38);
+  border-radius: 8px;
+  background: rgba(168, 85, 247, 0.11);
+  font-size: 9px;
+  letter-spacing: 0.02em;
+}
+
+.signal-marker.conflict.priority-high,
+.signal-marker.conflict.priority-critical {
+  color: #f0ddff;
+  border-color: rgba(255, 66, 100, 0.43);
+  background: rgba(168, 85, 247, 0.17);
+}
+
 .signal-marker.severity-severe,
 .signal-marker.severity-extreme {
   color: #ffd8cf;
@@ -568,6 +593,11 @@ input:focus-visible {
 .source-badge.firms {
   color: #ffbd91;
   border-color: rgba(255, 122, 61, 0.28);
+}
+
+.source-badge.gdelt {
+  color: #d4b0ff;
+  border-color: rgba(189, 124, 255, 0.3);
 }
 
 .event-copy strong {
@@ -644,6 +674,15 @@ input:focus-visible {
 .detail-magnitude.fire {
   color: #ff8750;
   font-size: 25px;
+}
+
+.detail-magnitude.conflict {
+  color: #bd7cff;
+  font-size: 24px;
+}
+
+.event-detail.conflict {
+  border-color: rgba(189, 124, 255, 0.28);
 }
 
 .detail-place,
@@ -834,11 +873,15 @@ footer {
 
 @media (max-width: 1200px) {
   .metrics {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
   }
 
-  .metric-card:nth-child(-n + 3) {
+  .metric-card:nth-child(-n + 4) {
     border-bottom: 1px solid var(--line);
+  }
+
+  .metric-card:nth-child(4n) {
+    border-right: 0;
   }
 }
 
@@ -863,8 +906,10 @@ footer {
     border-right: 0;
   }
 
-  .metric-card:nth-last-child(-n + 2) {
+  .metric-card:last-child {
+    grid-column: 1 / -1;
     border-bottom: 0;
+    border-right: 0;
   }
 
   .command-grid {
@@ -902,7 +947,7 @@ footer {
     order: 3;
     width: 100%;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .source-switch button {

@@ -54,4 +54,20 @@ describe("EventFeed", () => {
       screen.getByRole("button", { name: /High-confidence VIIRS thermal anomaly/ }),
     ).toBeInTheDocument();
   });
+
+  it("renders a GDELT CAMEO marker and explicit conflict priority", () => {
+    const item = makeEnvelope({
+      source: "gdelt",
+      place: "Test City",
+      conflictPriority: "High",
+      conflictRootCode: "19",
+    });
+    render(<EventFeed events={[item]} selectedStreamId={null} onSelect={vi.fn()} />);
+
+    expect(screen.getByText("C19")).toHaveClass("conflict", "priority-high");
+    expect(screen.getByText("gdelt")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Fight: GOVERNMENT → REBELS/ })).toHaveTextContent(
+      "Test City",
+    );
+  });
 });

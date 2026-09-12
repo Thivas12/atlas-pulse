@@ -1,5 +1,6 @@
 import type { Feature, FeatureCollection, MultiPolygon, Point, Polygon } from "geojson";
 import {
+  conflictPriorityRankOf,
   fireConfidenceRankOf,
   fireRadiativePowerOf,
   magnitudeOf,
@@ -17,6 +18,7 @@ export interface EventProperties {
   magnitude: number | null;
   fireRadiativePowerMw: number | null;
   fireConfidenceRank: number;
+  conflictPriorityRank: number;
   severity: string;
   severityRank: number;
   title: string;
@@ -48,6 +50,7 @@ export function eventsToGeoJson(
         magnitude: magnitudeOf(event),
         fireRadiativePowerMw: fireRadiativePowerOf(event),
         fireConfidenceRank: fireConfidenceRankOf(event),
+        conflictPriorityRank: conflictPriorityRankOf(event),
         severity: severityOf(event) ?? "Unknown",
         severityRank: severityRankOf(event),
         title: titleOf(event),
@@ -81,6 +84,7 @@ export function weatherPolygonsToGeoJson(
         magnitude: null,
         fireRadiativePowerMw: null,
         fireConfidenceRank: 0,
+        conflictPriorityRank: 0,
         severity: severityOf(event) ?? "Unknown",
         severityRank: severityRankOf(event),
         title: titleOf(event),

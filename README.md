@@ -7,19 +7,20 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — satellite-aware, spatially queried disruption state.** Independent
-> workers poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120
-> seconds, and opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes. Every unmodified
-> response is preserved, strictly validated, normalized, and atomically published to Valkey
-> Streams. A restart-safe worker transactionally projects every revision, current event pointer,
-> and its checkpoint into PostGIS. The dashboard reads de-duplicated live state by source and map
-> viewport while preserving deterministic replay.
+> **Current milestone — four-source, spatially queried disruption state.** Independent workers
+> poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
+> opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
+> observations every 15 minutes. Every unmodified source response is preserved, strictly
+> validated, normalized, and atomically published to Valkey Streams. A restart-safe worker
+> transactionally projects every revision, current event pointer, and its checkpoint into
+> PostGIS. The dashboard reads de-duplicated live state by source and map viewport while
+> preserving deterministic replay and displaying source uncertainty.
 
 ## Why this is portfolio-grade
 
 | Capability | Concrete proof in this repository |
 | --- | --- |
-| Real public data | Independent USGS, NOAA/NWS, and NASA FIRMS near-real-time feeds |
+| Real public data | Independent USGS, NOAA/NWS, NASA FIRMS, and GDELT 2.0 near-real-time feeds |
 | Auditability | SHA-256 content-addressed raw snapshots are written before parsing |
 | Reliable delivery | Bounded HTTP retry plus pipelined, revision-aware atomic Lua deduplication |
 | Credential safety | Free FIRMS key is ingestor-only and redacted from events, errors, and spans |
@@ -28,7 +29,7 @@ component can run without a paid API key.
 | Durable current state | Immutable PostgreSQL revisions plus atomic current pointers and restart-safe checkpoint |
 | Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
-| Decision UI | Mixed-geometry map, source filters, severity metrics, live expiry, replay, evidence links |
+| Decision UI | Mixed-geometry map, four source filters, priority metrics, live expiry, replay, evidence links, uncertainty labels |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS CI |
 | Supply-chain hygiene | Read-only workflow permissions, commit-pinned Actions, weekly dependency updates |
 
@@ -39,6 +40,7 @@ flowchart TD
     USGS["USGS earthquakes"] --> Adapters["Independent source adapters"]
     NWS["NWS active alerts"] --> Adapters
     FIRMS["NASA FIRMS VIIRS"] --> Adapters
+    GDELT["GDELT Event exports"] --> Adapters
     Adapters --> Raw["Immutable raw snapshots"]
     Adapters --> Validate["Strict source validation"]
     Validate --> Contract["Shared Event contract"]
@@ -73,8 +75,8 @@ cd atlas-pulse
 docker compose up --build
 ```
 
-That zero-configuration command runs USGS and NWS. NASA FIRMS needs a free, email-issued
-`MAP_KEY` because its servers meter transactions. Request one from the
+That zero-configuration command runs USGS, NWS, and keyless GDELT. NASA FIRMS needs a free,
+email-issued `MAP_KEY` because its servers meter transactions. Request one from the
 [official FIRMS key page](https://firms.modaps.eosdis.nasa.gov/api/map_key/), then enable only the
 ingestor-facing credential:
 
@@ -99,10 +101,11 @@ curl -s 'http://localhost:8000/v1/events/replay?limit=5'
 curl -s 'http://localhost:8000/v1/signals?limit=5&active_only=true'
 curl -s 'http://localhost:8000/v1/signals?source=nws&min_severity=3&bbox=-125,24,-66,50'
 curl -s 'http://localhost:8000/v1/signals?source=firms&bbox=-120,33,-117,36'
+curl -s 'http://localhost:8000/v1/signals?source=gdelt&min_severity=3&bbox=-20,-40,60,60'
 ```
 
 Switch between **Live** and **Replay**, then filter **All**, **Earthquakes**, **Weather**, or
-**Fires**.
+**Fires**, or **Conflict**.
 Live mode is served from current PostGIS state, omits expired alerts/detections, and refreshes the
 map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
 remain in the global feed without being falsely placed on the map. Replay starts
@@ -179,10 +182,10 @@ ATLAS_TEST_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
 | `GET` | `/v1/events/replay?limit=100&after=<stream-id>` | Oldest-first page strictly after an optional cursor |
 | `GET` | `/v1/signals?limit=100&after=<stream-id>` | Newest-first, de-duplicated current signals with keyset pagination |
 
-`/v1/signals` accepts `source=usgs|nws|firms`, `min_severity=0..4`, aware
+`/v1/signals` accepts `source=usgs|nws|firms|gdelt`, `min_severity=0..4`, aware
 `occurred_after`/`occurred_before` timestamps, `active_only`, and a non-wrapping WGS84
-`bbox=west,south,east,north`. `min_severity` applies to NWS severity ranks. Spatial requests return
-intersecting point or polygon evidence.
+`bbox=west,south,east,north`. `min_severity` applies to NWS severity ranks and the documented
+AtlasPulse GDELT priority rank. Spatial requests return intersecting point or polygon evidence.
 Set `include_area_only=true` only when a viewport consumer explicitly wants valid NWS alerts
 that have area codes but no source geometry.
 
@@ -198,6 +201,13 @@ revisable measurements, so a corrected measurement becomes a new revision of the
 AtlasPulse applies a documented 24-hour display window; this is an operational freshness rule,
 not a NASA-declared incident closure. A satellite thermal anomaly can be fire or another heat
 source and is never presented as a confirmed wildfire perimeter.
+GDELT Event rows become `geopolitical.gdelt_event` point observations keyed by the provider's
+`GlobalEventID`. AtlasPulse selects geolocated root events in CAMEO QuadClass 4 (material
+conflict), retains the original CAMEO codes, Goldstein scale, actors, coverage counts, tone,
+report date, and first source-report URL, and gives the live view a documented 24-hour operational
+window. The 15-minute `DATEADDED` value is labeled as detection time; the underlying event date
+has only daily precision. GDELT is machine-coded from media and can contain reporting, NLP, or
+geocoding errors, so the UI never presents these observations as independently verified incidents.
 Replay requests read one extra entry to compute `has_more`, return at most 500 items, and expose
 the final visible stream ID as `next_cursor`. Stream retention is bounded, so replay is
 deterministic for retained entries rather than an indefinite event archive.
@@ -206,7 +216,8 @@ deterministic for retained entries rather than an indefinite event archive.
 
 - HTTP transport errors, `429`, and `5xx` responses retry with bounded exponential backoff.
 - Permanent non-success responses fail immediately; `429` and `5xx` are the retryable exceptions.
-- USGS, NWS, and enabled FIRMS poll on separate async tasks, so one failure does not block others.
+- USGS, NWS, enabled FIRMS, and GDELT poll on separate async tasks, so one failure does not block
+  others.
 - Valid HTTP bodies are snapshotted before schema parsing, so upstream schema drift remains
   inspectable.
 - A canonical content fingerprint ignores poll time but preserves source revisions; pipelined Lua
@@ -219,6 +230,13 @@ deterministic for retained entries rather than an indefinite event archive.
   collection is materially larger than the USGS hourly feed.
 - FIRMS defaults to one day of global NOAA-20 VIIRS NRT detections every 15 minutes. Its API
   permits day ranges from one to five; narrow `ATLAS_FIRMS_AREA` for smaller deployments.
+- GDELT resolves the one Event export in the official latest-update manifest, upgrades it to
+  HTTPS, verifies advertised size and MD5, bounds both compressed and expanded bytes, rejects
+  unsafe ZIP members, and requires exactly 61 tab-delimited Event columns. It selects at most
+  5,000 qualifying records per cycle by default.
+- The GDELT latest-update pointer exposes only the newest 15-minute export. A prolonged outage can
+  therefore create gaps; immutable snapshots and replay prove what AtlasPulse saw, not complete
+  historical GDELT coverage.
 - Revision insert, newer-only current pointer, and projection checkpoint commit together. A
   failed batch is retried from the unchanged cursor and duplicate revision inserts are harmless.
 - Readiness fails closed when the stream or durable query store is unavailable; liveness remains
@@ -230,7 +248,9 @@ See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision,
 [ADR 0004](docs/adr/0004-multi-source-weather-geometry.md) for source isolation and NWS geometry,
 and [ADR 0005](docs/adr/0005-transactional-postgis-projection.md) for durable projection and
 checkpoint semantics, and [ADR 0006](docs/adr/0006-firms-thermal-anomaly-ingestion.md) for FIRMS
-identity, expiry, and credential boundaries.
+identity, expiry, and credential boundaries, and
+[ADR 0007](docs/adr/0007-gdelt-material-conflict-ingestion.md) for GDELT integrity, selection,
+time, and uncertainty boundaries.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -244,6 +264,7 @@ credential solely for transaction metering.
 | Live source | [USGS Earthquake GeoJSON feeds](https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php) | Public, no key |
 | Live source | [NOAA/NWS API](https://www.weather.gov/documentation/services-web-api) | Public, no key; identifying User-Agent required |
 | Live source | [NASA FIRMS Area API](https://firms.modaps.eosdis.nasa.gov/api/area/) | Public data; free MAP_KEY, no paid tier required |
+| Live source | [GDELT 2.0 Event exports](https://www.gdeltproject.org/data.html) | Public, keyless, updated every 15 minutes |
 | API/contracts | Python, FastAPI, Pydantic | Open source |
 | Event stream | Valkey + `valkey-py` | Open source |
 | Durable geospatial state | PostgreSQL + PostGIS + SQLAlchemy/Alembic | Open source |
@@ -257,7 +278,7 @@ credential solely for transaction metering.
 
 ## Next milestones
 
-1. GDELT news signals using the same source-adapter contract and durable projection boundary.
+1. Cross-source correlation with explicit temporal/spatial evidence links and contradiction flags.
 2. Hybrid sparse/dense/geospatial retrieval, reranking, temporal filtering, and citation
    verification.
 3. A hierarchy of specialist agents for signal fusion, contradiction detection, impact
@@ -283,5 +304,12 @@ observation, with faster RT/URT availability for the US and Canada. FIRMS detect
 active-fire/hotspot or thermal-anomaly pixels; AtlasPulse preserves that uncertainty. The MAP_KEY
 is free and the official documented limit is 5,000 transactions per ten-minute interval. The
 repository contains only synthetic FIRMS-shaped fixtures and never a real key.
+
+Material-conflict observations come from the [GDELT Project](https://www.gdeltproject.org/), whose
+GDELT 2.0 Event stream publishes machine-coded global news metadata every 15 minutes. AtlasPulse
+uses the official [latest-update manifest](https://data.gdeltproject.org/gdeltv2/lastupdate.txt)
+and follows the [GDELT 2.0 Event codebook](https://data.gdeltproject.org/documentation/GDELT-Event_Codebook-V2.0.pdf).
+CAMEO category and Goldstein values describe coded event classes rather than verified ground
+truth or a measured impact. The repository contains only synthetic GDELT-shaped fixtures.
 
 Licensed under the [MIT License](LICENSE).

@@ -1,8 +1,11 @@
 import {
+  cameoRootCodeOf,
+  conflictPriorityOf,
   fireConfidenceOf,
   fireRadiativePowerOf,
   formatTimestamp,
   isFireDetection,
+  isGeopoliticalEvent,
   isWeatherAlert,
   magnitudeOf,
   placeOf,
@@ -35,8 +38,11 @@ export function EventFeed({ events, selectedStreamId, onSelect }: EventFeedProps
             const magnitude = magnitudeOf(item.event);
             const weather = isWeatherAlert(item.event);
             const fire = isFireDetection(item.event);
+            const conflict = isGeopoliticalEvent(item.event);
             const severity = severityOf(item.event);
             const confidence = fireConfidenceOf(item.event);
+            const conflictPriority = conflictPriorityOf(item.event);
+            const conflictRootCode = cameoRootCodeOf(item.event);
             const fireRadiativePower = fireRadiativePowerOf(item.event);
             return (
               <button
@@ -51,20 +57,24 @@ export function EventFeed({ events, selectedStreamId, onSelect }: EventFeedProps
                       ? `weather severity-${severity?.toLowerCase() ?? "unknown"}`
                       : fire
                         ? `fire confidence-${confidence?.toLowerCase() ?? "unknown"}`
-                        : "quake"
+                        : conflict
+                          ? `conflict priority-${conflictPriority?.toLowerCase() ?? "unknown"}`
+                          : "quake"
                   }`}
                 >
                   {weather
                     ? (severity?.slice(0, 3).toUpperCase() ?? "WX")
                     : fire
                       ? `${fireRadiativePower?.toFixed(0) ?? "?"}MW`
-                      : (magnitude?.toFixed(1) ?? "?")}
+                      : conflict
+                        ? `C${conflictRootCode ?? "?"}`
+                        : (magnitude?.toFixed(1) ?? "?")}
                 </span>
                 <span className="event-copy">
                   <strong>{titleOf(item.event)}</strong>
                   <small>
                     <span className={`source-badge ${item.event.source}`}>{item.event.source}</span>
-                    {weather || fire ? `${placeOf(item.event)} · ` : ""}
+                    {weather || fire || conflict ? `${placeOf(item.event)} · ` : ""}
                     {formatTimestamp(item.event.occurred_at)} UTC
                   </small>
                 </span>

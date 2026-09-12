@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   alertTypeOf,
+  cameoRootCodeOf,
+  conflictPriorityOf,
+  conflictPriorityRankOf,
   fireConfidenceOf,
   fireConfidenceRankOf,
   fireRadiativePowerOf,
   formatTimestamp,
+  goldsteinScaleOf,
   isActiveAt,
   isFireDetection,
+  isGeopoliticalEvent,
   isWeatherAlert,
   magnitudeOf,
   newestUpdate,
@@ -120,5 +125,31 @@ describe("event utilities", () => {
     expect(fireConfidenceOf(fire.event)).toBeNull();
     expect(fireConfidenceRankOf(fire.event)).toBe(0);
     expect(titleOf(fire.event)).toBe("Test Ridge");
+  });
+
+  it("reads GDELT classifications without treating them as earthquake measurements", () => {
+    const conflict = makeEnvelope({
+      source: "gdelt",
+      conflictPriority: "Critical",
+      conflictRootCode: "20",
+      goldsteinScale: -10,
+    });
+    expect(isGeopoliticalEvent(conflict.event)).toBe(true);
+    expect(magnitudeOf(conflict.event)).toBeNull();
+    expect(titleOf(conflict.event)).toBe("Mass violence: GOVERNMENT → REBELS");
+    expect(conflictPriorityOf(conflict.event)).toBe("Critical");
+    expect(conflictPriorityRankOf(conflict.event)).toBe(4);
+    expect(cameoRootCodeOf(conflict.event)).toBe("20");
+    expect(goldsteinScaleOf(conflict.event)).toBe(-10);
+
+    conflict.event.payload.priority = "Urgent";
+    conflict.event.payload.cameo_root_code = "fight";
+    conflict.event.payload.goldstein_scale = "-10";
+    conflict.event.payload.title = "";
+    expect(conflictPriorityOf(conflict.event)).toBeNull();
+    expect(conflictPriorityRankOf(conflict.event)).toBe(0);
+    expect(cameoRootCodeOf(conflict.event)).toBeNull();
+    expect(goldsteinScaleOf(conflict.event)).toBeNull();
+    expect(titleOf(conflict.event)).toBe("Test Ridge");
   });
 });

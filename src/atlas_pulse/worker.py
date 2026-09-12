@@ -9,7 +9,7 @@ import structlog
 from atlas_pulse.config import get_settings
 from atlas_pulse.ingestion import IngestionService, RawSnapshotStore
 from atlas_pulse.logging import configure_logging
-from atlas_pulse.sources import FIRMSClient, NWSClient, SourceAdapter, USGSClient
+from atlas_pulse.sources import FIRMSClient, GDELTClient, NWSClient, SourceAdapter, USGSClient
 from atlas_pulse.streams import ValkeyEventBus
 from atlas_pulse.telemetry import configure_telemetry
 
@@ -82,6 +82,22 @@ async def run() -> None:
             user_agent=settings.source_user_agent,
         )
         sources.append((firms, settings.firms_poll_seconds))
+    if settings.gdelt_enabled:
+        gdelt = GDELTClient(
+            last_update_url=str(settings.gdelt_last_update_url),
+            poll_timeout_seconds=settings.source_timeout_seconds,
+            max_attempts=settings.source_max_attempts,
+            user_agent=settings.source_user_agent,
+            max_compressed_bytes=settings.gdelt_max_compressed_bytes,
+            max_uncompressed_bytes=settings.gdelt_max_uncompressed_bytes,
+            max_rows=settings.gdelt_max_rows,
+            max_events=settings.gdelt_max_events,
+            active_window_hours=settings.gdelt_active_window_hours,
+            only_root_events=settings.gdelt_only_root_events,
+            minimum_geo_precision=settings.gdelt_minimum_geo_precision,
+            minimum_mentions=settings.gdelt_minimum_mentions,
+        )
+        sources.append((gdelt, settings.gdelt_poll_seconds))
     tasks = [
         asyncio.create_task(
             poll_source(

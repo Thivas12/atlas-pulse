@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import cast
 
 import pytest
@@ -12,9 +13,11 @@ from agent_rag_core import Event, GeoPoint
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from atlas_pulse.projections import GeoBounds, PostgresSignalStore, SignalQuery
+from atlas_pulse.projections import CorrelationQuery, GeoBounds, PostgresSignalStore, SignalQuery
 from atlas_pulse.projections.postgres import (
     _event_from_database,
+    _geometry_basis_from_database,
+    _number_from_database,
     parse_stream_id,
     projection_values,
 )
@@ -326,6 +329,94 @@ async def test_query_current_supports_empty_unfiltered_and_strict_spatial_pages(
     statement = spatial_engine.connection.executions[0][0]
     assert "ST_Intersects" in statement
     assert "er.footprint IS NULL AND er.point IS NULL" not in statement
+
+
+async def test_query_correlations_uses_bounded_geography_join_and_marks_truncation() -> None:
+    fire = make_event(
+        "fire-1",
+        source="firms",
+        location=GeoPoint(latitude=12.0, longitude=77.0, altitude_km=None),
+    )
+    conflict = make_event(
+        "conflict-1",
+        source="gdelt",
+        location=GeoPoint(latitude=12.1, longitude=77.1, altitude_km=None),
+    )
+    row = {
+        "left_stream_id": "300-0",
+        "left_event_json": fire.model_dump(mode="json"),
+        "left_geometry_basis": "point",
+        "right_stream_id": "301-0",
+        "right_event_json": conflict.model_dump_json(),
+        "right_geometry_basis": "polygon",
+        "distance_km": Decimal("4.125"),
+        "time_delta_minutes": 12,
+    }
+    engine = FakeEngine(results=[FakeResult(rows=[row, row])])
+    store = store_with(engine)
+
+    batch = await store.query_correlations(
+        CorrelationQuery(
+            radius_km=25,
+            time_window_minutes=90,
+            lookback_hours=48,
+            edge_limit=1,
+            bounds=GeoBounds(west=70, south=5, east=85, north=20),
+        )
+    )
+
+    assert batch.truncated is True
+    assert len(batch.pairs) == 1
+    candidate = batch.pairs[0]
+    assert candidate.left.event.event_id == "fire-1"
+    assert candidate.right.event.event_id == "conflict-1"
+    assert candidate.distance_km == 4.125
+    assert candidate.time_delta_minutes == 12
+    assert candidate.left_geometry_basis == "point"
+    assert candidate.right_geometry_basis == "polygon"
+    statement, parameters = engine.connection.executions[0]
+    assert "WITH eligible AS MATERIALIZED" in statement
+    assert "left_signal.source < right_signal.source" in statement
+    assert "ST_DWithin" in statement
+    assert "::geography" in statement
+    assert "ST_Intersects" in statement
+    assert "er.expires_at IS NULL" in statement
+    assert parameters == {
+        "lookback_hours": 48,
+        "time_window_seconds": 5_400,
+        "radius_metres": 25_000,
+        "fetch_limit": 2,
+        "west": 70,
+        "south": 5,
+        "east": 85,
+        "north": 20,
+    }
+
+
+async def test_query_correlations_supports_empty_unbounded_inactive_window() -> None:
+    engine = FakeEngine(results=[FakeResult(rows=[])])
+    batch = await store_with(engine).query_correlations(
+        CorrelationQuery(edge_limit=10, active_only=False)
+    )
+
+    assert batch.pairs == ()
+    assert batch.truncated is False
+    statement, parameters = engine.connection.executions[0]
+    assert "ST_Intersects" not in statement
+    assert "er.expires_at IS NULL" not in statement
+    assert isinstance(parameters, dict)
+    assert parameters["fetch_limit"] == 11
+
+
+@pytest.mark.parametrize("value", [None, True, "4.2"])
+def test_database_number_rejects_non_numeric_values(value: object) -> None:
+    with pytest.raises(TypeError, match="distance"):
+        _number_from_database(value, field="distance")
+
+
+def test_database_geometry_basis_rejects_unknown_values() -> None:
+    with pytest.raises(TypeError, match="geometry basis"):
+        _geometry_basis_from_database("centroid")
 
 
 async def test_store_readiness_and_engine_ownership(monkeypatch: pytest.MonkeyPatch) -> None:

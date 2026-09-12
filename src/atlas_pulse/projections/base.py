@@ -5,6 +5,7 @@ from datetime import datetime
 from math import isfinite
 from typing import Literal, Protocol
 
+from atlas_pulse.correlation import CorrelationBatch
 from atlas_pulse.streams import StreamMessage
 
 SourceName = Literal["usgs", "nws", "firms", "gdelt"]
@@ -56,11 +57,37 @@ class SignalPage:
     has_more: bool
 
 
+@dataclass(frozen=True, slots=True)
+class CorrelationQuery:
+    """Bounded spatial/temporal join parameters for current cross-source signals."""
+
+    radius_km: float = 50.0
+    time_window_minutes: int = 360
+    lookback_hours: int = 24
+    edge_limit: int = 2_000
+    bounds: GeoBounds | None = None
+    active_only: bool = True
+
+    def __post_init__(self) -> None:
+        if not isfinite(self.radius_km) or not 0 < self.radius_km <= 500:
+            raise ValueError("correlation radius_km must be within (0, 500]")
+        if not 1 <= self.time_window_minutes <= 1_440:
+            raise ValueError("correlation time_window_minutes must be between 1 and 1440")
+        if not 1 <= self.lookback_hours <= 168:
+            raise ValueError("correlation lookback_hours must be between 1 and 168")
+        if not 1 <= self.edge_limit <= 5_000:
+            raise ValueError("correlation edge_limit must be between 1 and 5000")
+
+
 class SignalStore(Protocol):
     """Current-state capability required by the HTTP API."""
 
     async def query_current(self, query: SignalQuery) -> SignalPage:
         """Query one keyset-paginated current-state page."""
+        ...
+
+    async def query_correlations(self, query: CorrelationQuery) -> CorrelationBatch:
+        """Return measured cross-source candidate pairs from durable current state."""
         ...
 
     async def is_ready(self) -> bool:

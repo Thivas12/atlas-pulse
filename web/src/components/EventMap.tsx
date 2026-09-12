@@ -6,33 +6,51 @@ import {
   NavigationControl,
 } from "maplibre-gl";
 import { useEffect, useRef } from "react";
-import { eventsToGeoJson, weatherPolygonsToGeoJson } from "../geo";
-import type { EventEnvelope, ViewportBounds } from "../types";
+import { eventsToGeoJson, incidentEdgesToGeoJson, weatherPolygonsToGeoJson } from "../geo";
+import type { EventEnvelope, IncidentCandidate, ViewportBounds } from "../types";
 
 const SOURCE_ID = "point-events";
 const WEATHER_SOURCE_ID = "weather-polygons";
+const INCIDENT_SOURCE_ID = "incident-edges";
 const CLUSTER_LAYER = "seismic-clusters";
 const CLUSTER_COUNT_LAYER = "seismic-cluster-count";
 const GLOW_LAYER = "seismic-glow";
 const EVENT_LAYER = "seismic-points";
 const WEATHER_FILL_LAYER = "weather-alert-fills";
 const WEATHER_OUTLINE_LAYER = "weather-alert-outlines";
+const INCIDENT_GLOW_LAYER = "incident-edge-glow";
+const INCIDENT_LAYER = "incident-edges";
 
 interface EventMapProps {
   events: EventEnvelope[];
+  incidents: IncidentCandidate[];
   selectedStreamId: string | null;
+  selectedIncidentId: string | null;
   onSelect: (streamId: string) => void;
+  onIncidentSelect: (incidentId: string) => void;
   onViewportChange: (bounds: ViewportBounds) => void;
 }
 
-export function EventMap({ events, selectedStreamId, onSelect, onViewportChange }: EventMapProps) {
+export function EventMap({
+  events,
+  incidents,
+  selectedStreamId,
+  selectedIncidentId,
+  onSelect,
+  onIncidentSelect,
+  onViewportChange,
+}: EventMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const latestEventsRef = useRef(events);
+  const latestIncidentsRef = useRef(incidents);
   const onSelectRef = useRef(onSelect);
+  const onIncidentSelectRef = useRef(onIncidentSelect);
   const onViewportChangeRef = useRef(onViewportChange);
   latestEventsRef.current = events;
+  latestIncidentsRef.current = incidents;
   onSelectRef.current = onSelect;
+  onIncidentSelectRef.current = onIncidentSelect;
   onViewportChangeRef.current = onViewportChange;
 
   useEffect(() => {
@@ -81,6 +99,10 @@ export function EventMap({ events, selectedStreamId, onSelect, onViewportChange 
         type: "geojson",
         data: weatherPolygonsToGeoJson(latestEventsRef.current),
       });
+      map.addSource(INCIDENT_SOURCE_ID, {
+        type: "geojson",
+        data: incidentEdgesToGeoJson(latestIncidentsRef.current),
+      });
       map.addLayer({
         id: WEATHER_FILL_LAYER,
         type: "fill",
@@ -122,6 +144,28 @@ export function EventMap({ events, selectedStreamId, onSelect, onViewportChange 
           ],
           "line-opacity": 0.9,
           "line-width": ["interpolate", ["linear"], ["get", "severityRank"], 0, 1, 4, 2.5],
+        },
+      });
+      map.addLayer({
+        id: INCIDENT_GLOW_LAYER,
+        type: "line",
+        source: INCIDENT_SOURCE_ID,
+        paint: {
+          "line-color": "#bd7cff",
+          "line-width": 7,
+          "line-opacity": 0.14,
+          "line-blur": 4,
+        },
+      });
+      map.addLayer({
+        id: INCIDENT_LAYER,
+        type: "line",
+        source: INCIDENT_SOURCE_ID,
+        paint: {
+          "line-color": "#d7b2ff",
+          "line-width": 2,
+          "line-opacity": 0.82,
+          "line-dasharray": [2, 2],
         },
       });
       map.addLayer({
@@ -278,6 +322,10 @@ export function EventMap({ events, selectedStreamId, onSelect, onViewportChange 
       const streamId = event.features?.[0]?.properties?.streamId;
       if (typeof streamId === "string") onSelectRef.current(streamId);
     });
+    map.on("click", INCIDENT_LAYER, (event: MapLayerMouseEvent) => {
+      const incidentId = event.features?.[0]?.properties?.incidentId;
+      if (typeof incidentId === "string") onIncidentSelectRef.current(incidentId);
+    });
     map.on("click", CLUSTER_LAYER, async (event: MapLayerMouseEvent) => {
       const feature = event.features?.[0];
       const clusterId = feature?.properties?.cluster_id;
@@ -287,7 +335,7 @@ export function EventMap({ events, selectedStreamId, onSelect, onViewportChange 
       const [longitude, latitude] = feature.geometry.coordinates;
       map.easeTo({ center: [longitude, latitude], zoom });
     });
-    for (const layer of [EVENT_LAYER, CLUSTER_LAYER, WEATHER_FILL_LAYER]) {
+    for (const layer of [EVENT_LAYER, CLUSTER_LAYER, WEATHER_FILL_LAYER, INCIDENT_LAYER]) {
       map.on("mouseenter", layer, () => {
         map.getCanvas().style.cursor = "pointer";
       });
@@ -312,6 +360,13 @@ export function EventMap({ events, selectedStreamId, onSelect, onViewportChange 
   }, [events]);
 
   useEffect(() => {
+    const map = mapRef.current;
+    if (!map?.isStyleLoaded()) return;
+    const source = map.getSource(INCIDENT_SOURCE_ID) as GeoJSONSource | undefined;
+    source?.setData(incidentEdgesToGeoJson(incidents));
+  }, [incidents]);
+
+  useEffect(() => {
     if (!selectedStreamId) return;
     const selected = events.find((item) => item.stream_id === selectedStreamId);
     if (!selected?.event.location) return;
@@ -321,6 +376,17 @@ export function EventMap({ events, selectedStreamId, onSelect, onViewportChange 
       duration: 850,
     });
   }, [events, selectedStreamId]);
+
+  useEffect(() => {
+    if (!selectedIncidentId) return;
+    const selected = incidents.find((incident) => incident.incident_id === selectedIncidentId);
+    if (!selected?.center) return;
+    mapRef.current?.easeTo({
+      center: [selected.center.longitude, selected.center.latitude],
+      zoom: Math.max(mapRef.current.getZoom(), 4),
+      duration: 850,
+    });
+  }, [incidents, selectedIncidentId]);
 
   return <section className="event-map" ref={containerRef} aria-label="Live disruption map" />;
 }

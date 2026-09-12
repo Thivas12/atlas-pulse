@@ -3,6 +3,7 @@
 import json
 from collections.abc import Mapping
 from datetime import datetime
+from decimal import Decimal
 from typing import cast
 
 from agent_rag_core import Event
@@ -10,7 +11,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from atlas_pulse.projections.base import SignalPage, SignalQuery
+from atlas_pulse.correlation import CorrelationBatch, CorrelationPair, GeometryBasis
+from atlas_pulse.projections.base import CorrelationQuery, SignalPage, SignalQuery
 from atlas_pulse.streams import StreamMessage
 
 _INSERT_REVISIONS = """
@@ -167,6 +169,18 @@ def _event_from_database(value: object) -> Event:
     raise TypeError("event_json must be a JSON object, string, or bytes")
 
 
+def _number_from_database(value: object, *, field: str) -> float:
+    if isinstance(value, int | float | Decimal) and not isinstance(value, bool):
+        return float(value)
+    raise TypeError(f"{field} must be numeric")
+
+
+def _geometry_basis_from_database(value: object) -> GeometryBasis:
+    if value == "point" or value == "polygon":
+        return value
+    raise TypeError("geometry basis must be point or polygon")
+
+
 class PostgresSignalStore:
     """Durable immutable revisions, current pointers, and atomic checkpoints."""
 
@@ -290,6 +304,108 @@ class PostgresSignalStore:
             next_cursor=messages[-1].stream_id if messages else None,
             has_more=has_more,
         )
+
+    async def query_correlations(self, query: CorrelationQuery) -> CorrelationBatch:
+        """Measure bounded current cross-source pairs using PostGIS geography."""
+        geometry = "COALESCE(er.footprint, er.point)"
+        conditions = [
+            f"{geometry} IS NOT NULL",
+            "er.occurred_at >= CURRENT_TIMESTAMP - make_interval(hours => :lookback_hours)",
+        ]
+        parameters: dict[str, object] = {
+            "lookback_hours": query.lookback_hours,
+            "time_window_seconds": query.time_window_minutes * 60,
+            "radius_metres": query.radius_km * 1_000,
+            "fetch_limit": query.edge_limit + 1,
+        }
+        if query.active_only:
+            conditions.append("(er.expires_at IS NULL OR er.expires_at > CURRENT_TIMESTAMP)")
+        if query.bounds is not None:
+            conditions.append(
+                f"ST_Intersects({geometry}, ST_MakeEnvelope(:west, :south, :east, :north, 4326))"
+            )
+            parameters.update(
+                west=query.bounds.west,
+                south=query.bounds.south,
+                east=query.bounds.east,
+                north=query.bounds.north,
+            )
+
+        statement = text(
+            """
+            WITH eligible AS MATERIALIZED (
+                SELECT
+                    er.stream_id,
+                    er.source,
+                    er.event_id,
+                    er.occurred_at,
+                    er.event_json,
+                    COALESCE(er.footprint, er.point) AS evidence_geometry,
+                    CASE WHEN er.footprint IS NOT NULL THEN 'polygon' ELSE 'point' END
+                        AS geometry_basis
+                FROM current_signals AS cs
+                JOIN event_revisions AS er ON er.stream_id = cs.stream_id
+                WHERE """
+            + " AND ".join(conditions)
+            + """
+            )
+            SELECT
+                left_signal.stream_id AS left_stream_id,
+                left_signal.event_json AS left_event_json,
+                left_signal.geometry_basis AS left_geometry_basis,
+                right_signal.stream_id AS right_stream_id,
+                right_signal.event_json AS right_event_json,
+                right_signal.geometry_basis AS right_geometry_basis,
+                ST_Distance(
+                    left_signal.evidence_geometry::geography,
+                    right_signal.evidence_geometry::geography
+                ) / 1000.0 AS distance_km,
+                ABS(EXTRACT(EPOCH FROM (
+                    left_signal.occurred_at - right_signal.occurred_at
+                ))) / 60.0 AS time_delta_minutes,
+                GREATEST(left_signal.occurred_at, right_signal.occurred_at) AS latest_signal_at
+            FROM eligible AS left_signal
+            JOIN eligible AS right_signal
+              ON left_signal.source < right_signal.source
+             AND ABS(EXTRACT(EPOCH FROM (
+                    left_signal.occurred_at - right_signal.occurred_at
+                 ))) <= :time_window_seconds
+             AND ST_DWithin(
+                    left_signal.evidence_geometry::geography,
+                    right_signal.evidence_geometry::geography,
+                    :radius_metres
+                 )
+            ORDER BY latest_signal_at DESC, distance_km ASC,
+                     left_signal.source, left_signal.event_id,
+                     right_signal.source, right_signal.event_id
+            LIMIT :fetch_limit
+            """
+        )
+        async with self._engine.connect() as connection:
+            result = await connection.execute(statement, parameters)
+            rows = result.mappings().all()
+
+        truncated = len(rows) > query.edge_limit
+        pairs = tuple(
+            CorrelationPair(
+                left=StreamMessage(
+                    stream_id=cast(str, row["left_stream_id"]),
+                    event=_event_from_database(row["left_event_json"]),
+                ),
+                right=StreamMessage(
+                    stream_id=cast(str, row["right_stream_id"]),
+                    event=_event_from_database(row["right_event_json"]),
+                ),
+                distance_km=_number_from_database(row["distance_km"], field="distance_km"),
+                time_delta_minutes=_number_from_database(
+                    row["time_delta_minutes"], field="time_delta_minutes"
+                ),
+                left_geometry_basis=_geometry_basis_from_database(row["left_geometry_basis"]),
+                right_geometry_basis=_geometry_basis_from_database(row["right_geometry_basis"]),
+            )
+            for row in rows[: query.edge_limit]
+        )
+        return CorrelationBatch(pairs=pairs, truncated=truncated)
 
     async def is_ready(self) -> bool:
         try:

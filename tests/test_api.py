@@ -4,10 +4,11 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
-from agent_rag_core import Event
+from agent_rag_core import Event, GeoPoint
 
 from atlas_pulse.api import create_app
-from atlas_pulse.projections import SignalPage, SignalQuery
+from atlas_pulse.correlation import CORRELATION_CAVEAT, CorrelationBatch, CorrelationPair
+from atlas_pulse.projections import CorrelationQuery, SignalPage, SignalQuery
 from atlas_pulse.streams import InMemoryEventBus
 from atlas_pulse.streams.base import StreamMessage
 
@@ -38,15 +39,22 @@ class StubSignalStore:
         *,
         page: SignalPage | None = None,
         ready: bool = True,
+        correlation_batch: CorrelationBatch | None = None,
     ) -> None:
         self.page = page or SignalPage(items=(), next_cursor=None, has_more=False)
         self.ready = ready
         self.closed = False
         self.query: SignalQuery | None = None
+        self.correlation_batch = correlation_batch or CorrelationBatch(())
+        self.correlation_query: CorrelationQuery | None = None
 
     async def query_current(self, query: SignalQuery) -> SignalPage:
         self.query = query
         return self.page
+
+    async def query_correlations(self, query: CorrelationQuery) -> CorrelationBatch:
+        self.correlation_query = query
+        return self.correlation_batch
 
     async def is_ready(self) -> bool:
         return self.ready
@@ -72,7 +80,7 @@ async def test_health_readiness_and_recent_events() -> None:
         events = await client.get("/v1/events", params={"limit": 1})
 
     assert health.status_code == 200
-    assert health.json() == {"status": "ok", "version": "0.5.0"}
+    assert health.json() == {"status": "ok", "version": "0.6.0"}
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
     assert events.status_code == 200
@@ -268,3 +276,91 @@ async def test_current_signals_rejects_invalid_spatial_and_time_filters() -> Non
     assert wrapping.status_code == 422
     assert naive_time.status_code == 422
     assert reversed_time.status_code == 422
+
+
+async def test_incidents_returns_a_typed_auditable_evidence_graph() -> None:
+    occurred = datetime(2026, 9, 12, 12, tzinfo=UTC)
+    fire = Event(
+        event_id="fire-1",
+        event_type="fire.thermal_anomaly",
+        source="firms",
+        occurred_at=occurred,
+        ingested_at=occurred,
+        location=GeoPoint(latitude=12, longitude=77, altitude_km=None),
+        payload={"place": "Test City", "source_url": "https://example.test/fire"},
+    )
+    conflict = Event(
+        event_id="conflict-1",
+        event_type="geopolitical.gdelt_event",
+        source="gdelt",
+        occurred_at=occurred,
+        ingested_at=occurred,
+        location=GeoPoint(latitude=12.1, longitude=77.1, altitude_km=None),
+        payload={"place": "Test City", "source_url": "https://example.test/report"},
+    )
+    store = StubSignalStore(
+        correlation_batch=CorrelationBatch(
+            (
+                CorrelationPair(
+                    left=StreamMessage(stream_id="10-0", event=fire),
+                    right=StreamMessage(stream_id="11-0", event=conflict),
+                    distance_km=4.125,
+                    time_delta_minutes=0,
+                    left_geometry_basis="point",
+                    right_geometry_basis="point",
+                ),
+            )
+        )
+    )
+    transport = httpx.ASGITransport(app=create_app(InMemoryEventBus(), store))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/v1/incidents",
+            params={
+                "limit": 10,
+                "radius_km": 25,
+                "time_window_minutes": 90,
+                "lookback_hours": 48,
+                "candidate_edge_limit": 250,
+                "bbox": "70,5,85,20",
+                "active_only": "false",
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 1
+    assert body["total_incidents"] == 1
+    assert body["rule_version"] == "spatiotemporal-v1"
+    assert body["caveat"] == CORRELATION_CAVEAT
+    assert body["items"][0]["sources"] == ["firms", "gdelt"]
+    assert body["items"][0]["node_count"] == 2
+    assert body["items"][0]["edge_count"] == 1
+    assert body["items"][0]["edges"][0]["distance_km"] == 4.125
+    assert body["items"][0]["edges"][0]["relation"] == "spatiotemporal_cooccurrence"
+    assert body["parameters"] == {
+        "radius_km": 25,
+        "time_window_minutes": 90,
+        "lookback_hours": 48,
+        "candidate_edge_limit": 250,
+        "incident_limit": 10,
+        "active_only": False,
+        "bbox": [70, 5, 85, 20],
+    }
+    assert store.correlation_query is not None
+    assert store.correlation_query.edge_limit == 250
+    assert store.correlation_query.bounds is not None
+
+
+async def test_incidents_requires_projection_and_validates_bounds() -> None:
+    without_store = httpx.ASGITransport(app=create_app(InMemoryEventBus()))
+    async with httpx.AsyncClient(transport=without_store, base_url="http://test") as client:
+        unavailable = await client.get("/v1/incidents")
+    assert unavailable.status_code == 503
+
+    with_store = httpx.ASGITransport(app=create_app(InMemoryEventBus(), StubSignalStore()))
+    async with httpx.AsyncClient(transport=with_store, base_url="http://test") as client:
+        invalid = await client.get("/v1/incidents", params={"bbox": "20,-5,-10,30"})
+        unbounded = await client.get("/v1/incidents", params={"candidate_edge_limit": 5_001})
+    assert invalid.status_code == 422
+    assert unbounded.status_code == 422

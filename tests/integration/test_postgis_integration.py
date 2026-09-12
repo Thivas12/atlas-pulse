@@ -8,7 +8,7 @@ from agent_rag_core import Event, GeoPoint
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from atlas_pulse.projections import GeoBounds, PostgresSignalStore, SignalQuery
+from atlas_pulse.projections import CorrelationQuery, GeoBounds, PostgresSignalStore, SignalQuery
 from atlas_pulse.streams import StreamMessage
 
 DATABASE_URL = os.getenv("ATLAS_TEST_DATABASE_URL")
@@ -71,7 +71,7 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
     await _clean(DATABASE_URL)
     engine = create_async_engine(DATABASE_URL)
     store = PostgresSignalStore(database_url=DATABASE_URL, engine=engine)
-    occurred = datetime(2026, 9, 12, 12, tzinfo=UTC)
+    occurred = datetime.now(UTC)
     geometry = {
         "type": "Polygon",
         "coordinates": [[[-98.0, 34.0], [-96.0, 34.0], [-96.0, 36.0], [-98.0, 34.0]]],
@@ -221,6 +221,25 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
             )
         )
         assert [message.event.event_id for message in conflicts.items] == ["day5-gdelt"]
+
+        correlations = await store.query_correlations(
+            CorrelationQuery(
+                radius_km=500,
+                time_window_minutes=60,
+                lookback_hours=168,
+                edge_limit=10,
+                bounds=GeoBounds(west=70, south=5, east=85, north=20),
+            )
+        )
+        assert correlations.truncated is False
+        assert len(correlations.pairs) == 1
+        india_pair = correlations.pairs[0]
+        assert {india_pair.left.event.event_id, india_pair.right.event.event_id} == {
+            "day5-quake",
+            "day5-gdelt",
+        }
+        assert 250 < india_pair.distance_km < 400
+        assert india_pair.time_delta_minutes == 0
 
         first_page = await store.query_current(SignalQuery(limit=2, active_only=False))
         second_page = await store.query_current(

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchCurrentSignals, fetchLatest, fetchReplay } from "./api";
-import { makeEnvelope } from "./test/fixtures";
+import { fetchCurrentSignals, fetchIncidentCandidates, fetchLatest, fetchReplay } from "./api";
+import { makeEnvelope, makeIncident } from "./test/fixtures";
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -59,6 +59,38 @@ describe("AtlasPulse API client", () => {
     ).resolves.toEqual(body);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/signals?limit=500&active_only=true&source=gdelt&bbox=-10%2C-5%2C20%2C30",
+      expect.any(Object),
+    );
+  });
+
+  it("validates bounded incident candidates and encodes viewport bounds", async () => {
+    const body = {
+      count: 1,
+      total_incidents: 1,
+      items: [makeIncident()],
+      incidents_truncated: false,
+      candidate_edges_truncated: false,
+      rule_version: "spatiotemporal-v1",
+      caveat:
+        "Edges prove bounded spatial and temporal co-occurrence only; they do not establish causation, corroboration, or a shared real-world incident.",
+      parameters: {
+        radius_km: 50,
+        time_window_minutes: 360,
+        lookback_hours: 24,
+        candidate_edge_limit: 2_000,
+        incident_limit: 100,
+        active_only: true,
+        bbox: [-10, -5, 20, 30],
+      },
+    };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchIncidentCandidates({ west: -10, south: -5, east: 20, north: 30 }),
+    ).resolves.toEqual(body);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/incidents?limit=100&bbox=-10%2C-5%2C20%2C30",
       expect.any(Object),
     );
   });

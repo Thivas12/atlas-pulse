@@ -5,7 +5,9 @@ from datetime import UTC, datetime
 import pytest
 from agent_rag_core import Event
 
+from atlas_pulse.correlation import CorrelationBatch
 from atlas_pulse.projections import (
+    CorrelationQuery,
     GeoBounds,
     ProjectionService,
     SignalPage,
@@ -39,6 +41,9 @@ class RecordingProjectionStore:
 
     async def query_current(self, query: SignalQuery) -> SignalPage:
         return SignalPage(items=(), next_cursor=None, has_more=False)
+
+    async def query_correlations(self, query: CorrelationQuery) -> CorrelationBatch:
+        return CorrelationBatch(())
 
     async def is_ready(self) -> bool:
         return True

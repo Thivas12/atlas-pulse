@@ -1,7 +1,9 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { fetchCurrentSignals, fetchReplay } from "./api";
+import { fetchCurrentSignals, fetchIncidentCandidates, fetchReplay } from "./api";
 import { EventFeed } from "./components/EventFeed";
+import { IncidentDetail } from "./components/IncidentDetail";
+import { IncidentFeed } from "./components/IncidentFeed";
 import { ReplayControls } from "./components/ReplayControls";
 import {
   cameoRootCodeOf,
@@ -28,6 +30,7 @@ import type { EventEnvelope, ViewportBounds } from "./types";
 
 type ViewMode = "live" | "replay";
 type SourceFilter = "all" | "usgs" | "nws" | "firms" | "gdelt";
+type PanelMode = "signals" | "incidents";
 
 const EventMap = lazy(() =>
   import("./components/EventMap").then(({ EventMap: component }) => ({ default: component })),
@@ -324,7 +327,9 @@ function EventDetail({ item, onClose }: { item: EventEnvelope; onClose: () => vo
 export default function App() {
   const [mode, setMode] = useState<ViewMode>("live");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
+  const [panelMode, setPanelMode] = useState<PanelMode>("signals");
   const [selectedStreamId, setSelectedStreamId] = useState<string | null>(null);
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [replayIndex, setReplayIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -356,6 +361,12 @@ export default function App() {
     refetchInterval: 10_000,
     enabled: mode === "live" && viewport !== null,
   });
+  const incidentQuery = useQuery({
+    queryKey: ["incidents", "viewport", viewport],
+    queryFn: ({ signal }) => fetchIncidentCandidates(viewport ?? undefined, signal),
+    refetchInterval: 10_000,
+    enabled: mode === "live" && viewport !== null,
+  });
   const replayQuery = useInfiniteQuery({
     queryKey: ["events", "replay"],
     queryFn: ({ pageParam, signal }) => fetchReplay(pageParam, signal),
@@ -382,10 +393,17 @@ export default function App() {
         )
       : filteredEvents;
   const feedEvents = mode === "live" ? filteredEvents : [...filteredEvents].reverse();
+  const incidents = incidentQuery.data?.items ?? [];
+  const visibleIncidents =
+    sourceFilter === "all"
+      ? incidents
+      : incidents.filter((incident) => incident.sources.includes(sourceFilter));
   const selected =
     mappedEvents.find((item) => item.stream_id === selectedStreamId) ??
     filteredEvents.find((item) => item.stream_id === selectedStreamId) ??
     null;
+  const selectedIncident =
+    visibleIncidents.find((incident) => incident.incident_id === selectedIncidentId) ?? null;
 
   useEffect(() => {
     if (mode !== "replay" || !playing || replayItems.length === 0) return;
@@ -415,13 +433,29 @@ export default function App() {
   const switchMode = (nextMode: ViewMode) => {
     setMode(nextMode);
     setSelectedStreamId(null);
+    setSelectedIncidentId(null);
     setPlaying(false);
-    if (nextMode === "replay") setReplayIndex(0);
+    if (nextMode === "replay") {
+      setReplayIndex(0);
+      setPanelMode("signals");
+    }
   };
 
   const switchSource = (nextSource: SourceFilter) => {
     setSourceFilter(nextSource);
     setSelectedStreamId(null);
+    setSelectedIncidentId(null);
+  };
+
+  const selectEvent = (streamId: string) => {
+    setSelectedStreamId(streamId);
+    setSelectedIncidentId(null);
+  };
+
+  const selectIncident = (incidentId: string) => {
+    setSelectedIncidentId(incidentId);
+    setSelectedStreamId(null);
+    setPanelMode("incidents");
   };
 
   const uniqueEvents = new Set(filteredEvents.map(({ event }) => event.event_id)).size;
@@ -453,9 +487,13 @@ export default function App() {
   );
   const loading =
     mode === "live"
-      ? liveQuery.isPending || (viewport !== null && viewportQuery.isPending)
+      ? liveQuery.isPending ||
+        (viewport !== null && (viewportQuery.isPending || incidentQuery.isPending))
       : replayQuery.isPending;
-  const error = mode === "live" ? liveQuery.error || viewportQuery.error : replayQuery.error;
+  const error =
+    mode === "live"
+      ? liveQuery.error || viewportQuery.error || incidentQuery.error
+      : replayQuery.error;
 
   return (
     <main className="app-shell">
@@ -470,7 +508,7 @@ export default function App() {
         </a>
         <div className="mission-copy">
           <span>GLOBAL DISRUPTION INTELLIGENCE</span>
-          <small>USGS + NWS + NASA FIRMS + GDELT · AUDITABLE · REPLAYABLE</small>
+          <small>FOUR LIVE SOURCES · CORRELATED · AUDITABLE · REPLAYABLE</small>
         </div>
         <div className="system-state">
           <span className={`live-dot ${liveQuery.isError ? "error" : ""}`} />
@@ -550,6 +588,11 @@ export default function App() {
           detail={`${highPriorityConflicts} high or critical`}
         />
         <Metric
+          label="Correlated clusters"
+          value={mode === "live" ? String(visibleIncidents.length) : "—"}
+          detail="measured cross-source edges"
+        />
+        <Metric
           label="High priority"
           value={String(highSeverity + highConfidenceFires + highPriorityConflicts)}
           detail={`${highSeverity} weather · ${highConfidenceFires} fire · ${highPriorityConflicts} conflict`}
@@ -566,8 +609,11 @@ export default function App() {
           <Suspense fallback={<div className="map-message">Loading spatial renderer…</div>}>
             <EventMap
               events={mappedEvents}
+              incidents={mode === "live" ? visibleIncidents : []}
               selectedStreamId={selectedStreamId}
-              onSelect={setSelectedStreamId}
+              selectedIncidentId={selectedIncidentId}
+              onSelect={selectEvent}
+              onIncidentSelect={selectIncident}
               onViewportChange={setViewport}
             />
           </Suspense>
@@ -583,10 +629,18 @@ export default function App() {
             <i className="fire-high" /> high confidence
             <span className="conflict-legend">CONFLICT</span>
             <i className="conflict-high" /> high / critical
+            <span className="graph-legend">LINK</span>
+            <i className="graph-link" /> measured co-occurrence
           </div>
           {loading && <div className="map-message">Synchronising event stream…</div>}
           {error && <div className="map-message error">{error.message}</div>}
           {selected && <EventDetail item={selected} onClose={() => setSelectedStreamId(null)} />}
+          {selectedIncident && (
+            <IncidentDetail
+              incident={selectedIncident}
+              onClose={() => setSelectedIncidentId(null)}
+            />
+          )}
           {mode === "replay" && (
             <ReplayControls
               current={replayIndex}
@@ -605,16 +659,48 @@ export default function App() {
             />
           )}
         </div>
-        <EventFeed
-          events={feedEvents}
-          selectedStreamId={selectedStreamId}
-          onSelect={setSelectedStreamId}
-        />
+        <div className="intelligence-panel">
+          <div className="panel-tabs" role="tablist" aria-label="Intelligence panel">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={panelMode === "signals"}
+              className={panelMode === "signals" ? "active" : ""}
+              onClick={() => setPanelMode("signals")}
+            >
+              Signals
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={panelMode === "incidents"}
+              className={panelMode === "incidents" ? "active" : ""}
+              onClick={() => setPanelMode("incidents")}
+              disabled={mode === "replay"}
+            >
+              Correlations <span>{visibleIncidents.length}</span>
+            </button>
+          </div>
+          {panelMode === "signals" || mode === "replay" ? (
+            <EventFeed
+              events={feedEvents}
+              selectedStreamId={selectedStreamId}
+              onSelect={selectEvent}
+            />
+          ) : (
+            <IncidentFeed
+              incidents={visibleIncidents}
+              selectedIncidentId={selectedIncidentId}
+              candidateEdgesTruncated={Boolean(incidentQuery.data?.candidate_edges_truncated)}
+              onSelect={selectIncident}
+            />
+          )}
+        </div>
       </section>
 
       <footer>
-        <span>ATLASPULSE / MATERIAL CONFLICT SLICE / v0.5.0</span>
-        <span>Evidence: USGS + NOAA/NWS + NASA FIRMS + GDELT · Map: OpenFreeMap/OSM</span>
+        <span>ATLASPULSE / EVIDENCE GRAPH SLICE / v0.6.0</span>
+        <span>Correlation: PostGIS geography · spatiotemporal-v1 · no causal claim</span>
       </footer>
     </main>
   );

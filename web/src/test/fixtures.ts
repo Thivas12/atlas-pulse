@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "../types";
+import type { EventEnvelope, IncidentCandidate } from "../types";
 
 interface EnvelopeOptions {
   streamId?: string;
@@ -148,5 +148,63 @@ export function makeEnvelope({
           : {}),
       },
     },
+  };
+}
+
+export function makeIncident(
+  incidentId = "incident-test123",
+  overrides: Partial<IncidentCandidate> = {},
+): IncidentCandidate {
+  const fire = makeEnvelope({
+    streamId: "6000-0",
+    eventId: "fire-test",
+    source: "firms",
+    place: "Test City",
+    location: { latitude: 12, longitude: 77, altitude_km: null },
+  });
+  const conflict = makeEnvelope({
+    streamId: "6001-0",
+    eventId: "conflict-test",
+    source: "gdelt",
+    place: "Test City",
+    location: { latitude: 12.05, longitude: 77.05, altitude_km: null },
+  });
+  return {
+    incident_id: incidentId,
+    title: "2-source signal cluster near Test City",
+    started_at: "2026-09-12T10:00:00Z",
+    latest_signal_at: "2026-09-12T10:05:00Z",
+    center: { latitude: 12.025, longitude: 77.025 },
+    sources: ["firms", "gdelt"],
+    node_count: 2,
+    edge_count: 1,
+    max_distance_km: 7.75,
+    time_span_minutes: 5,
+    nodes: [
+      { node_id: "firms:fire-test", stream_id: fire.stream_id, event: fire.event },
+      {
+        node_id: "gdelt:conflict-test",
+        stream_id: conflict.stream_id,
+        event: conflict.event,
+      },
+    ],
+    edges: [
+      {
+        edge_id: "edge-test123",
+        from_node_id: "firms:fire-test",
+        to_node_id: "gdelt:conflict-test",
+        relation: "spatiotemporal_cooccurrence",
+        spatial_relation: "within_radius",
+        distance_km: 7.75,
+        time_delta_minutes: 5,
+        from_geometry_basis: "point",
+        to_geometry_basis: "point",
+        rule_version: "spatiotemporal-v1",
+      },
+    ],
+    rule_version: "spatiotemporal-v1",
+    caveat:
+      "Edges prove bounded spatial and temporal co-occurrence only; they do not establish causation, corroboration, or a shared real-world incident.",
+    ...overrides,
   };
 }

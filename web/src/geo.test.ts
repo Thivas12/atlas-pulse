@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { eventsToGeoJson, weatherPolygonsToGeoJson } from "./geo";
-import { makeEnvelope } from "./test/fixtures";
+import { eventsToGeoJson, incidentEdgesToGeoJson, weatherPolygonsToGeoJson } from "./geo";
+import { makeEnvelope, makeIncident } from "./test/fixtures";
 
 describe("eventsToGeoJson", () => {
   it("maps located events into longitude-first GeoJSON", () => {
@@ -105,5 +105,60 @@ describe("eventsToGeoJson", () => {
     const areaOnly = makeEnvelope({ source: "nws", geometry: null, location: null });
     const malformed = makeEnvelope({ source: "nws", geometry: { type: "Polygon" } });
     expect(weatherPolygonsToGeoJson([areaOnly, malformed]).features).toEqual([]);
+  });
+
+  it("maps evidence-graph edges between source focus points", () => {
+    const collection = incidentEdgesToGeoJson([makeIncident()]);
+
+    expect(collection.features[0]).toMatchObject({
+      id: "edge-test123",
+      geometry: {
+        type: "LineString",
+        coordinates: [
+          [77, 12],
+          [77.05, 12.05],
+        ],
+      },
+      properties: {
+        incidentId: "incident-test123",
+        distanceKm: 7.75,
+        timeDeltaMinutes: 5,
+        spatialRelation: "within_radius",
+      },
+    });
+  });
+
+  it("omits graph edges whose source focus point is unavailable", () => {
+    const incident = makeIncident();
+    incident.nodes[0].event.location = null;
+    expect(incidentEdgesToGeoJson([incident]).features).toEqual([]);
+  });
+
+  it("splits evidence lines at the antimeridian instead of drawing across the world", () => {
+    const incident = makeIncident();
+    incident.nodes[0].event.location = {
+      latitude: 10,
+      longitude: 179,
+      altitude_km: null,
+    };
+    incident.nodes[1].event.location = {
+      latitude: 12,
+      longitude: -179,
+      altitude_km: null,
+    };
+
+    expect(incidentEdgesToGeoJson([incident]).features[0]?.geometry).toEqual({
+      type: "MultiLineString",
+      coordinates: [
+        [
+          [179, 10],
+          [180, 11],
+        ],
+        [
+          [-180, 11],
+          [-179, 12],
+        ],
+      ],
+    });
   });
 });

@@ -1,13 +1,14 @@
 """USGS earthquake GeoJSON source adapter."""
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Self
 
 import httpx
 from agent_rag_core import Event, GeoPoint
 from pydantic import BaseModel, Field, HttpUrl, model_validator
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+from atlas_pulse.sources.base import NormalizedBatch
+from atlas_pulse.sources.http import RetryingHttpClient
 
 
 class USGSProperties(BaseModel):
@@ -114,22 +115,11 @@ class USGSFeed(BaseModel):
         return tuple(feature.to_event(ingested_at=ingested_at) for feature in self.features)
 
 
-@dataclass(frozen=True, slots=True)
-class FetchedDocument:
-    """Unmodified source bytes and transport metadata."""
-
-    raw: bytes
-    fetched_at: datetime
-    source_url: str
-    content_type: str | None
-
-
-class RetryableSourceError(RuntimeError):
-    """A transient source failure that may succeed on another attempt."""
-
-
-class USGSClient:
+class USGSClient(RetryingHttpClient):
     """Bounded, retrying asynchronous client for the public USGS feed."""
+
+    source_name = "usgs"
+    snapshot_extension = "geojson"
 
     def __init__(
         self,
@@ -137,47 +127,23 @@ class USGSClient:
         feed_url: str,
         timeout_seconds: float,
         max_attempts: int,
+        user_agent: str = "AtlasPulse/0.2 (+https://github.com/Thivas12/atlas-pulse)",
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._feed_url = feed_url
-        self._max_attempts = max_attempts
-        self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_seconds),
-            headers={"User-Agent": "AtlasPulse/0.1 (+https://github.com/Thivas12/atlas-pulse)"},
+        super().__init__(
+            source_name=self.source_name,
+            url=feed_url,
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+            user_agent=user_agent,
+            accept="application/geo+json",
+            client=client,
         )
 
-    async def fetch(self) -> FetchedDocument:
-        """Fetch the feed, retrying only transport, rate-limit, and server failures."""
-        retrying = AsyncRetrying(
-            stop=stop_after_attempt(self._max_attempts),
-            wait=wait_exponential(multiplier=0.25, min=0.25, max=2),
-            retry=retry_if_exception_type((httpx.TransportError, RetryableSourceError)),
-            reraise=True,
+    def normalize(self, raw: bytes, *, ingested_at: datetime) -> NormalizedBatch:
+        """Validate and normalize a complete USGS feed."""
+        feed = USGSFeed.from_bytes(raw)
+        return NormalizedBatch(
+            generated_at=datetime.fromtimestamp(feed.metadata.generated / 1000, tz=UTC),
+            events=feed.to_events(ingested_at=ingested_at),
         )
-        async for attempt in retrying:
-            with attempt:
-                response = await self._client.get(self._feed_url)
-                if response.status_code == 429 or response.status_code >= 500:
-                    raise RetryableSourceError(
-                        f"USGS returned retryable HTTP {response.status_code}"
-                    )
-                response.raise_for_status()
-                return FetchedDocument(
-                    raw=response.content,
-                    fetched_at=datetime.now(UTC),
-                    source_url=str(response.url),
-                    content_type=response.headers.get("content-type"),
-                )
-        raise AssertionError("retry loop completed without a response")  # pragma: no cover
-
-    async def close(self) -> None:
-        """Close only clients created by this adapter."""
-        if self._owns_client:
-            await self._client.aclose()
-
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(self, *_exc: object) -> None:
-        await self.close()

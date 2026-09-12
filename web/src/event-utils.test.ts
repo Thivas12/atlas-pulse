@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  alertTypeOf,
   formatTimestamp,
+  isActiveAt,
+  isWeatherAlert,
   magnitudeOf,
   newestUpdate,
   placeOf,
   relativeAge,
+  severityOf,
+  severityRankOf,
   strongestMagnitude,
+  titleOf,
 } from "./event-utils";
 import { makeEnvelope } from "./test/fixtures";
 
@@ -50,5 +56,41 @@ describe("event utilities", () => {
 
   it("formats timestamps explicitly in UTC", () => {
     expect(formatTimestamp("2026-09-12T10:02:03Z")).toContain("10:02:03");
+  });
+
+  it("reads weather classification and active-window fields safely", () => {
+    const weather = makeEnvelope({
+      source: "nws",
+      alertType: "Tornado Warning",
+      severity: "Extreme",
+      expiresAt: "2026-09-12T13:00:00Z",
+    });
+    expect(isWeatherAlert(weather.event)).toBe(true);
+    expect(alertTypeOf(weather.event)).toBe("Tornado Warning");
+    expect(titleOf(weather.event)).toBe("Tornado Warning");
+    expect(severityOf(weather.event)).toBe("Extreme");
+    expect(severityRankOf(weather.event)).toBe(4);
+    expect(isActiveAt(weather.event, new Date("2026-09-12T12:00:00Z"))).toBe(true);
+    expect(isActiveAt(weather.event, new Date("2026-09-12T14:00:00Z"))).toBe(false);
+  });
+
+  it("falls back safely for incomplete source payloads", () => {
+    const quake = makeEnvelope();
+    expect(isWeatherAlert(quake.event)).toBe(false);
+    expect(alertTypeOf(quake.event)).toBeNull();
+    expect(titleOf(quake.event)).toBe("Test Ridge");
+    expect(severityOf(quake.event)).toBeNull();
+    expect(severityRankOf(quake.event)).toBe(0);
+    expect(isActiveAt(quake.event)).toBe(true);
+
+    const weather = makeEnvelope({ source: "nws" });
+    weather.event.payload.alert_type = "";
+    weather.event.payload.severity = "Impossible";
+    weather.event.payload.expires_at = "not-a-date";
+    expect(alertTypeOf(weather.event)).toBeNull();
+    expect(severityOf(weather.event)).toBeNull();
+    expect(isActiveAt(weather.event)).toBe(true);
+    delete weather.event.payload.expires_at;
+    expect(isActiveAt(weather.event)).toBe(true);
   });
 });

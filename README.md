@@ -7,33 +7,34 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — live and replayable seismic command center.** The worker polls the
-> official USGS feed every 60 seconds, preserves the unmodified response, validates and
-> normalizes it, and atomically publishes new revisions to Valkey Streams. A responsive
-> MapLibre dashboard visualizes the live world state and can replay retained history in stable,
-> oldest-first cursor order.
+> **Current milestone — live, replayable multi-source disruption command center.** Independent
+> workers poll official USGS earthquakes every 60 seconds and NOAA/NWS actual alerts every 120
+> seconds. Every unmodified response is preserved, strictly validated, normalized, and
+> atomically published to Valkey Streams. The MapLibre dashboard combines clustered earthquakes,
+> NWS alert polygons, geometry-less area alerts, source filters, and deterministic replay.
 
 ## Why this is portfolio-grade
 
 | Capability | Concrete proof in this repository |
 | --- | --- |
-| Real public data | Live USGS GeoJSON feed, updated every minute |
+| Real public data | Independent live USGS earthquake and NOAA/NWS severe-weather feeds |
 | Auditability | SHA-256 content-addressed raw snapshots are written before parsing |
 | Reliable delivery | Bounded HTTP retry plus revision-aware atomic Lua deduplication |
 | Shared contracts | Immutable `Event` and `GeoPoint` models pinned to `agent-rag-core` commit `7732801` |
 | Deterministic replay | Exclusive Valkey Stream cursors page retained history oldest-first without boundary duplicates |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
-| Decision UI | Live/replay modes, clustered map, source freshness, revision counts, evidence links |
-| Engineering quality | Strict mypy and TypeScript, locked dependencies, 33 backend and 17 web tests, enforced coverage, real-Valkey CI |
+| Decision UI | Mixed-geometry map, source filters, severity metrics, live expiry, replay, evidence links |
+| Engineering quality | Strict mypy/TypeScript, locked dependencies, enforced branch coverage, real-Valkey CI |
 | Supply-chain hygiene | Read-only workflow permissions, commit-pinned Actions, weekly dependency updates |
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    USGS["USGS live GeoJSON"] --> Fetch["Retrying source adapter"]
-    Fetch --> Raw["Immutable raw snapshots"]
-    Fetch --> Validate["Pydantic source validation"]
+    USGS["USGS earthquakes"] --> Adapters["Independent source adapters"]
+    NWS["NWS active alerts"] --> Adapters
+    Adapters --> Raw["Immutable raw snapshots"]
+    Adapters --> Validate["Strict source validation"]
     Validate --> Contract["Shared Event contract"]
     Contract --> Stream["Valkey Streams + atomic dedupe"]
     Stream --> API["FastAPI read API"]
@@ -41,8 +42,9 @@ flowchart TD
     Stream --> Agents["RAG and agent consumers — next milestones"]
 ```
 
-The source is at-least-once. Identical semantic content is idempotent for the configured
-seven-day dedupe window, while a USGS correction remains a new immutable revision. AtlasPulse
+Each source is at-least-once and failure-isolated: a slow or unavailable NWS request cannot stop
+USGS polling, and vice versa. Identical semantic content is idempotent for the configured
+seven-day dedupe window, while a source correction remains a new immutable revision. AtlasPulse
 deliberately does not claim impossible end-to-end "exactly once" semantics.
 
 ## Run the full slice
@@ -66,11 +68,12 @@ curl -s 'http://localhost:8000/v1/events?limit=5'
 curl -s 'http://localhost:8000/v1/events/replay?limit=5'
 ```
 
-Switch between **Live** and **Replay** in the dashboard. Replay starts at the oldest retained
-stream entry; its play control, position slider, and 1×/2×/4× speeds operate on cursor-paged
-history. Interactive OpenAPI documentation is at <http://localhost:8000/docs>. Stop the stack
-with `docker compose down`. Add `--volumes` only when you intentionally want to delete local
-stream data and raw snapshots.
+Switch between **Live** and **Replay**, then filter **All**, **Earthquakes**, or **Weather**.
+Live mode omits expired weather alerts while replay intentionally preserves them. Replay starts
+at the oldest retained stream entry; its controls operate on cursor-paged history. Interactive
+OpenAPI documentation is at <http://localhost:8000/docs>. Stop the stack with
+`docker compose down`. Add `--volumes` only when you intentionally want to delete local stream
+data and raw snapshots.
 
 ## Develop without rebuilding containers
 
@@ -129,8 +132,11 @@ ATLAS_TEST_VALKEY_URL=valkey://localhost:6379/0 uv run pytest -m integration
 | `GET` | `/v1/events/replay?limit=100&after=<stream-id>` | Oldest-first page strictly after an optional cursor |
 
 Every event contains a stable source ID, an aware occurrence time, ingestion time, semantic
-type, WGS84 location, source name, schema version, and JSON-safe payload. USGS depth is kept
-as positive-down `payload.depth_km`; the shared geographic altitude is its negative value.
+type, optional WGS84 focus point, source name, schema version, and JSON-safe payload. USGS depth
+is kept as positive-down `payload.depth_km`; the shared geographic altitude is its negative
+value. NWS `Polygon`/`MultiPolygon` geometry is preserved in `payload.geometry`; a deterministic
+bounding-box center is only a map focus. Official alerts whose geometry is `null` remain in the
+feed with UGC/SAME codes and are reported as area-only rather than silently discarded.
 Replay requests read one extra entry to compute `has_more`, return at most 500 items, and expose
 the final visible stream ID as `next_cursor`. Stream retention is bounded, so replay is
 deterministic for retained entries rather than an indefinite event archive.
@@ -139,17 +145,23 @@ deterministic for retained entries rather than an indefinite event archive.
 
 - HTTP transport errors, `429`, and `5xx` responses retry with bounded exponential backoff.
 - Permanent `4xx` responses fail immediately.
+- USGS and NWS poll on separate async tasks, so one source's failure does not block the other.
 - Valid HTTP bodies are snapshotted before schema parsing, so upstream schema drift remains
   inspectable.
 - A canonical content fingerprint ignores poll time but preserves source revisions; a Lua
   transaction makes its lookup, stream append, and registration atomic.
 - `MAXLEN ~ 100000` bounds local stream growth; original snapshots remain independently
   retained.
+- Snapshots are content-addressed, so byte-identical polls consume no additional space. Raw
+  retention is currently operator-managed; NWS defaults to a two-minute poll because its active
+  collection is materially larger than the USGS hourly feed.
 - Readiness fails closed when the stream is unavailable; liveness remains available.
 
 See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision,
 [ADR 0002](docs/adr/0002-snapshot-before-validation.md) for the evidence boundary, and
-[ADR 0003](docs/adr/0003-cursor-based-replay.md) for replay semantics. A reproducible
+[ADR 0003](docs/adr/0003-cursor-based-replay.md) for replay semantics, and
+[ADR 0004](docs/adr/0004-multi-source-weather-geometry.md) for source isolation and NWS geometry.
+A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
 ## Free stack
@@ -159,6 +171,7 @@ No part of this milestone needs a paid model, paid dataset, or API key.
 | Layer | Tool/data | Cost for this project |
 | --- | --- | --- |
 | Live source | [USGS Earthquake GeoJSON feeds](https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php) | Public, no key |
+| Live source | [NOAA/NWS API](https://www.weather.gov/documentation/services-web-api) | Public, no key; identifying User-Agent required |
 | API/contracts | Python, FastAPI, Pydantic | Open source |
 | Event stream | Valkey + `valkey-py` | Open source |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
@@ -171,8 +184,7 @@ No part of this milestone needs a paid model, paid dataset, or API key.
 
 ## Next milestones
 
-1. NWS alerts, NASA FIRMS wildfire data, and GDELT news signals with a common provenance
-   envelope.
+1. NASA FIRMS wildfire data and GDELT news signals using the same source-adapter contract.
 2. Hybrid sparse/dense/geospatial retrieval, reranking, temporal filtering, and citation
    verification.
 3. A hierarchy of specialist agents for signal fusion, contradiction detection, impact
@@ -184,7 +196,11 @@ No part of this milestone needs a paid model, paid dataset, or API key.
 
 Earthquake data comes from the
 [U.S. Geological Survey](https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php).
-Read the USGS feed documentation and policies before operating a public mirror. Frozen test
-fixtures are synthetic source-shaped records, not claims about real events.
+Weather alerts come from the [NOAA/National Weather Service API](https://www.weather.gov/documentation/services-web-api),
+using `status=actual` so exercises and tests are excluded while Alert and Update message types
+remain visible. NWS requires an identifiable User-Agent; configure
+`ATLAS_SOURCE_USER_AGENT` with a public project or contact URL before deployment. Follow both
+providers' policies before operating a public mirror. Frozen fixtures are synthetic
+source-shaped records, not claims about real events.
 
 Licensed under the [MIT License](LICENSE).

@@ -6,14 +6,17 @@ import {
   NavigationControl,
 } from "maplibre-gl";
 import { useEffect, useRef } from "react";
-import { eventsToGeoJson } from "../geo";
+import { eventsToGeoJson, weatherPolygonsToGeoJson } from "../geo";
 import type { EventEnvelope } from "../types";
 
-const SOURCE_ID = "seismic-events";
+const SOURCE_ID = "point-events";
+const WEATHER_SOURCE_ID = "weather-polygons";
 const CLUSTER_LAYER = "seismic-clusters";
 const CLUSTER_COUNT_LAYER = "seismic-cluster-count";
 const GLOW_LAYER = "seismic-glow";
 const EVENT_LAYER = "seismic-points";
+const WEATHER_FILL_LAYER = "weather-alert-fills";
+const WEATHER_OUTLINE_LAYER = "weather-alert-outlines";
 
 interface EventMapProps {
   events: EventEnvelope[];
@@ -43,7 +46,7 @@ export function EventMap({ events, selectedStreamId, onSelect }: EventMapProps) 
     mapRef.current = map;
     map.addControl(new NavigationControl({ showCompass: false }), "bottom-left");
     map.addControl(
-      new AttributionControl({ compact: true, customAttribution: "USGS · OpenFreeMap" }),
+      new AttributionControl({ compact: true, customAttribution: "USGS · NOAA/NWS · OpenFreeMap" }),
       "bottom-right",
     );
 
@@ -54,6 +57,53 @@ export function EventMap({ events, selectedStreamId, onSelect }: EventMapProps) 
         cluster: true,
         clusterMaxZoom: 7,
         clusterRadius: 44,
+      });
+      map.addSource(WEATHER_SOURCE_ID, {
+        type: "geojson",
+        data: weatherPolygonsToGeoJson(latestEventsRef.current),
+      });
+      map.addLayer({
+        id: WEATHER_FILL_LAYER,
+        type: "fill",
+        source: WEATHER_SOURCE_ID,
+        paint: {
+          "fill-color": [
+            "match",
+            ["get", "severity"],
+            "Extreme",
+            "#ff4264",
+            "Severe",
+            "#ff7a59",
+            "Moderate",
+            "#f2c14e",
+            "Minor",
+            "#61aef2",
+            "#7790a1",
+          ],
+          "fill-opacity": 0.3,
+        },
+      });
+      map.addLayer({
+        id: WEATHER_OUTLINE_LAYER,
+        type: "line",
+        source: WEATHER_SOURCE_ID,
+        paint: {
+          "line-color": [
+            "match",
+            ["get", "severity"],
+            "Extreme",
+            "#ff4264",
+            "Severe",
+            "#ff7a59",
+            "Moderate",
+            "#f2c14e",
+            "Minor",
+            "#61aef2",
+            "#7790a1",
+          ],
+          "line-opacity": 0.9,
+          "line-width": ["interpolate", ["linear"], ["get", "severityRank"], 0, 1, 4, 2.5],
+        },
       });
       map.addLayer({
         id: CLUSTER_LAYER,
@@ -143,6 +193,10 @@ export function EventMap({ events, selectedStreamId, onSelect }: EventMapProps) 
       const streamId = event.features?.[0]?.properties?.streamId;
       if (typeof streamId === "string") onSelectRef.current(streamId);
     });
+    map.on("click", WEATHER_FILL_LAYER, (event: MapLayerMouseEvent) => {
+      const streamId = event.features?.[0]?.properties?.streamId;
+      if (typeof streamId === "string") onSelectRef.current(streamId);
+    });
     map.on("click", CLUSTER_LAYER, async (event: MapLayerMouseEvent) => {
       const feature = event.features?.[0];
       const clusterId = feature?.properties?.cluster_id;
@@ -152,7 +206,7 @@ export function EventMap({ events, selectedStreamId, onSelect }: EventMapProps) 
       const [longitude, latitude] = feature.geometry.coordinates;
       map.easeTo({ center: [longitude, latitude], zoom });
     });
-    for (const layer of [EVENT_LAYER, CLUSTER_LAYER]) {
+    for (const layer of [EVENT_LAYER, CLUSTER_LAYER, WEATHER_FILL_LAYER]) {
       map.on("mouseenter", layer, () => {
         map.getCanvas().style.cursor = "pointer";
       });
@@ -172,6 +226,8 @@ export function EventMap({ events, selectedStreamId, onSelect }: EventMapProps) 
     if (!map?.isStyleLoaded()) return;
     const source = map.getSource(SOURCE_ID) as GeoJSONSource | undefined;
     source?.setData(eventsToGeoJson(events));
+    const weatherSource = map.getSource(WEATHER_SOURCE_ID) as GeoJSONSource | undefined;
+    weatherSource?.setData(weatherPolygonsToGeoJson(events));
   }, [events]);
 
   useEffect(() => {
@@ -185,5 +241,5 @@ export function EventMap({ events, selectedStreamId, onSelect }: EventMapProps) 
     });
   }, [events, selectedStreamId]);
 
-  return <section className="event-map" ref={containerRef} aria-label="Live earthquake map" />;
+  return <section className="event-map" ref={containerRef} aria-label="Live disruption map" />;
 }

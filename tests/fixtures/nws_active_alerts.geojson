@@ -1,0 +1,82 @@
+{
+  "@context": {"@version": "1.1"},
+  "type": "FeatureCollection",
+  "title": "Current watches, warnings, and advisories for the United States",
+  "updated": "2024-07-10T12:05:00+00:00",
+  "features": [
+    {
+      "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.test001",
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-98.0, 34.0], [-96.0, 34.0], [-96.0, 36.0], [-98.0, 36.0], [-98.0, 34.0]]]
+      },
+      "properties": {
+        "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.test001",
+        "@type": "wx:Alert",
+        "id": "urn:oid:2.49.0.1.840.0.test001",
+        "areaDesc": "Test County, Oklahoma",
+        "geocode": {"SAME": ["040001"], "UGC": ["OKC001"]},
+        "affectedZones": ["https://api.weather.gov/zones/county/OKC001"],
+        "references": [],
+        "sent": "2024-07-10T12:04:00+00:00",
+        "effective": "2024-07-10T12:04:00+00:00",
+        "onset": "2024-07-10T12:00:00+00:00",
+        "expires": "2024-07-10T13:00:00+00:00",
+        "ends": "2024-07-10T12:45:00+00:00",
+        "status": "Actual",
+        "messageType": "Update",
+        "category": "Met",
+        "severity": "Severe",
+        "certainty": "Observed",
+        "urgency": "Immediate",
+        "event": "Severe Thunderstorm Warning",
+        "sender": "w-nws.webmaster@noaa.gov",
+        "senderName": "NWS Norman OK",
+        "headline": "Severe Thunderstorm Warning issued July 10 at 12:04PM UTC",
+        "description": "A synthetic severe thunderstorm warning used only for tests.",
+        "instruction": "Move to an interior room.",
+        "response": "Shelter",
+        "parameters": {"AWIPSidentifier": ["SVROUN"]},
+        "eventCode": {"SAME": ["SVR"], "NationalWeatherService": ["SVW"]},
+        "scope": "Public",
+        "code": "IPAWSv1.0",
+        "language": "en-US"
+      }
+    },
+    {
+      "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.test002",
+      "type": "Feature",
+      "geometry": null,
+      "properties": {
+        "id": "urn:oid:2.49.0.1.840.0.test002",
+        "areaDesc": "Coastal Waters",
+        "geocode": {"UGC": ["AMZ001"]},
+        "affectedZones": ["https://api.weather.gov/zones/forecast/AMZ001"],
+        "sent": "2024-07-10T11:55:00+00:00",
+        "effective": "2024-07-10T12:10:00+00:00",
+        "onset": null,
+        "expires": "2024-07-10T18:00:00+00:00",
+        "ends": null,
+        "status": "Actual",
+        "messageType": "Alert",
+        "category": "Met",
+        "severity": "Moderate",
+        "certainty": "Likely",
+        "urgency": "Expected",
+        "event": "Small Craft Advisory",
+        "sender": "w-nws.webmaster@noaa.gov",
+        "senderName": "NWS Ocean Prediction Center",
+        "headline": null,
+        "description": "Synthetic marine conditions used only for tests.",
+        "instruction": null,
+        "response": "Avoid",
+        "parameters": {},
+        "eventCode": {},
+        "scope": "Public",
+        "code": "IPAWSv1.0",
+        "language": "en-US"
+      }
+    }
+  ]
+}

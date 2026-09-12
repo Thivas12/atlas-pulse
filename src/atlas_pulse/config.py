@@ -23,6 +23,12 @@ class Settings(BaseSettings):
         "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson"
     )
     usgs_poll_seconds: float = Field(default=60.0, gt=0)
+    nws_alerts_url: HttpUrl = HttpUrl("https://api.weather.gov/alerts/active?status=actual")
+    nws_poll_seconds: float = Field(default=120.0, gt=0)
+    source_user_agent: str = Field(
+        default="AtlasPulse/0.2 (+https://github.com/Thivas12/atlas-pulse)",
+        min_length=10,
+    )
     source_timeout_seconds: float = Field(default=15.0, gt=0)
     source_max_attempts: int = Field(default=3, ge=1, le=10)
     raw_data_dir: Path = Path("data/raw")

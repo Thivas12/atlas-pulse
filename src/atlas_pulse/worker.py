@@ -1,4 +1,4 @@
-"""Long-running USGS ingestion worker process."""
+"""Long-running, independently scheduled multi-source ingestion worker."""
 
 import asyncio
 import signal
@@ -9,11 +9,30 @@ import structlog
 from atlas_pulse.config import get_settings
 from atlas_pulse.ingestion import IngestionService, RawSnapshotStore
 from atlas_pulse.logging import configure_logging
-from atlas_pulse.sources import USGSClient
+from atlas_pulse.sources import NWSClient, SourceAdapter, USGSClient
 from atlas_pulse.streams import ValkeyEventBus
 from atlas_pulse.telemetry import configure_telemetry
 
 logger = structlog.get_logger(__name__)
+
+
+async def poll_source(
+    *,
+    source: SourceAdapter,
+    service: IngestionService,
+    interval_seconds: float,
+    stop: asyncio.Event,
+) -> None:
+    """Poll one source without allowing its failures to stop another source."""
+    while not stop.is_set():
+        try:
+            await service.ingest_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await logger.aexception("ingestion_cycle_failed", source=source.source_name)
+        with suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=interval_seconds)
 
 
 async def run() -> None:
@@ -32,27 +51,44 @@ async def run() -> None:
         max_length=settings.stream_max_length,
         dedupe_ttl_seconds=settings.dedupe_ttl_seconds,
     )
-    source = USGSClient(
+    usgs = USGSClient(
         feed_url=str(settings.usgs_feed_url),
         timeout_seconds=settings.source_timeout_seconds,
         max_attempts=settings.source_max_attempts,
+        user_agent=settings.source_user_agent,
     )
-    service = IngestionService(
-        source=source,
-        snapshots=RawSnapshotStore(settings.raw_data_dir),
-        event_bus=event_bus,
+    nws = NWSClient(
+        alerts_url=str(settings.nws_alerts_url),
+        timeout_seconds=settings.source_timeout_seconds,
+        max_attempts=settings.source_max_attempts,
+        user_agent=settings.source_user_agent,
     )
+    snapshots = RawSnapshotStore(settings.raw_data_dir)
+    sources = ((usgs, settings.usgs_poll_seconds), (nws, settings.nws_poll_seconds))
+    tasks = [
+        asyncio.create_task(
+            poll_source(
+                source=source,
+                service=IngestionService(
+                    source=source,
+                    snapshots=snapshots,
+                    event_bus=event_bus,
+                ),
+                interval_seconds=interval,
+                stop=stop,
+            ),
+            name=f"{source.source_name}-poller",
+        )
+        for source, interval in sources
+    ]
 
     try:
-        while not stop.is_set():
-            try:
-                await service.ingest_once()
-            except Exception:
-                await logger.aexception("ingestion_cycle_failed", source="usgs")
-            with suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), timeout=settings.usgs_poll_seconds)
+        await stop.wait()
     finally:
-        await source.close()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*(source.close() for source, _interval in sources))
         await event_bus.close()
 
 

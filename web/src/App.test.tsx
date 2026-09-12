@@ -74,4 +74,54 @@ describe("AtlasPulse dashboard", () => {
     expect(screen.getByTestId("event-map")).toHaveTextContent("Mapped in test: 1");
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/events/replay?limit=500", expect.any(Object));
   });
+
+  it("filters sources and presents weather evidence without earthquake-only labels", async () => {
+    const user = userEvent.setup();
+    const geometry = {
+      type: "Polygon" as const,
+      coordinates: [
+        [
+          [-98, 34],
+          [-96, 34],
+          [-96, 36],
+          [-98, 34],
+        ],
+      ],
+    };
+    const liveItems = [
+      makeEnvelope({ streamId: "3000-0", place: "Quake Ridge" }),
+      makeEnvelope({
+        streamId: "3001-0",
+        eventId: "urn:weather:test",
+        source: "nws",
+        alertType: "Tornado Warning",
+        severity: "Severe",
+        place: "Test County",
+        geometry,
+      }),
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ count: 2, items: liveItems })),
+    );
+
+    renderApp(<App />);
+
+    expect(await screen.findByText("Tornado Warning")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Earthquakes" }));
+    expect(screen.queryByText("Tornado Warning")).not.toBeInTheDocument();
+    expect(screen.getByTestId("event-map")).toHaveTextContent("Mapped in test: 1");
+
+    await user.click(screen.getByRole("button", { name: "Weather" }));
+    await user.click(screen.getByRole("button", { name: /Tornado Warning/ }));
+
+    const detail = screen.getByRole("complementary", { name: "Selected signal details" });
+    expect(within(detail).getByText("Severe")).toBeInTheDocument();
+    expect(within(detail).getByText("Source polygon")).toBeInTheDocument();
+    expect(within(detail).getByText("Recommended action")).toBeInTheDocument();
+    expect(within(detail).getByRole("link", { name: /Open NWS evidence/ })).toBeInTheDocument();
+
+    await user.click(within(detail).getByRole("button", { name: "Close details" }));
+    expect(screen.queryByRole("complementary", { name: "Selected signal details" })).toBeNull();
+  });
 });

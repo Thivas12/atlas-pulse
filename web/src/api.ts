@@ -2,6 +2,8 @@ import type { ZodType } from "zod";
 import {
   type EventsResponse,
   eventsResponseSchema,
+  type IncidentsResponse,
+  incidentsResponseSchema,
   type ReplayResponse,
   replayResponseSchema,
   type SignalsResponse,
@@ -52,4 +54,16 @@ export function fetchCurrentSignals(
   }
   if (query.includeAreaOnly) search.set("include_area_only", "true");
   return fetchValidated(`/api/v1/signals?${search}`, signalsResponseSchema, signal);
+}
+
+export function fetchIncidentCandidates(
+  bounds?: ViewportBounds,
+  signal?: AbortSignal,
+): Promise<IncidentsResponse> {
+  const search = new URLSearchParams({ limit: "100" });
+  if (bounds) {
+    const { west, south, east, north } = bounds;
+    search.set("bbox", [west, south, east, north].join(","));
+  }
+  return fetchValidated(`/api/v1/incidents?${search}`, incidentsResponseSchema, signal);
 }

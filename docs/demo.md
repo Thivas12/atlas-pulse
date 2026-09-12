@@ -3,39 +3,50 @@
 Start from a populated local stack with `docker compose up -d --build` and open
 <http://localhost:3000>.
 
-## 0–25 seconds: prove four-source durable state and spatial loading
+## 0–18 seconds: prove live public evidence and indexed spatial state
 
 Point out separate USGS/NWS/FIRMS/GDELT freshness, earthquake points, severity-colored NWS
-polygons, confidence-colored NASA FIRMS points, and priority-colored GDELT conflict observations.
-Switch among **All**, **Earthquakes**, **Weather**, **Fires**, and **Conflict**. Select a GDELT
-signal and show detection time, reported event date, CAMEO classification, actors, Goldstein
-scale, media-coverage counts, geography precision, operational expiry, stable provider ID, replay
-ID, and first-report evidence link. State the exact boundary shown by the UI: it is a machine-coded
-media observation, not an independently verified incident. Select a FIRMS signal and show
-acquisition time, confidence, satellite product,
-radiative power, brightness, deterministic event ID, replay ID, and direct NASA evidence. State
-the honest boundary shown by the UI: it is a thermal anomaly, not a confirmed wildfire perimeter.
-Select a weather signal and show its CAP
-severity, urgency, certainty, expiry, geometry status, issuing office, stable event ID, replay ID,
-and direct NWS evidence link. Point out an area-code-only record if one is active: it stays in the
-feed without fabricated coordinates. Pan or zoom the map and show the viewport request in the
-browser network panel: live state is filtered by indexed PostGIS geometry rather than downloading
-the full revision stream.
+polygons, confidence-colored NASA FIRMS points, and priority-colored GDELT observations. Switch
+among **Earthquakes**, **Weather**, **Fires**, and **Conflict**. Pan the map and show that the
+browser requests an indexed PostGIS viewport rather than downloading the full revision stream.
+Open one signal and follow its public evidence link. State its source-specific uncertainty: an NWS
+alert is authoritative but can change, a FIRMS pixel is a thermal anomaly rather than a confirmed
+wildfire perimeter, and GDELT is a machine-coded media observation rather than verified ground
+truth.
 
 ```bash
 curl -fsS 'http://localhost:8000/v1/signals?source=nws&min_severity=3&bbox=-125,24,-66,50' \
   | jq '{count, next_cursor, has_more, order}'
-curl -fsS 'http://localhost:8000/v1/signals?source=gdelt&min_severity=3' \
-  | jq '{count, next_cursor, has_more, order}'
 ```
 
-## 25–42 seconds: prove the history is deterministic
+## 18–35 seconds: prove explainable cross-source correlation
 
-Select **Replay**. Explain that the API reads Valkey Streams oldest-first and that each next page
-starts strictly after its cursor. Move the slider, press play, and change from 1× to 4×. The map
-and feed now represent exactly the visible replay prefix.
+Select **Correlations**. Choose a cluster and trace its dashed map links. In the detail panel show
+the participating source nodes, direct evidence URLs, measured kilometres, time deltas, point or
+polygon basis, stable candidate ID, and `spatiotemporal-v1` rule. Read the visible boundary:
+co-occurrence does not establish causation, corroboration, or one shared incident.
 
-In a terminal, make the contract observable:
+The live distribution of public events is unpredictable. If the current viewport has no cluster,
+demonstrate the bounded API over a wider investigation window and then narrow it if the truncation
+flag is true:
+
+```bash
+curl -fsS --get 'http://localhost:8000/v1/incidents' \
+  --data-urlencode 'radius_km=500' \
+  --data-urlencode 'time_window_minutes=1440' \
+  --data-urlencode 'lookback_hours=168' \
+  --data-urlencode 'active_only=false' \
+  --data-urlencode 'limit=3' \
+  | jq '{count, total_incidents, incidents_truncated, candidate_edges_truncated,
+         rule_version, parameters,
+         first: (.items[0] | {incident_id, sources, node_count, edge_count,
+                              max_distance_km, caveat})}'
+```
+
+## 35–46 seconds: prove deterministic replay
+
+Select **Replay**. Explain that Valkey Streams are read oldest-first and that each page starts
+strictly after its cursor. Move the slider, press play, and change from 1× to 4×.
 
 ```bash
 page="$(curl -fsS 'http://localhost:8000/v1/events/replay?limit=2')"
@@ -46,26 +57,22 @@ curl -fsS --get 'http://localhost:8000/v1/events/replay' \
   --data-urlencode "after=$cursor" | jq '{count, next_cursor, order}'
 ```
 
-## 42–54 seconds: prove revisions, checkpoint, evidence, and secrets survive
+## 46–55 seconds: prove recovery and auditability
 
-Explain that repeated identical polls are atomically deduplicated, while an upstream correction
-becomes a new immutable revision. Raw HTTP bodies are stored by SHA-256 before parsing, so a bad
-or changed source response remains inspectable. The projector commits the revision, current
-pointer, and checkpoint together; restarting it safely resumes after that checkpoint. The free
-FIRMS key is only available to the ingestor and is redacted from spans and public evidence URLs.
+Explain that identical polls are atomically deduplicated while a source correction becomes a new
+immutable revision. Raw HTTP bodies are stored by SHA-256 before parsing. The projector commits
+each revision, current pointer, and checkpoint together, so a restart safely resumes. The free
+FIRMS key exists only in the ingestor and is redacted from public evidence and telemetry.
 
 ```bash
 docker compose exec ingestor sh -lc 'find /app/data/raw -type f | sort | head -n 6'
-docker compose logs --tail=20 ingestor
-docker compose logs --tail=20 projector
 docker compose exec postgres psql -U atlas -d atlas -c \
   'select projection_name,last_stream_id,updated_at from projection_checkpoints;'
 ```
 
-## 54–60 seconds: close on engineering quality
+## 55–60 seconds: close on engineering quality
 
-Show the three CI jobs: strict Python/Ruff/mypy/real-Valkey-and-PostGIS coverage,
-TypeScript/Biome/Vitest/production build, and container/edge smoke test. State the boundary
-honestly: this milestone performs multi-source transport, normalization, durable current-state
-projection, spatial querying, mapping, and replay;
-cross-source causal fusion, retrieval, and agents are later milestones rather than hidden claims.
+Show CI: strict Ruff/mypy/pytest with real Valkey and PostGIS, TypeScript/Biome/Vitest plus a
+production build, and a container/edge smoke test. Close with the architectural boundary:
+AtlasPulse now delivers transparent measured evidence graphs; semantic retrieval, contradiction
+detection, and agents will be separately versioned layers rather than hidden claims.

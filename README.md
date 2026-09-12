@@ -7,14 +7,16 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — four-source, spatially queried disruption state.** Independent workers
+> **Current milestone — four-source disruption evidence graphs.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
 > validated, normalized, and atomically published to Valkey Streams. A restart-safe worker
 > transactionally projects every revision, current event pointer, and its checkpoint into
-> PostGIS. The dashboard reads de-duplicated live state by source and map viewport while
-> preserving deterministic replay and displaying source uncertainty.
+> PostGIS. A bounded query-time correlation engine measures cross-source spatial and temporal
+> co-occurrence, constructs deterministic connected components, and exposes every source node and
+> measured edge in the dashboard. These components are candidates for investigation, never claims
+> of causation, corroboration, or a shared real-world incident.
 
 ## Why this is portfolio-grade
 
@@ -28,8 +30,9 @@ component can run without a paid API key.
 | Deterministic replay | Exclusive Valkey Stream cursors page retained history oldest-first without boundary duplicates |
 | Durable current state | Immutable PostgreSQL revisions plus atomic current pointers and restart-safe checkpoint |
 | Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
+| Transparent correlation | Versioned cross-source rules, exact geography distance/time evidence, stable graph IDs, hard result caps, and explicit non-causal semantics |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
-| Decision UI | Mixed-geometry map, four source filters, priority metrics, live expiry, replay, evidence links, uncertainty labels |
+| Decision UI | Mixed-geometry map, measured graph edges, cluster inspection, four source filters, replay, evidence links, uncertainty labels |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS CI |
 | Supply-chain hygiene | Read-only workflow permissions, commit-pinned Actions, weekly dependency updates |
 
@@ -47,10 +50,13 @@ flowchart TD
     Contract --> Stream["Valkey Streams + atomic dedupe"]
     Stream --> Projector["Restart-safe projector"]
     Projector --> PostGIS["PostGIS revisions + current state"]
+    PostGIS --> Correlate["Bounded geography + time join"]
+    Correlate --> Graph["Deterministic evidence graph"]
     PostGIS --> API["FastAPI current-state API"]
+    Graph --> API
     Stream --> API
     API --> Web["Viewport-driven command center"]
-    Stream --> Agents["RAG and agent consumers — next milestones"]
+    API --> Agents["RAG and agent consumers — next milestones"]
 ```
 
 Each source is at-least-once and failure-isolated: a slow or unavailable source cannot stop the
@@ -102,10 +108,12 @@ curl -s 'http://localhost:8000/v1/signals?limit=5&active_only=true'
 curl -s 'http://localhost:8000/v1/signals?source=nws&min_severity=3&bbox=-125,24,-66,50'
 curl -s 'http://localhost:8000/v1/signals?source=firms&bbox=-120,33,-117,36'
 curl -s 'http://localhost:8000/v1/signals?source=gdelt&min_severity=3&bbox=-20,-40,60,60'
+curl -s 'http://localhost:8000/v1/incidents?bbox=-120,30,-110,40&radius_km=50'
 ```
 
 Switch between **Live** and **Replay**, then filter **All**, **Earthquakes**, **Weather**, or
-**Fires**, or **Conflict**.
+**Fires**, or **Conflict**. Open **Correlations** to inspect measured cross-source clusters and
+follow each node back to its public source evidence.
 Live mode is served from current PostGIS state, omits expired alerts/detections, and refreshes the
 map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
 remain in the global feed without being falsely placed on the map. Replay starts
@@ -181,6 +189,7 @@ ATLAS_TEST_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
 | `GET` | `/v1/events?limit=50` | Newest normalized events and their replay IDs |
 | `GET` | `/v1/events/replay?limit=100&after=<stream-id>` | Oldest-first page strictly after an optional cursor |
 | `GET` | `/v1/signals?limit=100&after=<stream-id>` | Newest-first, de-duplicated current signals with keyset pagination |
+| `GET` | `/v1/incidents?limit=50&radius_km=50` | Bounded deterministic cross-source evidence components |
 
 `/v1/signals` accepts `source=usgs|nws|firms|gdelt`, `min_severity=0..4`, aware
 `occurred_after`/`occurred_before` timestamps, `active_only`, and a non-wrapping WGS84
@@ -188,6 +197,22 @@ ATLAS_TEST_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
 AtlasPulse GDELT priority rank. Spatial requests return intersecting point or polygon evidence.
 Set `include_area_only=true` only when a viewport consumer explicitly wants valid NWS alerts
 that have area codes but no source geometry.
+
+`/v1/incidents` performs a query-time join over current signals from different sources. Its
+versioned `spatiotemporal-v1` rule links a pair only when PostGIS measures it within both the
+requested geography radius and occurrence-time window. Defaults are a 50 km radius, six-hour
+pair window, 24-hour lookback, active signals only, at most 2,000 candidate edges, and at most 50
+components. The API caps radius at 500 km, time window at 24 hours, lookback at seven days, edges
+at 5,000, and returned components at 100. It reports `candidate_edges_truncated` and
+`incidents_truncated` rather than silently implying completeness.
+
+Nodes preserve the full normalized source event and public evidence URL. Edges expose exact
+distance, time delta, geometry basis, relation, and rule version. Content-addressed node, edge,
+and component IDs make identical current evidence reproducible independent of database row order.
+Polygon evidence is preferred over a focus point for backend distance; UI lines connect focus
+points only as a visual guide. A connected component is deliberately named an incident
+*candidate*: spatial and temporal proximity alone does not prove causation, corroboration, or a
+shared real-world incident.
 
 Every event contains a stable source ID, an aware occurrence time, ingestion time, semantic
 type, optional WGS84 focus point, source name, schema version, and JSON-safe payload. USGS depth
@@ -241,6 +266,9 @@ deterministic for retained entries rather than an indefinite event archive.
   failed batch is retried from the unchanged cursor and duplicate revision inserts are harmless.
 - Readiness fails closed when the stream or durable query store is unavailable; liveness remains
   available.
+- Correlation reads only projected current state inside explicit time, distance, viewport, edge,
+  and component bounds. Truncation is part of the response contract; widening a dense query can
+  change component membership when the candidate-edge cap is reached.
 
 See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision,
 [ADR 0002](docs/adr/0002-snapshot-before-validation.md) for the evidence boundary, and
@@ -250,7 +278,9 @@ and [ADR 0005](docs/adr/0005-transactional-postgis-projection.md) for durable pr
 checkpoint semantics, and [ADR 0006](docs/adr/0006-firms-thermal-anomaly-ingestion.md) for FIRMS
 identity, expiry, and credential boundaries, and
 [ADR 0007](docs/adr/0007-gdelt-material-conflict-ingestion.md) for GDELT integrity, selection,
-time, and uncertainty boundaries.
+time, and uncertainty boundaries, and
+[ADR 0008](docs/adr/0008-deterministic-evidence-graph-correlation.md) for correlation rules,
+identity, query bounds, and non-causal semantics.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -278,10 +308,11 @@ credential solely for transaction metering.
 
 ## Next milestones
 
-1. Cross-source correlation with explicit temporal/spatial evidence links and contradiction flags.
-2. Hybrid sparse/dense/geospatial retrieval, reranking, temporal filtering, and citation
+1. Hybrid sparse/dense/geospatial retrieval, reranking, temporal filtering, and citation
    verification.
-3. A hierarchy of specialist agents for signal fusion, contradiction detection, impact
+2. Separately versioned semantic corroboration and contradiction detection, evaluated against the
+   deterministic evidence graph instead of rewriting its measured edges.
+3. A hierarchy of specialist agents for evidence triage, impact
    assessment, forecasting, and human approval.
 4. Evaluation datasets, RAGAS-style retrieval metrics, agent trajectory scoring, drift
    monitoring, and a fully free deployment path.

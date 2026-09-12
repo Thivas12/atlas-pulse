@@ -3,19 +3,21 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { makeEnvelope } from "./test/fixtures";
-import type { EventEnvelope, ViewportBounds } from "./types";
+import { makeEnvelope, makeIncident } from "./test/fixtures";
+import type { EventEnvelope, IncidentCandidate, ViewportBounds } from "./types";
 
 vi.mock("./components/EventMap", () => ({
   EventMap: ({
     events,
+    incidents,
     onViewportChange,
   }: {
     events: EventEnvelope[];
+    incidents: IncidentCandidate[];
     onViewportChange: (bounds: ViewportBounds) => void;
   }) => (
     <div data-testid="event-map">
-      Mapped in test: {events.length}
+      Mapped in test: {events.length} · Correlations in test: {incidents.length}
       <button
         type="button"
         onClick={() => onViewportChange({ west: -10, south: -5, east: 20, north: 30 })}
@@ -42,6 +44,28 @@ function signalsResponse(items: EventEnvelope[]) {
     next_cursor: items.at(-1)?.stream_id ?? null,
     has_more: false,
     order: "newest_revision_first" as const,
+  };
+}
+
+function incidentsResponse(items: IncidentCandidate[]) {
+  return {
+    count: items.length,
+    total_incidents: items.length,
+    items,
+    incidents_truncated: false,
+    candidate_edges_truncated: false,
+    rule_version: "spatiotemporal-v1",
+    caveat:
+      "Edges prove bounded spatial and temporal co-occurrence only; they do not establish causation, corroboration, or a shared real-world incident.",
+    parameters: {
+      radius_km: 50,
+      time_window_minutes: 360,
+      lookback_hours: 24,
+      candidate_edge_limit: 2_000,
+      incident_limit: 100,
+      active_only: true,
+      bbox: [-10, -5, 20, 30] as [number, number, number, number],
+    },
   };
 }
 
@@ -164,6 +188,7 @@ describe("AtlasPulse dashboard", () => {
     ];
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const url = String(input);
+      if (url.includes("/incidents")) return Promise.resolve(jsonResponse(incidentsResponse([])));
       return Promise.resolve(
         jsonResponse(signalsResponse(url.includes("bbox=") ? viewportItems : globalItems)),
       );
@@ -180,6 +205,47 @@ describe("AtlasPulse dashboard", () => {
     );
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/signals?limit=500&active_only=true&bbox=-10%2C-5%2C20%2C30",
+      expect.any(Object),
+    );
+  });
+
+  it("loads measured correlations for the viewport and opens the evidence graph", async () => {
+    const user = userEvent.setup();
+    const incident = makeIncident();
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
+      const url = String(input);
+      return Promise.resolve(
+        url.includes("/incidents")
+          ? jsonResponse(incidentsResponse([incident]))
+          : jsonResponse(
+              signalsResponse(
+                incident.nodes.map((node) => ({
+                  stream_id: node.stream_id,
+                  event: node.event,
+                })),
+              ),
+            ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp(<App />);
+    await user.click(await screen.findByRole("button", { name: "Set test viewport" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("event-map")).toHaveTextContent("Correlations in test: 1"),
+    );
+    await user.click(screen.getByRole("tab", { name: /Correlations 1/ }));
+    await user.click(
+      await screen.findByRole("button", { name: /2-source signal cluster near Test City/ }),
+    );
+
+    const detail = screen.getByRole("complementary", { name: "Selected incident candidate" });
+    expect(within(detail).getByText("2 nodes / 1 edge")).toBeInTheDocument();
+    expect(within(detail).getByText(/do not establish causation/)).toBeInTheDocument();
+    expect(within(detail).getAllByRole("link", { name: /Open source evidence/ })).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/incidents?limit=100&bbox=-10%2C-5%2C20%2C30",
       expect.any(Object),
     );
   });

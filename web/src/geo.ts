@@ -1,4 +1,13 @@
-import type { Feature, FeatureCollection, MultiPolygon, Point, Polygon } from "geojson";
+import type {
+  Feature,
+  FeatureCollection,
+  LineString,
+  MultiLineString,
+  MultiPolygon,
+  Point,
+  Polygon,
+  Position,
+} from "geojson";
 import {
   conflictPriorityRankOf,
   fireConfidenceRankOf,
@@ -9,7 +18,7 @@ import {
   severityRankOf,
   titleOf,
 } from "./event-utils";
-import { alertGeometrySchema, type EventEnvelope } from "./types";
+import { alertGeometrySchema, type EventEnvelope, type IncidentCandidate } from "./types";
 
 export interface EventProperties {
   streamId: string;
@@ -26,6 +35,37 @@ export interface EventProperties {
   occurredAt: string;
   status: string;
   depthKm: number | null;
+}
+
+export interface IncidentEdgeProperties {
+  incidentId: string;
+  edgeId: string;
+  title: string;
+  distanceKm: number;
+  timeDeltaMinutes: number;
+  spatialRelation: string;
+}
+
+function evidenceLine(from: Position, to: Position): LineString | MultiLineString {
+  const longitudeDelta = to[0] - from[0];
+  if (Math.abs(longitudeDelta) <= 180) {
+    return { type: "LineString", coordinates: [from, to] };
+  }
+
+  const crossesEast = longitudeDelta < -180;
+  const boundary = crossesEast ? 180 : -180;
+  const wrappedBoundary = -boundary;
+  const adjustedToLongitude = to[0] + (crossesEast ? 360 : -360);
+  const adjustedDelta = adjustedToLongitude - from[0];
+  const fraction = adjustedDelta === 0 ? 0.5 : (boundary - from[0]) / adjustedDelta;
+  const crossingLatitude = from[1] + (to[1] - from[1]) * fraction;
+  return {
+    type: "MultiLineString",
+    coordinates: [
+      [from, [boundary, crossingLatitude]],
+      [[wrappedBoundary, crossingLatitude], to],
+    ],
+  };
 }
 
 export function eventsToGeoJson(
@@ -94,6 +134,34 @@ export function weatherPolygonsToGeoJson(
         depthKm: null,
       },
     });
+  }
+  return { type: "FeatureCollection", features };
+}
+
+export function incidentEdgesToGeoJson(
+  incidents: IncidentCandidate[],
+): FeatureCollection<LineString | MultiLineString, IncidentEdgeProperties> {
+  const features: Array<Feature<LineString | MultiLineString, IncidentEdgeProperties>> = [];
+  for (const incident of incidents) {
+    const nodes = new Map(incident.nodes.map((node) => [node.node_id, node]));
+    for (const edge of incident.edges) {
+      const from = nodes.get(edge.from_node_id)?.event.location;
+      const to = nodes.get(edge.to_node_id)?.event.location;
+      if (!from || !to) continue;
+      features.push({
+        type: "Feature",
+        id: edge.edge_id,
+        geometry: evidenceLine([from.longitude, from.latitude], [to.longitude, to.latitude]),
+        properties: {
+          incidentId: incident.incident_id,
+          edgeId: edge.edge_id,
+          title: incident.title,
+          distanceKm: edge.distance_km,
+          timeDeltaMinutes: edge.time_delta_minutes,
+          spatialRelation: edge.spatial_relation,
+        },
+      });
+    }
   }
   return { type: "FeatureCollection", features };
 }

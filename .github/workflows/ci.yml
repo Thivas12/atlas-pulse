@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  quality:
-    name: Lint, type-check, test
+  backend:
+    name: Backend / lint, type-check, test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     services:
@@ -53,3 +53,59 @@ jobs:
 
       - name: Test with branch coverage
         run: uv run pytest --cov=atlas_pulse --cov-branch --cov-report=term-missing
+
+  frontend:
+    name: Frontend / lint, test, build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Lint and check formatting
+        run: npm run lint
+
+      - name: Test with coverage thresholds
+        run: npm run test:coverage
+
+      - name: Type-check and build production assets
+        run: npm run build
+
+  containers:
+    name: Containers / build and smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate Compose model
+        run: docker compose config --quiet
+
+      - name: Build production images
+        run: docker compose build
+
+      - name: Start API and web edge
+        run: docker compose up -d --wait --wait-timeout 60 valkey api web
+
+      - name: Smoke-test edge routing
+        run: |
+          curl --fail --silent --show-error http://localhost:3000/ | grep --fixed-strings '<title>AtlasPulse'
+          curl --fail --silent --show-error http://localhost:3000/api/readyz | grep --fixed-strings '"status":"ready"'
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down --volumes

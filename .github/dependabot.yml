@@ -12,6 +12,16 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
 
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      web-dependencies:
+        patterns:
+          - "*"
+
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -21,3 +31,9 @@ updates:
       - dependency-name: python
         update-types:
           - version-update:semver-major
+
+  - package-ecosystem: docker
+    directory: /web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2

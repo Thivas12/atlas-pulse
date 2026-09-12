@@ -34,6 +34,10 @@ class AsyncValkeyClient(Protocol):
         self, name: str, max: str = "+", min: str = "-", count: int | None = None
     ) -> object: ...
 
+    async def xrange(
+        self, name: str, min: str = "-", max: str = "+", count: int | None = None
+    ) -> object: ...
+
     async def ping(self) -> object: ...
 
     async def aclose(self) -> None: ...
@@ -93,8 +97,16 @@ class ValkeyEventBus:
 
     async def latest(self, limit: int) -> tuple[StreamMessage, ...]:
         raw_messages = await self._client.xrevrange(self._stream, count=limit)
+        return self._decode_messages(raw_messages)
+
+    async def replay(self, *, after: str | None, limit: int) -> tuple[StreamMessage, ...]:
+        start = f"({after}" if after is not None else "-"
+        raw_messages = await self._client.xrange(self._stream, min=start, count=limit)
+        return self._decode_messages(raw_messages)
+
+    def _decode_messages(self, raw_messages: object) -> tuple[StreamMessage, ...]:
         if not isinstance(raw_messages, Sequence) or isinstance(raw_messages, (str, bytes)):
-            raise TypeError("Valkey XREVRANGE returned an invalid response")
+            raise TypeError("Valkey stream range returned an invalid response")
 
         messages: list[StreamMessage] = []
         for raw_message in raw_messages:

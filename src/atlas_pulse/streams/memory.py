@@ -26,6 +26,18 @@ class InMemoryEventBus:
     async def latest(self, limit: int) -> tuple[StreamMessage, ...]:
         return tuple(reversed(self._messages[-limit:]))
 
+    async def replay(self, *, after: str | None, limit: int) -> tuple[StreamMessage, ...]:
+        start_index = 0
+        if after is not None:
+            cursor = tuple(int(part) for part in after.split("-", maxsplit=1))
+            start_index = len(self._messages)
+            for index, message in enumerate(self._messages):
+                message_id = tuple(int(part) for part in message.stream_id.split("-", maxsplit=1))
+                if message_id > cursor:
+                    start_index = index
+                    break
+        return tuple(self._messages[start_index : start_index + limit])
+
     async def is_ready(self) -> bool:
         return True
 

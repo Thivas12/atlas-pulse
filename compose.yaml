@@ -53,6 +53,20 @@ services:
     volumes:
       - raw-snapshots:/app/data/raw
 
+  web:
+    build: ./web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "3000:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 volumes:
   raw-snapshots:
   valkey-data:

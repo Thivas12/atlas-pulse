@@ -43,6 +43,16 @@ class FakeValkey:
         messages = list(reversed(self.messages))
         return messages[:count]
 
+    async def xrange(
+        self, _name: str, min: str = "-", max: str = "+", count: int | None = None
+    ) -> object:
+        del max
+        messages = self.messages
+        if min.startswith("("):
+            cursor = min[1:].encode()
+            messages = [message for message in messages if message[0] > cursor]
+        return messages[:count]
+
     async def ping(self) -> object:
         if not self.ready:
             raise ConnectionError("offline")
@@ -74,6 +84,25 @@ async def test_valkey_bus_publishes_once_and_decodes_latest() -> None:
     assert await bus.is_ready() is True
     await bus.close()
     assert client.closed is False
+
+
+async def test_valkey_replay_uses_exclusive_xrange_cursor() -> None:
+    client = FakeValkey()
+    bus = ValkeyEventBus(
+        url="valkey://unused",
+        stream="{atlas}:events",
+        max_length=100,
+        dedupe_ttl_seconds=60,
+        client=client,
+    )
+    first = await bus.publish(make_event("one"))
+    second = await bus.publish(make_event("two"))
+
+    page = await bus.replay(after=first.stream_id, limit=10)
+    all_messages = await bus.replay(after=None, limit=10)
+
+    assert [message.stream_id for message in page] == [second.stream_id]
+    assert [message.event.event_id for message in all_messages] == ["one", "two"]
 
 
 async def test_valkey_readiness_absorbs_connection_failure() -> None:

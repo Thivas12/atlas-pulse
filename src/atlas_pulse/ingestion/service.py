@@ -1,14 +1,13 @@
 """Observable fetch, snapshot, validation, and publication orchestration."""
 
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
-from typing import Protocol
+from datetime import datetime
 
 import structlog
 from opentelemetry import metrics, trace
 
 from atlas_pulse.ingestion.snapshot import RawSnapshotStore
-from atlas_pulse.sources.usgs import FetchedDocument, USGSFeed
+from atlas_pulse.sources import SourceAdapter
 from atlas_pulse.streams.base import EventBus
 
 logger = structlog.get_logger(__name__)
@@ -25,16 +24,11 @@ source_lag = meter.create_histogram(
 )
 
 
-class SourceClient(Protocol):
-    """Source-fetching capability required by the service."""
-
-    async def fetch(self) -> FetchedDocument: ...
-
-
 @dataclass(frozen=True, slots=True)
 class IngestionResult:
     """Auditable summary of one poll cycle."""
 
+    source: str
     fetched_at: datetime
     source_generated_at: datetime
     snapshot_path: str
@@ -51,7 +45,7 @@ class IngestionService:
     def __init__(
         self,
         *,
-        source: SourceClient,
+        source: SourceAdapter,
         snapshots: RawSnapshotStore,
         event_bus: EventBus,
     ) -> None:
@@ -61,16 +55,16 @@ class IngestionService:
 
     async def ingest_once(self) -> IngestionResult:
         """Fetch, preserve, validate, normalize, and idempotently publish one feed."""
-        with tracer.start_as_current_span("usgs.ingest_once") as span:
+        with tracer.start_as_current_span(f"{self._source.source_name}.ingest_once") as span:
             fetched = await self._source.fetch()
             snapshot = self._snapshots.write(
-                source="usgs",
+                source=self._source.source_name,
                 fetched_at=fetched.fetched_at,
                 raw=fetched.raw,
-                extension="geojson",
+                extension=self._source.snapshot_extension,
             )
-            feed = USGSFeed.from_bytes(fetched.raw)
-            events = feed.to_events(ingested_at=fetched.fetched_at)
+            batch = self._source.normalize(fetched.raw, ingested_at=fetched.fetched_at)
+            events = batch.events
 
             published = 0
             deduplicated = 0
@@ -81,16 +75,16 @@ class IngestionService:
                 else:
                     published += 1
 
-            generated_at = datetime.fromtimestamp(feed.metadata.generated / 1000, tz=UTC)
-            lag_seconds = max(0.0, (fetched.fetched_at - generated_at).total_seconds())
-            attributes = {"source": "usgs"}
+            lag_seconds = max(0.0, (fetched.fetched_at - batch.generated_at).total_seconds())
+            attributes = {"source": self._source.source_name}
             published_counter.add(published, attributes)
             deduplicated_counter.add(deduplicated, attributes)
             source_lag.record(lag_seconds, attributes)
 
             result = IngestionResult(
+                source=self._source.source_name,
                 fetched_at=fetched.fetched_at,
-                source_generated_at=generated_at,
+                source_generated_at=batch.generated_at,
                 snapshot_path=str(snapshot.path),
                 snapshot_sha256=snapshot.sha256,
                 snapshot_created=snapshot.created,
@@ -99,6 +93,7 @@ class IngestionService:
                 deduplicated_events=deduplicated,
             )
             span.set_attribute("atlas.events.fetched", len(events))
+            span.set_attribute("atlas.source", self._source.source_name)
             span.set_attribute("atlas.events.published", published)
             span.set_attribute("atlas.events.deduplicated", deduplicated)
             span.set_attribute("atlas.snapshot.sha256", snapshot.sha256)

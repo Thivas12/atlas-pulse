@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventsToGeoJson } from "./geo";
+import { eventsToGeoJson, weatherPolygonsToGeoJson } from "./geo";
 import { makeEnvelope } from "./test/fixtures";
 
 describe("eventsToGeoJson", () => {
@@ -28,5 +28,44 @@ describe("eventsToGeoJson", () => {
 
   it("omits events that cannot be mapped", () => {
     expect(eventsToGeoJson([makeEnvelope({ location: null })]).features).toEqual([]);
+  });
+
+  it("keeps weather source polygons separate from clustered point events", () => {
+    const polygon = {
+      type: "Polygon" as const,
+      coordinates: [
+        [
+          [-98, 34],
+          [-96, 34],
+          [-96, 36],
+          [-98, 34],
+        ],
+      ],
+    };
+    const weather = makeEnvelope({
+      streamId: "2000-0",
+      source: "nws",
+      eventId: "weather-1",
+      location: { latitude: 35, longitude: -97, altitude_km: null },
+      geometry: polygon,
+    });
+
+    expect(eventsToGeoJson([weather]).features).toEqual([]);
+    expect(weatherPolygonsToGeoJson([weather]).features[0]).toMatchObject({
+      id: "2000-0",
+      geometry: polygon,
+      properties: {
+        source: "nws",
+        severity: "Severe",
+        severityRank: 3,
+        title: "Severe Thunderstorm Warning",
+      },
+    });
+  });
+
+  it("omits area-only and malformed alert geometry from the polygon layer", () => {
+    const areaOnly = makeEnvelope({ source: "nws", geometry: null, location: null });
+    const malformed = makeEnvelope({ source: "nws", geometry: { type: "Polygon" } });
+    expect(weatherPolygonsToGeoJson([areaOnly, malformed]).features).toEqual([]);
   });
 });

@@ -1,5 +1,13 @@
 import type { AtlasEvent, EventEnvelope } from "./types";
 
+const SEVERITY_RANKS = {
+  Unknown: 0,
+  Minor: 1,
+  Moderate: 2,
+  Severe: 3,
+  Extreme: 4,
+} as const;
+
 export function magnitudeOf(event: AtlasEvent): number | null {
   const magnitude = event.payload.magnitude;
   return typeof magnitude === "number" && Number.isFinite(magnitude) ? magnitude : null;
@@ -8,6 +16,39 @@ export function magnitudeOf(event: AtlasEvent): number | null {
 export function placeOf(event: AtlasEvent): string {
   const place = event.payload.place;
   return typeof place === "string" && place.trim() ? place : "Unknown region";
+}
+
+export function isWeatherAlert(event: AtlasEvent): boolean {
+  return event.source === "nws" && event.event_type === "weather.alert";
+}
+
+export function alertTypeOf(event: AtlasEvent): string | null {
+  const alertType = event.payload.alert_type;
+  return typeof alertType === "string" && alertType.trim() ? alertType : null;
+}
+
+export function severityOf(event: AtlasEvent): keyof typeof SEVERITY_RANKS | null {
+  const severity = event.payload.severity;
+  return typeof severity === "string" && severity in SEVERITY_RANKS
+    ? (severity as keyof typeof SEVERITY_RANKS)
+    : null;
+}
+
+export function severityRankOf(event: AtlasEvent): number {
+  const severity = severityOf(event);
+  return severity ? SEVERITY_RANKS[severity] : 0;
+}
+
+export function titleOf(event: AtlasEvent): string {
+  return alertTypeOf(event) ?? placeOf(event);
+}
+
+export function isActiveAt(event: AtlasEvent, now = new Date()): boolean {
+  if (!isWeatherAlert(event)) return true;
+  const expiresAt = event.payload.expires_at;
+  if (typeof expiresAt !== "string") return true;
+  const expires = new Date(expiresAt);
+  return Number.isNaN(expires.getTime()) || expires > now;
 }
 
 export function strongestMagnitude(items: EventEnvelope[]): number | null {

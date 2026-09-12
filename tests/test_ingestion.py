@@ -4,11 +4,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from atlas_pulse.ingestion import IngestionService, RawSnapshotStore
-from atlas_pulse.sources import FetchedDocument
+from atlas_pulse.sources import FetchedDocument, NormalizedBatch, USGSFeed
 from atlas_pulse.streams import InMemoryEventBus
 
 
 class StaticSource:
+    source_name = "usgs"
+    snapshot_extension = "geojson"
+
     def __init__(self, payload: bytes, fetched_at: datetime) -> None:
         self._document = FetchedDocument(
             raw=payload,
@@ -19,6 +22,16 @@ class StaticSource:
 
     async def fetch(self) -> FetchedDocument:
         return self._document
+
+    def normalize(self, raw: bytes, *, ingested_at: datetime) -> NormalizedBatch:
+        feed = USGSFeed.from_bytes(raw)
+        return NormalizedBatch(
+            generated_at=datetime.fromtimestamp(feed.metadata.generated / 1000, tz=UTC),
+            events=feed.to_events(ingested_at=ingested_at),
+        )
+
+    async def close(self) -> None:
+        return None
 
 
 async def test_ingestion_snapshots_before_idempotent_publish(
@@ -35,6 +48,7 @@ async def test_ingestion_snapshots_before_idempotent_publish(
     first = await service.ingest_once()
     second = await service.ingest_once()
 
+    assert first.source == "usgs"
     assert first.fetched_events == 2
     assert first.published_events == 2
     assert first.deduplicated_events == 0

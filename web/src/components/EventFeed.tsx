@@ -1,4 +1,11 @@
-import { formatTimestamp, magnitudeOf, placeOf } from "../event-utils";
+import {
+  formatTimestamp,
+  isWeatherAlert,
+  magnitudeOf,
+  placeOf,
+  severityOf,
+  titleOf,
+} from "../event-utils";
 import type { EventEnvelope } from "../types";
 
 interface EventFeedProps {
@@ -23,6 +30,8 @@ export function EventFeed({ events, selectedStreamId, onSelect }: EventFeedProps
         ) : (
           events.map((item) => {
             const magnitude = magnitudeOf(item.event);
+            const weather = isWeatherAlert(item.event);
+            const severity = severityOf(item.event);
             return (
               <button
                 className={`event-row ${selectedStreamId === item.stream_id ? "selected" : ""}`}
@@ -30,10 +39,20 @@ export function EventFeed({ events, selectedStreamId, onSelect }: EventFeedProps
                 onClick={() => onSelect(item.stream_id)}
                 type="button"
               >
-                <span className="magnitude">{magnitude === null ? "?" : magnitude.toFixed(1)}</span>
+                <span
+                  className={`signal-marker ${weather ? `weather severity-${severity?.toLowerCase() ?? "unknown"}` : "quake"}`}
+                >
+                  {weather
+                    ? (severity?.slice(0, 3).toUpperCase() ?? "WX")
+                    : (magnitude?.toFixed(1) ?? "?")}
+                </span>
                 <span className="event-copy">
-                  <strong>{placeOf(item.event)}</strong>
-                  <small>{formatTimestamp(item.event.occurred_at)} UTC</small>
+                  <strong>{titleOf(item.event)}</strong>
+                  <small>
+                    <span className={`source-badge ${item.event.source}`}>{item.event.source}</span>
+                    {weather ? `${placeOf(item.event)} · ` : ""}
+                    {formatTimestamp(item.event.occurred_at)} UTC
+                  </small>
                 </span>
                 <span className="row-arrow" aria-hidden="true">
                   ↗

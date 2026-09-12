@@ -7,7 +7,8 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from atlas_pulse.sources.usgs import RetryableSourceError, USGSClient, USGSFeed
+from atlas_pulse.sources import RetryableSourceError
+from atlas_pulse.sources.usgs import USGSClient, USGSFeed
 
 
 def test_feed_normalizes_geojson_to_shared_events(usgs_payload: bytes) -> None:
@@ -42,6 +43,26 @@ def test_feed_rejects_count_mismatch(usgs_payload: bytes) -> None:
 
     with pytest.raises(ValidationError, match="does not match"):
         USGSFeed.model_validate(document)
+
+
+@pytest.mark.asyncio
+async def test_client_normalizes_feed_metadata(usgs_payload: bytes) -> None:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200))
+    ) as http_client:
+        client = USGSClient(
+            feed_url="https://example.test/all_hour.geojson",
+            timeout_seconds=1,
+            max_attempts=1,
+            client=http_client,
+        )
+        batch = client.normalize(
+            usgs_payload,
+            ingested_at=datetime(2024, 7, 10, 12, tzinfo=UTC),
+        )
+
+    assert batch.generated_at == datetime(2024, 7, 10, 12, 5, tzinfo=UTC)
+    assert len(batch.events) == 2
 
 
 @pytest.mark.asyncio
@@ -128,7 +149,7 @@ async def test_client_context_manager_and_owned_client_cleanup(
         del timeout, headers
         return http_client
 
-    monkeypatch.setattr("atlas_pulse.sources.usgs.httpx.AsyncClient", make_client)
+    monkeypatch.setattr("atlas_pulse.sources.http.httpx.AsyncClient", make_client)
     source = USGSClient(
         feed_url="https://example.test/feed.geojson",
         timeout_seconds=1,

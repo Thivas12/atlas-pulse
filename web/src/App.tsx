@@ -5,15 +5,21 @@ import { EventFeed } from "./components/EventFeed";
 import { ReplayControls } from "./components/ReplayControls";
 import {
   formatTimestamp,
+  isActiveAt,
+  isWeatherAlert,
   magnitudeOf,
   newestUpdate,
   placeOf,
   relativeAge,
+  severityOf,
+  severityRankOf,
   strongestMagnitude,
+  titleOf,
 } from "./event-utils";
 import type { EventEnvelope } from "./types";
 
 type ViewMode = "live" | "replay";
+type SourceFilter = "all" | "usgs" | "nws";
 
 const EventMap = lazy(() =>
   import("./components/EventMap").then(({ EventMap: component }) => ({ default: component })),
@@ -31,39 +37,93 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 
 function EventDetail({ item, onClose }: { item: EventEnvelope; onClose: () => void }) {
   const { event } = item;
+  const weather = isWeatherAlert(event);
   const magnitude = magnitudeOf(event);
+  const severity = severityOf(event);
   const sourceUrl = event.payload.source_url;
   const depth = event.payload.depth_km;
   const status = event.payload.status;
+  const certainty = event.payload.certainty;
+  const urgency = event.payload.urgency;
+  const expiresAt = event.payload.expires_at;
+  const senderName = event.payload.sender_name;
+  const messageType = event.payload.message_type;
+  const description = event.payload.description;
+  const instruction = event.payload.instruction;
   return (
-    <aside className="event-detail" aria-label="Selected earthquake details">
+    <aside className="event-detail" aria-label="Selected signal details">
       <button className="detail-close" type="button" onClick={onClose} aria-label="Close details">
         ×
       </button>
       <p className="eyebrow">Selected signal</p>
-      <div className="detail-magnitude">M {magnitude === null ? "?" : magnitude.toFixed(2)}</div>
-      <h2>{placeOf(event)}</h2>
+      <div className={`detail-magnitude ${weather ? "weather" : ""}`}>
+        {weather ? (severity ?? "Weather") : `M ${magnitude === null ? "?" : magnitude.toFixed(2)}`}
+      </div>
+      <h2>{titleOf(event)}</h2>
+      {weather && <p className="detail-place">{placeOf(event)}</p>}
       <dl>
         <div>
           <dt>Occurred</dt>
           <dd>{formatTimestamp(event.occurred_at)} UTC</dd>
         </div>
+        {weather ? (
+          <div>
+            <dt>Expires</dt>
+            <dd>
+              {typeof expiresAt === "string" ? `${formatTimestamp(expiresAt)} UTC` : "Unknown"}
+            </dd>
+          </div>
+        ) : (
+          <div>
+            <dt>Depth</dt>
+            <dd>{typeof depth === "number" ? `${depth.toFixed(1)} km` : "Unknown"}</dd>
+          </div>
+        )}
         <div>
-          <dt>Depth</dt>
-          <dd>{typeof depth === "number" ? `${depth.toFixed(1)} km` : "Unknown"}</dd>
-        </div>
-        <div>
-          <dt>Review</dt>
-          <dd>{typeof status === "string" ? status : "Unknown"}</dd>
-        </div>
-        <div>
-          <dt>Coordinates</dt>
+          <dt>{weather ? "Urgency" : "Review"}</dt>
           <dd>
-            {event.location
-              ? `${event.location.latitude.toFixed(3)}, ${event.location.longitude.toFixed(3)}`
-              : "Unknown"}
+            {weather
+              ? typeof urgency === "string"
+                ? urgency
+                : "Unknown"
+              : typeof status === "string"
+                ? status
+                : "Unknown"}
           </dd>
         </div>
+        <div>
+          <dt>{weather ? "Certainty" : "Coordinates"}</dt>
+          <dd>
+            {weather
+              ? typeof certainty === "string"
+                ? certainty
+                : "Unknown"
+              : event.location
+                ? `${event.location.latitude.toFixed(3)}, ${event.location.longitude.toFixed(3)}`
+                : "Unknown"}
+          </dd>
+        </div>
+        {weather && (
+          <div>
+            <dt>Alert state</dt>
+            <dd>
+              {typeof messageType === "string" ? messageType : "Unknown"} ·{" "}
+              {typeof status === "string" ? status : "Unknown"}
+            </dd>
+          </div>
+        )}
+        {weather && (
+          <div>
+            <dt>Geometry</dt>
+            <dd>{event.payload.geometry ? "Source polygon" : "Area codes only"}</dd>
+          </div>
+        )}
+        {weather && (
+          <div>
+            <dt>Office</dt>
+            <dd>{typeof senderName === "string" ? senderName : "Unknown"}</dd>
+          </div>
+        )}
         <div>
           <dt>Event ID</dt>
           <dd>{event.event_id}</dd>
@@ -73,9 +133,18 @@ function EventDetail({ item, onClose }: { item: EventEnvelope; onClose: () => vo
           <dd>{item.stream_id}</dd>
         </div>
       </dl>
+      {weather && typeof description === "string" && (
+        <p className="detail-summary">{description}</p>
+      )}
+      {weather && typeof instruction === "string" && (
+        <p className="detail-instruction">
+          <strong>Recommended action</strong>
+          {instruction}
+        </p>
+      )}
       {typeof sourceUrl === "string" && sourceUrl.startsWith("https://") && (
         <a href={sourceUrl} target="_blank" rel="noreferrer" className="source-link">
-          Open USGS evidence ↗
+          Open {weather ? "NWS" : "USGS"} evidence ↗
         </a>
       )}
     </aside>
@@ -84,6 +153,7 @@ function EventDetail({ item, onClose }: { item: EventEnvelope; onClose: () => vo
 
 export default function App() {
   const [mode, setMode] = useState<ViewMode>("live");
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [selectedStreamId, setSelectedStreamId] = useState<string | null>(null);
   const [replayIndex, setReplayIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -109,8 +179,12 @@ export default function App() {
     [replayQuery.data],
   );
   const replayVisible = replayItems.slice(0, Math.min(replayIndex + 1, replayItems.length));
-  const mappedEvents = mode === "live" ? latestItems : replayVisible;
-  const feedEvents = mode === "live" ? latestItems : [...replayVisible].reverse();
+  const activeLatestItems = latestItems.filter(({ event }) => isActiveAt(event));
+  const currentItems = mode === "live" ? activeLatestItems : replayVisible;
+  const mappedEvents = currentItems.filter(
+    ({ event }) => sourceFilter === "all" || event.source === sourceFilter,
+  );
+  const feedEvents = mode === "live" ? mappedEvents : [...mappedEvents].reverse();
   const selected = mappedEvents.find((item) => item.stream_id === selectedStreamId) ?? null;
 
   useEffect(() => {
@@ -145,10 +219,24 @@ export default function App() {
     if (nextMode === "replay") setReplayIndex(0);
   };
 
+  const switchSource = (nextSource: SourceFilter) => {
+    setSourceFilter(nextSource);
+    setSelectedStreamId(null);
+  };
+
   const uniqueEvents = new Set(mappedEvents.map(({ event }) => event.event_id)).size;
   const revisions = Math.max(0, mappedEvents.length - uniqueEvents);
-  const strongest = strongestMagnitude(mappedEvents);
-  const freshness = relativeAge(newestUpdate(latestItems));
+  const earthquakes = mappedEvents.filter(({ event }) => event.source === "usgs");
+  const weatherAlerts = mappedEvents.filter(({ event }) => isWeatherAlert(event));
+  const strongest = strongestMagnitude(earthquakes);
+  const highSeverity = weatherAlerts.filter(({ event }) => severityRankOf(event) >= 3).length;
+  const areaOnly = weatherAlerts.filter(({ event }) => !event.payload.geometry).length;
+  const usgsFreshness = relativeAge(
+    newestUpdate(latestItems.filter(({ event }) => event.source === "usgs")),
+  );
+  const nwsFreshness = relativeAge(
+    newestUpdate(latestItems.filter(({ event }) => event.source === "nws")),
+  );
   const loading = mode === "live" ? latestQuery.isPending : replayQuery.isPending;
   const error = mode === "live" ? latestQuery.error : replayQuery.error;
 
@@ -164,8 +252,8 @@ export default function App() {
           </span>
         </a>
         <div className="mission-copy">
-          <span>GLOBAL SEISMIC INTELLIGENCE</span>
-          <small>USGS · AUDITABLE · REPLAYABLE</small>
+          <span>GLOBAL DISRUPTION INTELLIGENCE</span>
+          <small>USGS + NWS · AUDITABLE · REPLAYABLE</small>
         </div>
         <div className="system-state">
           <span className={`live-dot ${latestQuery.isError ? "error" : ""}`} />
@@ -190,6 +278,24 @@ export default function App() {
             ◷ Replay
           </button>
         </fieldset>
+        <fieldset className="source-switch" aria-label="Signal source">
+          {(
+            [
+              ["all", "All"],
+              ["usgs", "Earthquakes"],
+              ["nws", "Weather"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              type="button"
+              className={sourceFilter === value ? "active" : ""}
+              onClick={() => switchSource(value)}
+              key={value}
+            >
+              {label}
+            </button>
+          ))}
+        </fieldset>
         <p>
           {mode === "live"
             ? "Newest stream revisions · refreshes every 10 seconds"
@@ -200,9 +306,9 @@ export default function App() {
 
       <section className="metrics" aria-label="Current stream metrics">
         <Metric
-          label="Mapped revisions"
+          label="Visible revisions"
           value={String(mappedEvents.length)}
-          detail="current view"
+          detail={`${currentItems.length} across all sources`}
         />
         <Metric
           label="Unique events"
@@ -210,11 +316,21 @@ export default function App() {
           detail={`${revisions} revisions`}
         />
         <Metric
-          label="Strongest signal"
-          value={strongest === null ? "—" : `M ${strongest.toFixed(1)}`}
-          detail="current view"
+          label="Earthquakes"
+          value={String(earthquakes.length)}
+          detail={strongest === null ? "no magnitude" : `strongest M ${strongest.toFixed(1)}`}
         />
-        <Metric label="Source freshness" value={freshness} detail="since latest update" />
+        <Metric
+          label="Weather alerts"
+          value={String(weatherAlerts.length)}
+          detail={`${areaOnly} area-code only`}
+        />
+        <Metric label="High severity" value={String(highSeverity)} detail="severe or extreme" />
+        <Metric
+          label="Source freshness"
+          value={`USGS ${usgsFreshness}`}
+          detail={`NWS ${nwsFreshness}`}
+        />
       </section>
 
       <section className="command-grid">
@@ -228,10 +344,12 @@ export default function App() {
           </Suspense>
           <div className="map-scanline" aria-hidden="true" />
           <div className="map-legend">
-            <span>MAGNITUDE</span>
-            <i className="mild" /> 0–3
-            <i className="moderate" /> 3–5
-            <i className="strong" /> 5+
+            <span>QUAKE</span>
+            <i className="mild" /> low
+            <i className="strong" /> M5+
+            <span className="weather-legend">WEATHER</span>
+            <i className="weather-moderate" /> moderate
+            <i className="weather-severe" /> severe+
           </div>
           {loading && <div className="map-message">Synchronising event stream…</div>}
           {error && <div className="map-message error">{error.message}</div>}
@@ -262,8 +380,8 @@ export default function App() {
       </section>
 
       <footer>
-        <span>ATLASPULSE / SEISMIC SLICE / v0.1.0</span>
-        <span>Evidence: USGS · Basemap: OpenFreeMap/OpenStreetMap</span>
+        <span>ATLASPULSE / MULTI-SOURCE SLICE / v0.2.0</span>
+        <span>Evidence: USGS + NOAA/NWS · Basemap: OpenFreeMap/OpenStreetMap</span>
       </footer>
     </main>
   );

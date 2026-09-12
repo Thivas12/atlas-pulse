@@ -23,4 +23,19 @@ describe("EventFeed", () => {
     await user.click(row);
     expect(onSelect).toHaveBeenCalledWith("4242-1");
   });
+
+  it("renders weather type, source, place, and severity instead of a fake magnitude", () => {
+    const item = makeEnvelope({
+      source: "nws",
+      alertType: "Tornado Warning",
+      severity: "Extreme",
+      place: "Test County",
+    });
+    render(<EventFeed events={[item]} selectedStreamId={null} onSelect={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: /Tornado Warning/ })).toBeInTheDocument();
+    expect(screen.getByText("EXT")).toHaveClass("weather", "severity-extreme");
+    expect(screen.getByText("nws")).toBeInTheDocument();
+    expect(screen.getByText(/Test County/)).toBeInTheDocument();
+  });
 });

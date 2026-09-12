@@ -6,6 +6,18 @@ const geoPointSchema = z.object({
   altitude_km: z.number().nullable(),
 });
 
+const positionSchema = z.tuple([z.number().min(-180).max(180), z.number().min(-90).max(90)]);
+const linearRingSchema = z.array(positionSchema).min(4);
+const polygonCoordinatesSchema = z.array(linearRingSchema).min(1);
+
+export const alertGeometrySchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("Polygon"), coordinates: polygonCoordinatesSchema }),
+  z.object({
+    type: z.literal("MultiPolygon"),
+    coordinates: z.array(polygonCoordinatesSchema).min(1),
+  }),
+]);
+
 export const eventSchema = z.object({
   event_id: z.string().min(1),
   event_type: z.string().min(1),
@@ -37,6 +49,7 @@ export const replayResponseSchema = eventsResponseSchema.extend({
 });
 
 export type AtlasEvent = z.infer<typeof eventSchema>;
+export type AlertGeometry = z.infer<typeof alertGeometrySchema>;
 export type EventEnvelope = z.infer<typeof eventEnvelopeSchema>;
 export type EventsResponse = z.infer<typeof eventsResponseSchema>;
 export type ReplayResponse = z.infer<typeof replayResponseSchema>;

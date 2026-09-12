@@ -1,0 +1,9 @@
+.git
+.github
+.venv
+.coverage
+.env
+data/raw
+htmlcov
+__pycache__
+*.pyc

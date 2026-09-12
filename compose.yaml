@@ -1,0 +1,56 @@
+name: atlas-pulse
+
+x-atlas-environment: &atlas-environment
+  ATLAS_ENVIRONMENT: local-compose
+  ATLAS_LOG_LEVEL: INFO
+  ATLAS_VALKEY_URL: valkey://valkey:6379/0
+  ATLAS_RAW_DATA_DIR: /app/data/raw
+
+services:
+  valkey:
+    image: valkey/valkey:9.1.2-alpine
+    command: ["valkey-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    environment: *atlas-environment
+    depends_on:
+      valkey:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  ingestor:
+    build: .
+    command: ["atlas-pulse-ingest"]
+    restart: unless-stopped
+    environment: *atlas-environment
+    depends_on:
+      valkey:
+        condition: service_healthy
+    volumes:
+      - raw-snapshots:/app/data/raw
+
+volumes:
+  raw-snapshots:
+  valkey-data:

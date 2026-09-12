@@ -127,7 +127,7 @@ class USGSClient(RetryingHttpClient):
         feed_url: str,
         timeout_seconds: float,
         max_attempts: int,
-        user_agent: str = "AtlasPulse/0.5 (+https://github.com/Thivas12/atlas-pulse)",
+        user_agent: str = "AtlasPulse/0.7 (+https://github.com/Thivas12/atlas-pulse)",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         super().__init__(

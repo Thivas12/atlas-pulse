@@ -1,10 +1,16 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { fetchCurrentSignals, fetchIncidentCandidates, fetchReplay } from "./api";
+import {
+  fetchCurrentSignals,
+  fetchHybridSearch,
+  fetchIncidentCandidates,
+  fetchReplay,
+} from "./api";
 import { EventFeed } from "./components/EventFeed";
 import { IncidentDetail } from "./components/IncidentDetail";
 import { IncidentFeed } from "./components/IncidentFeed";
 import { ReplayControls } from "./components/ReplayControls";
+import { SearchPanel } from "./components/SearchPanel";
 import {
   cameoRootCodeOf,
   conflictPriorityOf,
@@ -30,7 +36,7 @@ import type { EventEnvelope, ViewportBounds } from "./types";
 
 type ViewMode = "live" | "replay";
 type SourceFilter = "all" | "usgs" | "nws" | "firms" | "gdelt";
-type PanelMode = "signals" | "incidents";
+type PanelMode = "signals" | "incidents" | "search";
 
 const EventMap = lazy(() =>
   import("./components/EventMap").then(({ EventMap: component }) => ({ default: component })),
@@ -68,7 +74,15 @@ function safeSourceUrl(value: unknown): string | null {
   }
 }
 
-function EventDetail({ item, onClose }: { item: EventEnvelope; onClose: () => void }) {
+function EventDetail({
+  item,
+  onClose,
+  allowSourceLink = true,
+}: {
+  item: EventEnvelope;
+  onClose: () => void;
+  allowSourceLink?: boolean;
+}) {
   const { event } = item;
   const weather = isWeatherAlert(event);
   const fire = isFireDetection(event);
@@ -80,7 +94,7 @@ function EventDetail({ item, onClose }: { item: EventEnvelope; onClose: () => vo
   const conflictPriority = conflictPriorityOf(event);
   const conflictRootCode = cameoRootCodeOf(event);
   const goldsteinScale = goldsteinScaleOf(event);
-  const sourceUrl = safeSourceUrl(event.payload.source_url);
+  const sourceUrl = allowSourceLink ? safeSourceUrl(event.payload.source_url) : null;
   const depth = event.payload.depth_km;
   const status = payloadString(event, "status");
   const certainty = payloadString(event, "certainty");
@@ -334,6 +348,9 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [viewport, setViewport] = useState<ViewportBounds | null>(null);
+  const [searchDraft, setSearchDraft] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [searchViewport, setSearchViewport] = useState(true);
 
   const liveQuery = useQuery({
     queryKey: ["signals", "current", sourceFilter],
@@ -375,6 +392,20 @@ export default function App() {
       lastPage.has_more ? (lastPage.next_cursor ?? undefined) : undefined,
     enabled: mode === "replay",
   });
+  const searchQuery = useQuery({
+    queryKey: ["retrieval", searchText, sourceFilter, searchViewport ? viewport : null],
+    queryFn: ({ signal }) =>
+      fetchHybridSearch(
+        {
+          query: searchText,
+          source: sourceFilter === "all" ? undefined : sourceFilter,
+          bounds: searchViewport ? (viewport ?? undefined) : undefined,
+        },
+        signal,
+      ),
+    enabled: mode === "live" && panelMode === "search" && searchText.length >= 2,
+    refetchInterval: 30_000,
+  });
 
   const liveItems = liveQuery.data?.items ?? [];
   const replayItems = useMemo(
@@ -398,9 +429,14 @@ export default function App() {
     sourceFilter === "all"
       ? incidents
       : incidents.filter((incident) => incident.sources.includes(sourceFilter));
+  const searchItems = searchQuery.data?.items ?? [];
+  const selectedSearchHit = searchItems.find((item) => item.stream_id === selectedStreamId);
   const selected =
     mappedEvents.find((item) => item.stream_id === selectedStreamId) ??
     filteredEvents.find((item) => item.stream_id === selectedStreamId) ??
+    (selectedSearchHit
+      ? { stream_id: selectedSearchHit.stream_id, event: selectedSearchHit.event }
+      : null) ??
     null;
   const selectedIncident =
     visibleIncidents.find((incident) => incident.incident_id === selectedIncidentId) ?? null;
@@ -508,7 +544,7 @@ export default function App() {
         </a>
         <div className="mission-copy">
           <span>GLOBAL DISRUPTION INTELLIGENCE</span>
-          <small>FOUR LIVE SOURCES · CORRELATED · AUDITABLE · REPLAYABLE</small>
+          <small>FOUR LIVE SOURCES · HYBRID SEARCH · CORRELATED · AUDITABLE</small>
         </div>
         <div className="system-state">
           <span className={`live-dot ${liveQuery.isError ? "error" : ""}`} />
@@ -634,7 +670,15 @@ export default function App() {
           </div>
           {loading && <div className="map-message">Synchronising event stream…</div>}
           {error && <div className="map-message error">{error.message}</div>}
-          {selected && <EventDetail item={selected} onClose={() => setSelectedStreamId(null)} />}
+          {selected && (
+            <EventDetail
+              item={selected}
+              onClose={() => setSelectedStreamId(null)}
+              allowSourceLink={
+                selectedSearchHit === undefined || selectedSearchHit.citation.status === "traceable"
+              }
+            />
+          )}
           {selectedIncident && (
             <IncidentDetail
               incident={selectedIncident}
@@ -680,6 +724,16 @@ export default function App() {
             >
               Correlations <span>{visibleIncidents.length}</span>
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={panelMode === "search"}
+              className={panelMode === "search" ? "active" : ""}
+              onClick={() => setPanelMode("search")}
+              disabled={mode === "replay"}
+            >
+              Search <span>{searchItems.length}</span>
+            </button>
           </div>
           {panelMode === "signals" || mode === "replay" ? (
             <EventFeed
@@ -687,20 +741,43 @@ export default function App() {
               selectedStreamId={selectedStreamId}
               onSelect={selectEvent}
             />
-          ) : (
+          ) : panelMode === "incidents" ? (
             <IncidentFeed
               incidents={visibleIncidents}
               selectedIncidentId={selectedIncidentId}
               candidateEdgesTruncated={Boolean(incidentQuery.data?.candidate_edges_truncated)}
               onSelect={selectIncident}
             />
+          ) : (
+            <SearchPanel
+              query={searchText}
+              draft={searchDraft}
+              useViewport={searchViewport}
+              viewportAvailable={viewport !== null}
+              response={searchQuery.data}
+              loading={searchQuery.isFetching}
+              error={searchQuery.error}
+              selectedStreamId={selectedStreamId}
+              onDraftChange={setSearchDraft}
+              onUseViewportChange={setSearchViewport}
+              onSubmit={() => {
+                const normalized = searchDraft.trim();
+                if (normalized === searchText) {
+                  void searchQuery.refetch();
+                } else {
+                  setSearchText(normalized);
+                }
+                setSelectedIncidentId(null);
+              }}
+              onSelect={selectEvent}
+            />
           )}
         </div>
       </section>
 
       <footer>
-        <span>ATLASPULSE / EVIDENCE GRAPH SLICE / v0.6.0</span>
-        <span>Correlation: PostGIS geography · spatiotemporal-v1 · no causal claim</span>
+        <span>ATLASPULSE / HYBRID RETRIEVAL SLICE / v0.7.0</span>
+        <span>Retrieval: PostgreSQL FTS + local BGE + pgvector · no generated claim</span>
       </footer>
     </main>
   );

@@ -9,6 +9,14 @@ from agent_rag_core import Event, GeoPoint
 from atlas_pulse.api import create_app
 from atlas_pulse.correlation import CORRELATION_CAVEAT, CorrelationBatch, CorrelationPair
 from atlas_pulse.projections import CorrelationQuery, SignalPage, SignalQuery
+from atlas_pulse.retrieval import (
+    CandidateBatch,
+    ChannelCandidate,
+    SearchQuery,
+    SearchResult,
+    fuse_and_rerank,
+)
+from atlas_pulse.retrieval.ranking import RANKING_RULE, RETRIEVAL_CAVEAT
 from atlas_pulse.streams import InMemoryEventBus
 from atlas_pulse.streams.base import StreamMessage
 
@@ -63,6 +71,30 @@ class StubSignalStore:
         self.closed = True
 
 
+class StubSearchService:
+    def __init__(self, *, result: SearchResult | None = None, ready: bool = True) -> None:
+        self.result = result or SearchResult(
+            hits=(),
+            candidates_considered=0,
+            embedding_model="test/local-model",
+            ranking_rule=RANKING_RULE,
+            caveat=RETRIEVAL_CAVEAT,
+        )
+        self.ready = ready
+        self.closed = False
+        self.query: SearchQuery | None = None
+
+    async def search(self, query: SearchQuery) -> SearchResult:
+        self.query = query
+        return self.result
+
+    async def is_ready(self) -> bool:
+        return self.ready
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 async def test_health_readiness_and_recent_events() -> None:
     bus = InMemoryEventBus()
     await bus.publish(
@@ -80,7 +112,7 @@ async def test_health_readiness_and_recent_events() -> None:
         events = await client.get("/v1/events", params={"limit": 1})
 
     assert health.status_code == 200
-    assert health.json() == {"status": "ok", "version": "0.6.0"}
+    assert health.json() == {"status": "ok", "version": "0.7.0"}
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
     assert events.status_code == 200
@@ -108,14 +140,17 @@ async def test_events_limit_is_validated() -> None:
 async def test_application_lifespan_closes_event_bus() -> None:
     bus = CloseTrackingBus()
     store = StubSignalStore()
-    app = create_app(bus, store)
+    search = StubSearchService()
+    app = create_app(bus, store, search)
 
     async with app.router.lifespan_context(app):
         assert bus.closed is False
         assert store.closed is False
+        assert search.closed is False
 
     assert bus.closed is True
     assert store.closed is True
+    assert search.closed is True
 
 
 async def test_application_lifespan_still_closes_store_when_stream_close_fails() -> None:
@@ -129,6 +164,26 @@ async def test_application_lifespan_still_closes_store_when_stream_close_fails()
 
     assert bus.closed is True
     assert store.closed is True
+
+
+async def test_application_lifespan_closes_search_when_signal_close_fails() -> None:
+    class FailingSignalStore(StubSignalStore):
+        async def close(self) -> None:
+            await super().close()
+            raise RuntimeError("projection close failed")
+
+    bus = CloseTrackingBus()
+    store = FailingSignalStore()
+    search = StubSearchService()
+    app = create_app(bus, store, search)
+
+    with pytest.raises(RuntimeError, match="projection close failed"):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert bus.closed is True
+    assert store.closed is True
+    assert search.closed is True
 
 
 async def test_replay_is_oldest_first_and_cursor_paginated() -> None:
@@ -364,3 +419,134 @@ async def test_incidents_requires_projection_and_validates_bounds() -> None:
         unbounded = await client.get("/v1/incidents", params={"candidate_edge_limit": 5_001})
     assert invalid.status_code == 422
     assert unbounded.status_code == 422
+
+
+async def test_search_returns_typed_rank_evidence_and_all_reproducibility_parameters() -> None:
+    event = Event(
+        event_id="alert-1",
+        event_type="weather.alert",
+        source="nws",
+        occurred_at=datetime(2026, 9, 12, 12, tzinfo=UTC),
+        ingested_at=datetime(2026, 9, 12, 12, 1, tzinfo=UTC),
+        location=GeoPoint(latitude=35, longitude=-97, altitude_km=None),
+        payload={
+            "title": "Severe thunderstorm warning",
+            "source_url": "https://api.weather.gov/alerts/alert-1",
+        },
+    )
+    candidate = ChannelCandidate(
+        message=StreamMessage(stream_id="200-1", event=event),
+        document_text="Title: Severe thunderstorm warning",
+        rank=1,
+        score=0.91,
+        distance_km=14.25,
+    )
+    hits = fuse_and_rerank(
+        CandidateBatch(lexical=(candidate,), dense=(candidate,)),
+        query_text="severe thunderstorm",
+        limit=5,
+    )
+    search = StubSearchService(
+        result=SearchResult(
+            hits=hits,
+            candidates_considered=1,
+            embedding_model="BAAI/bge-small-en-v1.5",
+            ranking_rule=RANKING_RULE,
+            caveat=RETRIEVAL_CAVEAT,
+        )
+    )
+    transport = httpx.ASGITransport(app=create_app(InMemoryEventBus(), StubSignalStore(), search))
+    params: dict[str, str | int | float | bool | None] = {
+        "q": "  severe   thunderstorm ",
+        "limit": 5,
+        "candidate_limit": 25,
+        "source": "nws",
+        "occurred_after": "2026-09-01T00:00:00Z",
+        "occurred_before": "2026-09-13T00:00:00Z",
+        "bbox": "-100,30,-90,40",
+        "near": "-97,35",
+        "radius_km": 100,
+        "active_only": "false",
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/search", params=params)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 1
+    assert body["candidates_considered"] == 1
+    assert body["embedding_model"] == "BAAI/bge-small-en-v1.5"
+    assert body["ranking_rule"] == RANKING_RULE
+    assert body["caveat"] == RETRIEVAL_CAVEAT
+    assert body["items"][0]["event"]["event_id"] == "alert-1"
+    assert body["items"][0]["distance_km"] == 14.25
+    assert body["items"][0]["ranking"]["lexical_rank"] == 1
+    assert body["items"][0]["ranking"]["dense_rank"] == 1
+    assert body["items"][0]["ranking"]["exact_phrase_match"] is True
+    assert body["items"][0]["citation"] == {
+        "status": "traceable",
+        "url": "https://api.weather.gov/alerts/alert-1",
+        "source_field": "source_url",
+        "reasons": ["public_http_url", "source_event_identity_attached"],
+    }
+    assert body["parameters"] == {
+        "query": "severe thunderstorm",
+        "limit": 5,
+        "candidate_limit": 25,
+        "source": "nws",
+        "occurred_after": "2026-09-01T00:00:00Z",
+        "occurred_before": "2026-09-13T00:00:00Z",
+        "active_only": False,
+        "bbox": [-100, 30, -90, 40],
+        "near": [-97, 35],
+        "radius_km": 100,
+    }
+    assert search.query is not None
+    assert search.query.near is not None
+    assert search.query.near.longitude == -97
+    assert search.query.bounds is not None
+
+
+async def test_search_requires_an_index_and_readiness_reports_index_failure() -> None:
+    unavailable_transport = httpx.ASGITransport(
+        app=create_app(InMemoryEventBus(), StubSignalStore())
+    )
+    async with httpx.AsyncClient(transport=unavailable_transport, base_url="http://test") as client:
+        unavailable = await client.get("/v1/search", params={"q": "earthquake"})
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"detail": "retrieval index unavailable"}
+
+    unready_transport = httpx.ASGITransport(
+        app=create_app(InMemoryEventBus(), StubSignalStore(), StubSearchService(ready=False))
+    )
+    async with httpx.AsyncClient(transport=unready_transport, base_url="http://test") as client:
+        unready = await client.get("/readyz")
+    assert unready.status_code == 503
+    assert unready.json() == {"detail": "retrieval index unavailable"}
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"q": "earthquake", "limit": 10, "candidate_limit": 5},
+        {"q": "earthquake", "near": "west,north"},
+        {"q": "earthquake", "near": "1"},
+        {"q": "earthquake", "near": "181,1"},
+        {"q": "earthquake", "bbox": "20,-5,-10,30"},
+        {"q": "earthquake", "occurred_after": "2026-09-01T00:00:00"},
+        {
+            "q": "earthquake",
+            "occurred_after": "2026-09-12T00:00:00Z",
+            "occurred_before": "2026-09-01T00:00:00Z",
+        },
+    ],
+)
+async def test_search_rejects_invalid_bounded_filters(
+    params: dict[str, str | int | float | bool | None],
+) -> None:
+    transport = httpx.ASGITransport(
+        app=create_app(InMemoryEventBus(), StubSignalStore(), StubSearchService())
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/search", params=params)
+    assert response.status_code == 422

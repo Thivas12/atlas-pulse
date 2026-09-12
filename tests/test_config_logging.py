@@ -27,6 +27,8 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.firms_enabled is True
     assert settings.firms_area == "-125,24,-66,50"
     assert settings.firms_map_key is not None
+    assert settings.gdelt_enabled is True
+    assert settings.gdelt_minimum_geo_precision == 3
     assert "top-secret" not in repr(settings)
 
 
@@ -34,6 +36,23 @@ def test_firms_requires_a_key_only_when_enabled() -> None:
     assert Settings(firms_enabled=False).firms_enabled is False
     with pytest.raises(ValidationError, match="ATLAS_FIRMS_MAP_KEY is required"):
         Settings(firms_enabled=True)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        (
+            {"gdelt_max_compressed_bytes": 2_000, "gdelt_max_uncompressed_bytes": 1_000},
+            "MAX_UNCOMPRESSED_BYTES",
+        ),
+        ({"gdelt_max_rows": 10, "gdelt_max_events": 11}, "MAX_EVENTS"),
+    ],
+)
+def test_settings_reject_inconsistent_gdelt_resource_limits(
+    overrides: dict[str, int], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        Settings.model_validate(overrides)
 
 
 @pytest.mark.parametrize("area", ["north", "1,2,3", "10,0,-10,5", "0,-91,1,2"])

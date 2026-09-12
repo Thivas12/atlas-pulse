@@ -8,13 +8,16 @@ interface EnvelopeOptions {
   occurredAt?: string;
   updatedAt?: string | null;
   location?: { latitude: number; longitude: number; altitude_km: number | null } | null;
-  source?: "usgs" | "nws" | "firms";
+  source?: "usgs" | "nws" | "firms" | "gdelt";
   alertType?: string;
   severity?: "Extreme" | "Severe" | "Moderate" | "Minor" | "Unknown";
   geometry?: unknown;
   expiresAt?: string | null;
   fireRadiativePowerMw?: number;
   fireConfidence?: "Low" | "Nominal" | "High";
+  conflictPriority?: "Elevated" | "High" | "Critical";
+  conflictRootCode?: "14" | "15" | "16" | "17" | "18" | "19" | "20";
+  goldsteinScale?: number;
 }
 
 export function makeEnvelope({
@@ -32,7 +35,19 @@ export function makeEnvelope({
   expiresAt = "2099-01-01T00:00:00Z",
   fireRadiativePowerMw = 18.4,
   fireConfidence = "High",
+  conflictPriority = "High",
+  conflictRootCode = "19",
+  goldsteinScale = -7,
 }: EnvelopeOptions = {}): EventEnvelope {
+  const conflictCategory = {
+    "14": "Protest",
+    "15": "Force posture",
+    "16": "Reduced relations",
+    "17": "Coercion",
+    "18": "Assault",
+    "19": "Fight",
+    "20": "Mass violence",
+  }[conflictRootCode];
   return {
     stream_id: streamId,
     event: {
@@ -42,16 +57,23 @@ export function makeEnvelope({
           ? "weather.alert"
           : source === "firms"
             ? "fire.thermal_anomaly"
-            : "seismic.earthquake",
+            : source === "gdelt"
+              ? "geopolitical.gdelt_event"
+              : "seismic.earthquake",
       source,
       occurred_at: occurredAt,
       ingested_at: "2026-09-12T10:03:00Z",
       schema_version: "1.0.0",
       location,
       payload: {
-        magnitude: source === "firms" ? null : magnitude,
+        magnitude: source === "firms" || source === "gdelt" ? null : magnitude,
         place,
-        depth_km: source === "firms" ? null : location ? Math.abs(location.altitude_km ?? 0) : null,
+        depth_km:
+          source === "firms" || source === "gdelt"
+            ? null
+            : location
+              ? Math.abs(location.altitude_km ?? 0)
+              : null,
         updated_at: updatedAt,
         status: "reviewed",
         source_url:
@@ -59,7 +81,9 @@ export function makeEnvelope({
             ? `https://api.weather.gov/alerts/${eventId}`
             : source === "firms"
               ? "https://firms.modaps.eosdis.nasa.gov/map/"
-              : `https://earthquake.usgs.gov/earthquakes/eventpage/${eventId}`,
+              : source === "gdelt"
+                ? "https://news.example.org/reports/123"
+                : `https://earthquake.usgs.gov/earthquakes/eventpage/${eventId}`,
         ...(source === "nws"
           ? {
               alert_type: alertType,
@@ -88,6 +112,38 @@ export function makeEnvelope({
               day_night: "day",
               expires_at: expiresAt,
               expiry_basis: "AtlasPulse 24-hour operational window",
+            }
+          : {}),
+        ...(source === "gdelt"
+          ? {
+              title: `${conflictCategory}: GOVERNMENT → REBELS`,
+              category: conflictCategory,
+              priority: conflictPriority,
+              severity_rank: { Elevated: 2, High: 3, Critical: 4 }[conflictPriority],
+              cameo_event_code: "190",
+              cameo_base_code: "190",
+              cameo_root_code: conflictRootCode,
+              quad_class: 4,
+              quad_class_label: "Material conflict",
+              goldstein_scale: goldsteinScale,
+              is_root_event: true,
+              actor1: "GOVERNMENT",
+              actor1_code: "GOV",
+              actor1_country_code: "US",
+              actor2: "REBELS",
+              actor2_code: "REB",
+              actor2_country_code: "US",
+              mentions: 12,
+              sources: 4,
+              articles: 7,
+              average_tone: -4.25,
+              reported_event_date: "2026-09-12",
+              detected_at: occurredAt,
+              expires_at: expiresAt,
+              expiry_basis: "AtlasPulse 24-hour operational window",
+              geo_precision: "world city or landmark centroid",
+              geo_type: 4,
+              verification_status: "machine-coded media observation; not independently verified",
             }
           : {}),
       },

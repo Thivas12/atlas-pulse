@@ -53,12 +53,12 @@ describe("AtlasPulse API client", () => {
 
     await expect(
       fetchCurrentSignals({
-        source: "usgs",
+        source: "gdelt",
         bounds: { west: -10, south: -5, east: 20, north: 30 },
       }),
     ).resolves.toEqual(body);
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/v1/signals?limit=500&active_only=true&source=usgs&bbox=-10%2C-5%2C20%2C30",
+      "/api/v1/signals?limit=500&active_only=true&source=gdelt&bbox=-10%2C-5%2C20%2C30",
       expect.any(Object),
     );
   });

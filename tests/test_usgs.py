@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from atlas_pulse.sources import PermanentSourceError, RetryableSourceError
+from atlas_pulse.sources.http import RetryingHttpClient
 from atlas_pulse.sources.usgs import USGSClient, USGSFeed
 
 
@@ -43,6 +44,19 @@ def test_feed_rejects_count_mismatch(usgs_payload: bytes) -> None:
 
     with pytest.raises(ValidationError, match="does not match"):
         USGSFeed.model_validate(document)
+
+
+def test_http_transport_rejects_a_nonpositive_response_limit() -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        RetryingHttpClient(
+            source_name="test",
+            url="https://example.test",
+            timeout_seconds=1,
+            max_attempts=1,
+            user_agent="AtlasPulse tests",
+            accept="application/json",
+            max_response_bytes=0,
+        )
 
 
 @pytest.mark.asyncio

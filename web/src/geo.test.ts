@@ -82,6 +82,25 @@ describe("eventsToGeoJson", () => {
     });
   });
 
+  it("maps GDELT priority separately from seismic and fire measurements", () => {
+    const conflict = makeEnvelope({
+      source: "gdelt",
+      conflictPriority: "Critical",
+      location: { latitude: 31.7683, longitude: 35.2137, altitude_km: null },
+    });
+
+    expect(eventsToGeoJson([conflict]).features[0]).toMatchObject({
+      geometry: { type: "Point", coordinates: [35.2137, 31.7683] },
+      properties: {
+        source: "gdelt",
+        magnitude: null,
+        fireRadiativePowerMw: null,
+        fireConfidenceRank: 0,
+        conflictPriorityRank: 4,
+      },
+    });
+  });
+
   it("omits area-only and malformed alert geometry from the polygon layer", () => {
     const areaOnly = makeEnvelope({ source: "nws", geometry: null, location: null });
     const malformed = makeEnvelope({ source: "nws", geometry: { type: "Polygon" } });

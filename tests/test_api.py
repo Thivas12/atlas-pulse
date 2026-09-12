@@ -72,7 +72,7 @@ async def test_health_readiness_and_recent_events() -> None:
         events = await client.get("/v1/events", params={"limit": 1})
 
     assert health.status_code == 200
-    assert health.json() == {"status": "ok", "version": "0.4.0"}
+    assert health.json() == {"status": "ok", "version": "0.5.0"}
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
     assert events.status_code == 200
@@ -222,15 +222,16 @@ async def test_current_signals_requires_an_injected_projection() -> None:
     assert response.json() == {"detail": "signal projection unavailable"}
 
 
-async def test_current_signals_accepts_firms_source_filter() -> None:
+@pytest.mark.parametrize("source", ["firms", "gdelt"])
+async def test_current_signals_accepts_new_source_filters(source: str) -> None:
     store = StubSignalStore()
     transport = httpx.ASGITransport(app=create_app(InMemoryEventBus(), store))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/v1/signals", params={"source": "firms"})
+        response = await client.get("/v1/signals", params={"source": source})
 
     assert response.status_code == 200
     assert store.query is not None
-    assert store.query.source == "firms"
+    assert store.query.source == source
 
 
 async def test_readiness_reports_projection_failure() -> None:

@@ -4,11 +4,16 @@ import { fetchCurrentSignals, fetchReplay } from "./api";
 import { EventFeed } from "./components/EventFeed";
 import { ReplayControls } from "./components/ReplayControls";
 import {
+  cameoRootCodeOf,
+  conflictPriorityOf,
+  conflictPriorityRankOf,
   fireConfidenceOf,
   fireConfidenceRankOf,
   fireRadiativePowerOf,
   formatTimestamp,
+  goldsteinScaleOf,
   isFireDetection,
+  isGeopoliticalEvent,
   isWeatherAlert,
   magnitudeOf,
   newestUpdate,
@@ -22,7 +27,7 @@ import {
 import type { EventEnvelope, ViewportBounds } from "./types";
 
 type ViewMode = "live" | "replay";
-type SourceFilter = "all" | "usgs" | "nws" | "firms";
+type SourceFilter = "all" | "usgs" | "nws" | "firms" | "gdelt";
 
 const EventMap = lazy(() =>
   import("./components/EventMap").then(({ EventMap: component }) => ({ default: component })),
@@ -38,58 +43,106 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   );
 }
 
+function payloadString(event: EventEnvelope["event"], key: string): string | null {
+  const value = event.payload[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function payloadNumber(event: EventEnvelope["event"], key: string): number | null {
+  const value = event.payload[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function safeSourceUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function EventDetail({ item, onClose }: { item: EventEnvelope; onClose: () => void }) {
   const { event } = item;
   const weather = isWeatherAlert(event);
   const fire = isFireDetection(event);
+  const conflict = isGeopoliticalEvent(event);
   const magnitude = magnitudeOf(event);
   const severity = severityOf(event);
   const fireConfidence = fireConfidenceOf(event);
   const fireRadiativePower = fireRadiativePowerOf(event);
-  const sourceUrl = event.payload.source_url;
+  const conflictPriority = conflictPriorityOf(event);
+  const conflictRootCode = cameoRootCodeOf(event);
+  const goldsteinScale = goldsteinScaleOf(event);
+  const sourceUrl = safeSourceUrl(event.payload.source_url);
   const depth = event.payload.depth_km;
-  const status = event.payload.status;
-  const certainty = event.payload.certainty;
-  const urgency = event.payload.urgency;
-  const expiresAt = event.payload.expires_at;
-  const senderName = event.payload.sender_name;
-  const messageType = event.payload.message_type;
-  const description = event.payload.description;
-  const instruction = event.payload.instruction;
-  const satellite = event.payload.satellite;
-  const product = event.payload.product;
-  const dayNight = event.payload.day_night;
-  const brightness = event.payload.brightness_ti4_k;
-  const sourceLabel = event.source === "firms" ? "NASA FIRMS" : event.source.toUpperCase();
+  const status = payloadString(event, "status");
+  const certainty = payloadString(event, "certainty");
+  const urgency = payloadString(event, "urgency");
+  const expiresAt = payloadString(event, "expires_at");
+  const senderName = payloadString(event, "sender_name");
+  const messageType = payloadString(event, "message_type");
+  const description = payloadString(event, "description");
+  const instruction = payloadString(event, "instruction");
+  const satellite = payloadString(event, "satellite");
+  const product = payloadString(event, "product");
+  const dayNight = payloadString(event, "day_night");
+  const brightness = payloadNumber(event, "brightness_ti4_k");
+  const cameoEventCode = payloadString(event, "cameo_event_code");
+  const actor1 = payloadString(event, "actor1");
+  const actor2 = payloadString(event, "actor2");
+  const actors = [actor1, actor2].filter((value): value is string => value !== null).join(" → ");
+  const mentions = payloadNumber(event, "mentions");
+  const sources = payloadNumber(event, "sources");
+  const articles = payloadNumber(event, "articles");
+  const averageTone = payloadNumber(event, "average_tone");
+  const reportedEventDate = payloadString(event, "reported_event_date");
+  const geoPrecision = payloadString(event, "geo_precision");
+  const sourceLabel =
+    event.source === "firms"
+      ? "NASA FIRMS"
+      : event.source === "gdelt"
+        ? "GDELT report"
+        : event.source.toUpperCase();
   const primaryMetric = weather
     ? (severity ?? "Weather")
     : fire
       ? fireRadiativePower === null
         ? "Thermal"
         : `${fireRadiativePower.toFixed(1)} MW`
-      : `M ${magnitude === null ? "?" : magnitude.toFixed(2)}`;
+      : conflict
+        ? conflictRootCode
+          ? `CAMEO ${conflictRootCode}`
+          : "Conflict"
+        : `M ${magnitude === null ? "?" : magnitude.toFixed(2)}`;
   return (
-    <aside className="event-detail" aria-label="Selected signal details">
+    <aside
+      className={`event-detail ${conflict ? "conflict" : ""}`}
+      aria-label="Selected signal details"
+    >
       <button className="detail-close" type="button" onClick={onClose} aria-label="Close details">
         ×
       </button>
       <p className="eyebrow">Selected signal</p>
-      <div className={`detail-magnitude ${weather ? "weather" : fire ? "fire" : ""}`}>
+      <div
+        className={`detail-magnitude ${weather ? "weather" : fire ? "fire" : conflict ? "conflict" : ""}`}
+      >
         {primaryMetric}
       </div>
       <h2>{titleOf(event)}</h2>
-      {(weather || fire) && <p className="detail-place">{placeOf(event)}</p>}
+      {(weather || fire || conflict) && <p className="detail-place">{placeOf(event)}</p>}
       <dl>
         <div>
-          <dt>Occurred</dt>
+          <dt>{conflict ? "Detected" : "Occurred"}</dt>
           <dd>{formatTimestamp(event.occurred_at)} UTC</dd>
         </div>
-        {weather || fire ? (
+        {weather || fire || conflict ? (
           <div>
-            <dt>{fire ? "Display until" : "Expires"}</dt>
-            <dd>
-              {typeof expiresAt === "string" ? `${formatTimestamp(expiresAt)} UTC` : "Unknown"}
-            </dd>
+            <dt>{fire || conflict ? "Display until" : "Expires"}</dt>
+            <dd>{expiresAt ? `${formatTimestamp(expiresAt)} UTC` : "Unknown"}</dd>
           </div>
         ) : (
           <div>
@@ -98,60 +151,65 @@ function EventDetail({ item, onClose }: { item: EventEnvelope; onClose: () => vo
           </div>
         )}
         <div>
-          <dt>{weather ? "Urgency" : fire ? "Confidence" : "Review"}</dt>
+          <dt>{weather ? "Urgency" : fire ? "Confidence" : conflict ? "Priority" : "Review"}</dt>
           <dd>
             {weather
-              ? typeof urgency === "string"
-                ? urgency
-                : "Unknown"
+              ? (urgency ?? "Unknown")
               : fire
                 ? (fireConfidence ?? "Unknown")
-                : typeof status === "string"
-                  ? status
-                  : "Unknown"}
+                : conflict
+                  ? (conflictPriority ?? "Unknown")
+                  : (status ?? "Unknown")}
           </dd>
         </div>
         <div>
-          <dt>{weather ? "Certainty" : fire ? "Satellite" : "Coordinates"}</dt>
+          <dt>
+            {weather
+              ? "Certainty"
+              : fire
+                ? "Satellite"
+                : conflict
+                  ? "Goldstein scale"
+                  : "Coordinates"}
+          </dt>
           <dd>
             {weather
-              ? typeof certainty === "string"
-                ? certainty
-                : "Unknown"
+              ? (certainty ?? "Unknown")
               : fire
-                ? typeof satellite === "string"
-                  ? satellite
-                  : "Unknown"
-                : event.location
-                  ? `${event.location.latitude.toFixed(3)}, ${event.location.longitude.toFixed(3)}`
-                  : "Unknown"}
+                ? (satellite ?? "Unknown")
+                : conflict
+                  ? goldsteinScale === null
+                    ? "Unknown"
+                    : goldsteinScale.toFixed(1)
+                  : event.location
+                    ? `${event.location.latitude.toFixed(3)}, ${event.location.longitude.toFixed(3)}`
+                    : "Unknown"}
           </dd>
         </div>
         {weather && (
           <div>
             <dt>Alert state</dt>
             <dd>
-              {typeof messageType === "string" ? messageType : "Unknown"} ·{" "}
-              {typeof status === "string" ? status : "Unknown"}
+              {messageType ?? "Unknown"} · {status ?? "Unknown"}
             </dd>
           </div>
         )}
         {fire && (
           <div>
             <dt>Sensor product</dt>
-            <dd>{typeof product === "string" ? product : "Unknown"}</dd>
+            <dd>{product ?? "Unknown"}</dd>
           </div>
         )}
         {fire && (
           <div>
             <dt>Observation</dt>
-            <dd>{typeof dayNight === "string" ? dayNight : "Unknown"}</dd>
+            <dd>{dayNight ?? "Unknown"}</dd>
           </div>
         )}
         {fire && (
           <div>
             <dt>Brightness</dt>
-            <dd>{typeof brightness === "number" ? `${brightness.toFixed(1)} K` : "Unknown"}</dd>
+            <dd>{brightness === null ? "Unknown" : `${brightness.toFixed(1)} K`}</dd>
           </div>
         )}
         {fire && (
@@ -173,7 +231,57 @@ function EventDetail({ item, onClose }: { item: EventEnvelope; onClose: () => vo
         {weather && (
           <div>
             <dt>Office</dt>
-            <dd>{typeof senderName === "string" ? senderName : "Unknown"}</dd>
+            <dd>{senderName ?? "Unknown"}</dd>
+          </div>
+        )}
+        {conflict && (
+          <div>
+            <dt>Actors</dt>
+            <dd>{actors || "Unknown"}</dd>
+          </div>
+        )}
+        {conflict && (
+          <div>
+            <dt>CAMEO classification</dt>
+            <dd>
+              Root {conflictRootCode ?? "?"} · event {cameoEventCode ?? "?"}
+            </dd>
+          </div>
+        )}
+        {conflict && (
+          <div>
+            <dt>Media coverage</dt>
+            <dd>
+              {mentions ?? 0} mentions · {sources ?? 0} sources · {articles ?? 0} articles
+            </dd>
+          </div>
+        )}
+        {conflict && (
+          <div>
+            <dt>Average tone</dt>
+            <dd>{averageTone === null ? "Unknown" : averageTone.toFixed(2)}</dd>
+          </div>
+        )}
+        {conflict && (
+          <div>
+            <dt>Reported event date</dt>
+            <dd>{reportedEventDate ?? "Unknown"}</dd>
+          </div>
+        )}
+        {conflict && (
+          <div>
+            <dt>Location precision</dt>
+            <dd>{geoPrecision ?? "Unknown"}</dd>
+          </div>
+        )}
+        {conflict && (
+          <div>
+            <dt>Coordinates</dt>
+            <dd>
+              {event.location
+                ? `${event.location.latitude.toFixed(3)}, ${event.location.longitude.toFixed(3)}`
+                : "Unknown"}
+            </dd>
           </div>
         )}
         <div>
@@ -185,10 +293,8 @@ function EventDetail({ item, onClose }: { item: EventEnvelope; onClose: () => vo
           <dd>{item.stream_id}</dd>
         </div>
       </dl>
-      {weather && typeof description === "string" && (
-        <p className="detail-summary">{description}</p>
-      )}
-      {weather && typeof instruction === "string" && (
+      {weather && description && <p className="detail-summary">{description}</p>}
+      {weather && instruction && (
         <p className="detail-instruction">
           <strong>Recommended action</strong>
           {instruction}
@@ -200,7 +306,13 @@ function EventDetail({ item, onClose }: { item: EventEnvelope; onClose: () => vo
           independently confirmed wildfire perimeter.
         </p>
       )}
-      {typeof sourceUrl === "string" && sourceUrl.startsWith("https://") && (
+      {conflict && (
+        <p className="detail-summary">
+          Machine-coded media observation. It can contain NLP, reporting, or geocoding errors and is
+          not an independently verified incident.
+        </p>
+      )}
+      {sourceUrl && (
         <a href={sourceUrl} target="_blank" rel="noreferrer" className="source-link">
           Open {sourceLabel} evidence ↗
         </a>
@@ -317,10 +429,14 @@ export default function App() {
   const earthquakes = filteredEvents.filter(({ event }) => event.source === "usgs");
   const weatherAlerts = filteredEvents.filter(({ event }) => isWeatherAlert(event));
   const fireDetections = filteredEvents.filter(({ event }) => isFireDetection(event));
+  const conflictSignals = filteredEvents.filter(({ event }) => isGeopoliticalEvent(event));
   const strongest = strongestMagnitude(earthquakes);
   const highSeverity = weatherAlerts.filter(({ event }) => severityRankOf(event) >= 3).length;
   const highConfidenceFires = fireDetections.filter(
     ({ event }) => fireConfidenceRankOf(event) >= 3,
+  ).length;
+  const highPriorityConflicts = conflictSignals.filter(
+    ({ event }) => conflictPriorityRankOf(event) >= 3,
   ).length;
   const areaOnly = weatherAlerts.filter(({ event }) => !event.payload.geometry).length;
   const usgsFreshness = relativeAge(
@@ -331,6 +447,9 @@ export default function App() {
   );
   const firmsFreshness = relativeAge(
     newestUpdate(liveItems.filter(({ event }) => event.source === "firms")),
+  );
+  const gdeltFreshness = relativeAge(
+    newestUpdate(liveItems.filter(({ event }) => event.source === "gdelt")),
   );
   const loading =
     mode === "live"
@@ -351,7 +470,7 @@ export default function App() {
         </a>
         <div className="mission-copy">
           <span>GLOBAL DISRUPTION INTELLIGENCE</span>
-          <small>USGS + NWS + NASA FIRMS · AUDITABLE · REPLAYABLE</small>
+          <small>USGS + NWS + NASA FIRMS + GDELT · AUDITABLE · REPLAYABLE</small>
         </div>
         <div className="system-state">
           <span className={`live-dot ${liveQuery.isError ? "error" : ""}`} />
@@ -383,6 +502,7 @@ export default function App() {
               ["usgs", "Earthquakes"],
               ["nws", "Weather"],
               ["firms", "Fires"],
+              ["gdelt", "Conflict"],
             ] as const
           ).map(([value, label]) => (
             <button
@@ -425,14 +545,19 @@ export default function App() {
           detail={`${mappedEvents.length} total signals in viewport`}
         />
         <Metric
+          label="Conflict signals"
+          value={String(conflictSignals.length)}
+          detail={`${highPriorityConflicts} high or critical`}
+        />
+        <Metric
           label="High priority"
-          value={String(highSeverity + highConfidenceFires)}
-          detail={`${highSeverity} weather · ${highConfidenceFires} fire`}
+          value={String(highSeverity + highConfidenceFires + highPriorityConflicts)}
+          detail={`${highSeverity} weather · ${highConfidenceFires} fire · ${highPriorityConflicts} conflict`}
         />
         <Metric
           label="Source freshness"
           value={`USGS ${usgsFreshness}`}
-          detail={`NWS ${nwsFreshness} · FIRMS ${firmsFreshness}`}
+          detail={`NWS ${nwsFreshness} · FIRMS ${firmsFreshness} · GDELT ${gdeltFreshness}`}
         />
       </section>
 
@@ -456,6 +581,8 @@ export default function App() {
             <i className="weather-severe" /> severe+
             <span className="fire-legend">FIRE</span>
             <i className="fire-high" /> high confidence
+            <span className="conflict-legend">CONFLICT</span>
+            <i className="conflict-high" /> high / critical
           </div>
           {loading && <div className="map-message">Synchronising event stream…</div>}
           {error && <div className="map-message error">{error.message}</div>}
@@ -486,8 +613,8 @@ export default function App() {
       </section>
 
       <footer>
-        <span>ATLASPULSE / SATELLITE FIRE SLICE / v0.4.0</span>
-        <span>Evidence: USGS + NOAA/NWS + NASA FIRMS · Map: OpenFreeMap/OSM</span>
+        <span>ATLASPULSE / MATERIAL CONFLICT SLICE / v0.5.0</span>
+        <span>Evidence: USGS + NOAA/NWS + NASA FIRMS + GDELT · Map: OpenFreeMap/OSM</span>
       </footer>
     </main>
   );

@@ -30,11 +30,15 @@ class RetryingHttpClient:
         user_agent: str,
         accept: str,
         public_source_url: str | None = None,
+        max_response_bytes: int | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        if max_response_bytes is not None and max_response_bytes < 1:
+            raise ValueError("max_response_bytes must be positive")
         self._source_name = source_name
         self._url = url
-        self._public_source_url = public_source_url or url
+        self._public_source_url = public_source_url
+        self._max_response_bytes = max_response_bytes
         self._max_attempts = max_attempts
         self._headers = {"Accept": accept, "User-Agent": user_agent}
         self._owns_client = client is None
@@ -54,24 +58,40 @@ class RetryingHttpClient:
         async for attempt in retrying:
             with attempt:
                 try:
-                    response = await self._client.get(self._url, headers=self._headers)
+                    async with self._client.stream(
+                        "GET", self._url, headers=self._headers
+                    ) as response:
+                        if response.status_code == 429 or response.status_code >= 500:
+                            raise RetryableSourceError(
+                                f"{self._source_name} returned retryable HTTP "
+                                f"{response.status_code}"
+                            )
+                        if not 200 <= response.status_code < 300:
+                            raise PermanentSourceError(
+                                f"{self._source_name} returned permanent HTTP "
+                                f"{response.status_code}"
+                            )
+                        raw = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if (
+                                self._max_response_bytes is not None
+                                and len(raw) + len(chunk) > self._max_response_bytes
+                            ):
+                                raise PermanentSourceError(
+                                    f"{self._source_name} response exceeded the configured byte limit"
+                                )
+                            raw.extend(chunk)
+                        source_url = self._public_source_url or str(response.url)
+                        content_type = response.headers.get("content-type")
                 except httpx.TransportError as error:
                     raise RetryableSourceError(
                         f"{self._source_name} transport failed ({type(error).__name__})"
                     ) from None
-                if response.status_code == 429 or response.status_code >= 500:
-                    raise RetryableSourceError(
-                        f"{self._source_name} returned retryable HTTP {response.status_code}"
-                    )
-                if not 200 <= response.status_code < 300:
-                    raise PermanentSourceError(
-                        f"{self._source_name} returned permanent HTTP {response.status_code}"
-                    )
                 return FetchedDocument(
-                    raw=response.content,
+                    raw=bytes(raw),
                     fetched_at=datetime.now(UTC),
-                    source_url=self._public_source_url,
-                    content_type=response.headers.get("content-type"),
+                    source_url=source_url,
+                    content_type=content_type,
                 )
         raise AssertionError("retry loop completed without a response")  # pragma: no cover
 

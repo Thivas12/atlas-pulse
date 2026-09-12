@@ -38,8 +38,19 @@ class Settings(BaseSettings):
     firms_day_range: int = Field(default=1, ge=1, le=5)
     firms_poll_seconds: float = Field(default=900.0, ge=300)
     firms_active_window_hours: int = Field(default=24, ge=1, le=120)
+    gdelt_enabled: bool = True
+    gdelt_last_update_url: HttpUrl = HttpUrl("https://data.gdeltproject.org/gdeltv2/lastupdate.txt")
+    gdelt_poll_seconds: float = Field(default=900.0, ge=300)
+    gdelt_active_window_hours: int = Field(default=24, ge=1, le=168)
+    gdelt_only_root_events: bool = True
+    gdelt_minimum_geo_precision: int = Field(default=3, ge=1, le=5)
+    gdelt_minimum_mentions: int = Field(default=1, ge=1, le=1_000_000)
+    gdelt_max_compressed_bytes: int = Field(default=25_000_000, ge=1_000, le=100_000_000)
+    gdelt_max_uncompressed_bytes: int = Field(default=100_000_000, ge=1_000, le=500_000_000)
+    gdelt_max_rows: int = Field(default=100_000, ge=1, le=1_000_000)
+    gdelt_max_events: int = Field(default=5_000, ge=1, le=100_000)
     source_user_agent: str = Field(
-        default="AtlasPulse/0.4 (+https://github.com/Thivas12/atlas-pulse)",
+        default="AtlasPulse/0.5 (+https://github.com/Thivas12/atlas-pulse)",
         min_length=10,
     )
     source_timeout_seconds: float = Field(default=15.0, gt=0)
@@ -77,6 +88,12 @@ class Settings(BaseSettings):
         key = self.firms_map_key.get_secret_value().strip() if self.firms_map_key else ""
         if self.firms_enabled and not key:
             raise ValueError("ATLAS_FIRMS_MAP_KEY is required when ATLAS_FIRMS_ENABLED=true")
+        if self.gdelt_max_uncompressed_bytes < self.gdelt_max_compressed_bytes:
+            raise ValueError(
+                "ATLAS_GDELT_MAX_UNCOMPRESSED_BYTES must be at least the compressed byte limit"
+            )
+        if self.gdelt_max_events > self.gdelt_max_rows:
+            raise ValueError("ATLAS_GDELT_MAX_EVENTS must not exceed ATLAS_GDELT_MAX_ROWS")
         return self
 
 

@@ -21,8 +21,8 @@ _STREAM_IDS = (
     "9100003-0",
     "9100004-0",
     "9100005-0",
+    "9100006-0",
 )
-_EVENT_IDS = ("day5-quake", "day5-polygon", "day5-area-only", "day5-expired", "day5-fire")
 _PROJECTION = "day5-integration"
 
 
@@ -53,6 +53,8 @@ def _event(
             if source == "nws"
             else "fire.thermal_anomaly"
             if source == "firms"
+            else "geopolitical.gdelt_event"
+            if source == "gdelt"
             else "seismic.earthquake"
         ),
         source=source,
@@ -154,6 +156,22 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
                 },
             ),
         ),
+        StreamMessage(
+            stream_id=_STREAM_IDS[6],
+            event=_event(
+                "day5-gdelt",
+                source="gdelt",
+                occurred_at=occurred,
+                location=GeoPoint(latitude=13.0827, longitude=80.2707, altitude_km=None),
+                payload={
+                    "category": "Fight",
+                    "severity_rank": 3,
+                    "goldstein_scale": -10.0,
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "title": "Fight: GOVERNMENT → REBELS",
+                },
+            ),
+        ),
     )
 
     try:
@@ -162,7 +180,7 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
 
         assert await store.checkpoint(_PROJECTION) == _STREAM_IDS[-1]
         all_current = await store.query_current(SignalQuery(limit=10, active_only=False))
-        assert len(all_current.items) == 5
+        assert len(all_current.items) == 6
         assert all_current.items[-1].event.payload["title"] == "Revised quake"
 
         active = await store.query_current(SignalQuery(limit=10))
@@ -171,6 +189,7 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
             "day5-polygon",
             "day5-area-only",
             "day5-fire",
+            "day5-gdelt",
         }
 
         bounds = GeoBounds(west=-100, south=30, east=-90, north=40)
@@ -193,19 +212,29 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
         )
         assert [message.event.event_id for message in fires.items] == ["day5-fire"]
 
+        conflicts = await store.query_current(
+            SignalQuery(
+                limit=10,
+                source="gdelt",
+                min_severity=3,
+                bounds=GeoBounds(west=79, south=12, east=82, north=15),
+            )
+        )
+        assert [message.event.event_id for message in conflicts.items] == ["day5-gdelt"]
+
         first_page = await store.query_current(SignalQuery(limit=2, active_only=False))
         second_page = await store.query_current(
             SignalQuery(limit=2, after=first_page.next_cursor, active_only=False)
         )
         assert first_page.has_more is True
-        assert [message.stream_id for message in first_page.items] == list(_STREAM_IDS[5:3:-1])
-        assert [message.stream_id for message in second_page.items] == list(_STREAM_IDS[3:1:-1])
+        assert [message.stream_id for message in first_page.items] == list(_STREAM_IDS[6:4:-1])
+        assert [message.stream_id for message in second_page.items] == list(_STREAM_IDS[4:2:-1])
 
         async with engine.connect() as connection:
             revision_count = await connection.scalar(
                 text("SELECT count(*) FROM event_revisions WHERE stream_id LIKE '910000%'")
             )
-        assert revision_count == 6
+        assert revision_count == 7
     finally:
         await engine.dispose()
         await _clean(DATABASE_URL)

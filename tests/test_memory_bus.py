@@ -43,3 +43,15 @@ async def test_memory_bus_preserves_a_revised_source_event() -> None:
     assert first.deduplicated is False
     assert update.deduplicated is False
     assert len(await bus.latest(10)) == 2
+
+
+async def test_memory_replay_uses_an_exclusive_numeric_cursor() -> None:
+    bus = InMemoryEventBus()
+    for index in range(12):
+        await bus.publish(make_event(str(index)))
+
+    page = await bus.replay(after="0-9", limit=2)
+    exhausted = await bus.replay(after="0-99", limit=2)
+
+    assert [message.stream_id for message in page] == ["0-10", "0-11"]
+    assert exhausted == ()

@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from agent_rag_core import Event
 from fastapi import FastAPI, HTTPException, Query, status
@@ -30,6 +31,16 @@ class EventsResponse(BaseModel):
 
     count: int
     items: tuple[EventEnvelope, ...]
+
+
+class ReplayResponse(BaseModel):
+    """Deterministic oldest-first page with an exclusive continuation cursor."""
+
+    count: int
+    items: tuple[EventEnvelope, ...]
+    next_cursor: str | None
+    has_more: bool
+    order: Literal["oldest_first"] = "oldest_first"
 
 
 def create_app(event_bus: EventBus) -> FastAPI:
@@ -69,5 +80,23 @@ def create_app(event_bus: EventBus) -> FastAPI:
             EventEnvelope(stream_id=message.stream_id, event=message.event) for message in messages
         )
         return EventsResponse(count=len(items), items=items)
+
+    @app.get("/v1/events/replay", response_model=ReplayResponse, tags=["events"])
+    async def replay_events(
+        after: str | None = Query(default=None, pattern=r"^\d+-\d+$"),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> ReplayResponse:
+        page = await event_bus.replay(after=after, limit=limit + 1)
+        has_more = len(page) > limit
+        visible = page[:limit]
+        items = tuple(
+            EventEnvelope(stream_id=message.stream_id, event=message.event) for message in visible
+        )
+        return ReplayResponse(
+            count=len(items),
+            items=items,
+            next_cursor=items[-1].stream_id if items else None,
+            has_more=has_more,
+        )
 
     return app

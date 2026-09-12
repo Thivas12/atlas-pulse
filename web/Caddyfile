@@ -1,0 +1,26 @@
+:8080 {
+  encode zstd gzip
+
+  header {
+    -Server
+    X-Content-Type-Options nosniff
+    Referrer-Policy no-referrer
+    Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    Content-Security-Policy "default-src 'self'; connect-src 'self' https://tiles.openfreemap.org; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://tiles.openfreemap.org; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; worker-src blob:"
+  }
+
+  handle /healthz {
+    respond "ok" 200
+  }
+
+  handle /api/* {
+    uri strip_prefix /api
+    reverse_proxy api:8000
+  }
+
+  handle {
+    root * /srv
+    try_files {path} /index.html
+    file_server
+  }
+}

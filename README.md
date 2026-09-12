@@ -7,10 +7,11 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — live seismic vertical slice.** The worker polls the official USGS
-> all-earthquakes feed every 60 seconds, preserves the unmodified response, validates and
-> normalizes it, and atomically publishes new events to Valkey Streams. The API exposes
-> health, dependency readiness, and the newest normalized events.
+> **Current milestone — live and replayable seismic command center.** The worker polls the
+> official USGS feed every 60 seconds, preserves the unmodified response, validates and
+> normalizes it, and atomically publishes new revisions to Valkey Streams. A responsive
+> MapLibre dashboard visualizes the live world state and can replay retained history in stable,
+> oldest-first cursor order.
 
 ## Why this is portfolio-grade
 
@@ -20,9 +21,10 @@ component can run without a paid API key.
 | Auditability | SHA-256 content-addressed raw snapshots are written before parsing |
 | Reliable delivery | Bounded HTTP retry plus revision-aware atomic Lua deduplication |
 | Shared contracts | Immutable `Event` and `GeoPoint` models pinned to `agent-rag-core` commit `7732801` |
-| Replay | Every normalized event receives a stable Valkey Stream ID |
+| Deterministic replay | Exclusive Valkey Stream cursors page retained history oldest-first without boundary duplicates |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
-| Engineering quality | Strict mypy, Ruff, locked dependencies, 28 unit/contract tests and a real-Valkey CI test |
+| Decision UI | Live/replay modes, clustered map, source freshness, revision counts, evidence links |
+| Engineering quality | Strict mypy and TypeScript, locked dependencies, 33 backend and 17 web tests, enforced coverage, real-Valkey CI |
 | Supply-chain hygiene | Read-only workflow permissions, commit-pinned Actions, weekly dependency updates |
 
 ## Architecture
@@ -35,6 +37,7 @@ flowchart TD
     Validate --> Contract["Shared Event contract"]
     Contract --> Stream["Valkey Streams + atomic dedupe"]
     Stream --> API["FastAPI read API"]
+    API --> Web["React + MapLibre command center"]
     Stream --> Agents["RAG and agent consumers — next milestones"]
 ```
 
@@ -53,16 +56,20 @@ cd atlas-pulse
 docker compose up --build
 ```
 
-After the ingestor completes its first cycle:
+After the ingestor completes its first cycle, open the command center at
+<http://localhost:3000>. The API and its operational probes remain directly available:
 
 ```bash
 curl -s http://localhost:8000/healthz
 curl -s http://localhost:8000/readyz
 curl -s 'http://localhost:8000/v1/events?limit=5'
+curl -s 'http://localhost:8000/v1/events/replay?limit=5'
 ```
 
-Interactive OpenAPI documentation is at <http://localhost:8000/docs>. Stop the stack with
-`docker compose down`. Add `--volumes` only when you intentionally want to delete local
+Switch between **Live** and **Replay** in the dashboard. Replay starts at the oldest retained
+stream entry; its play control, position slider, and 1×/2×/4× speeds operate on cursor-paged
+history. Interactive OpenAPI documentation is at <http://localhost:8000/docs>. Stop the stack
+with `docker compose down`. Add `--volumes` only when you intentionally want to delete local
 stream data and raw snapshots.
 
 ## Develop without rebuilding containers
@@ -84,6 +91,15 @@ ATLAS_VALKEY_URL=valkey://localhost:6379/0 \
   uv run uvicorn atlas_pulse.asgi:app --reload --port 8000
 ```
 
+Run the dashboard with Vite in a third terminal. Its development proxy forwards `/api` to the
+local FastAPI process:
+
+```bash
+cd web
+npm ci
+npm run dev
+```
+
 Run the same quality gate as CI:
 
 ```bash
@@ -91,6 +107,10 @@ uv run ruff format --check .
 uv run ruff check .
 uv run mypy src tests
 uv run pytest --cov=atlas_pulse --cov-branch --cov-report=term-missing
+cd web
+npm run lint
+npm run test:coverage
+npm run build
 ```
 
 The integration test activates automatically when `ATLAS_TEST_VALKEY_URL` is present:
@@ -106,10 +126,14 @@ ATLAS_TEST_VALKEY_URL=valkey://localhost:6379/0 uv run pytest -m integration
 | `GET` | `/healthz` | Process liveness; does not depend on Valkey |
 | `GET` | `/readyz` | Returns `503` when Valkey is unavailable |
 | `GET` | `/v1/events?limit=50` | Newest normalized events and their replay IDs |
+| `GET` | `/v1/events/replay?limit=100&after=<stream-id>` | Oldest-first page strictly after an optional cursor |
 
 Every event contains a stable source ID, an aware occurrence time, ingestion time, semantic
 type, WGS84 location, source name, schema version, and JSON-safe payload. USGS depth is kept
 as positive-down `payload.depth_km`; the shared geographic altitude is its negative value.
+Replay requests read one extra entry to compute `has_more`, return at most 500 items, and expose
+the final visible stream ID as `next_cursor`. Stream retention is bounded, so replay is
+deterministic for retained entries rather than an indefinite event archive.
 
 ## Failure behavior
 
@@ -123,8 +147,10 @@ as positive-down `payload.depth_km`; the shared geographic altitude is its negat
   retained.
 - Readiness fails closed when the stream is unavailable; liveness remains available.
 
-See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision and
-[ADR 0002](docs/adr/0002-snapshot-before-validation.md) for the evidence boundary.
+See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision,
+[ADR 0002](docs/adr/0002-snapshot-before-validation.md) for the evidence boundary, and
+[ADR 0003](docs/adr/0003-cursor-based-replay.md) for replay semantics. A reproducible
+[60-second demo](docs/demo.md) is included for project reviews.
 
 ## Free stack
 
@@ -135,21 +161,23 @@ No part of this milestone needs a paid model, paid dataset, or API key.
 | Live source | [USGS Earthquake GeoJSON feeds](https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php) | Public, no key |
 | API/contracts | Python, FastAPI, Pydantic | Open source |
 | Event stream | Valkey + `valkey-py` | Open source |
+| Web command center | React, TypeScript, TanStack Query, Zod | Open source |
+| Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
+| Static serving | Caddy | Open source |
 | Observability | OpenTelemetry | Open source; console export by default |
-| Toolchain | uv, Ruff, mypy, pytest | Open source |
+| Toolchain | uv, Ruff, mypy, pytest, Vite, Vitest, Biome | Open source |
 | Runtime | Docker Engine/Compose or Podman | Free/open-source options |
 | CI | GitHub Actions on this public repository | Free hosted runners for public repos |
 
 ## Next milestones
 
-1. Deterministic historical replay and a MapLibre live earthquake map.
-2. NWS alerts, NASA FIRMS wildfire data, and GDELT news signals with a common provenance
+1. NWS alerts, NASA FIRMS wildfire data, and GDELT news signals with a common provenance
    envelope.
-3. Hybrid sparse/dense/geospatial retrieval, reranking, temporal filtering, and citation
+2. Hybrid sparse/dense/geospatial retrieval, reranking, temporal filtering, and citation
    verification.
-4. A hierarchy of specialist agents for signal fusion, contradiction detection, impact
+3. A hierarchy of specialist agents for signal fusion, contradiction detection, impact
    assessment, forecasting, and human approval.
-5. Evaluation datasets, RAGAS-style retrieval metrics, agent trajectory scoring, drift
+4. Evaluation datasets, RAGAS-style retrieval metrics, agent trajectory scoring, drift
    monitoring, and a fully free deployment path.
 
 ## Data and attribution

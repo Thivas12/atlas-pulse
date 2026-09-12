@@ -73,3 +73,43 @@ async def test_application_lifespan_closes_event_bus() -> None:
         assert bus.closed is False
 
     assert bus.closed is True
+
+
+async def test_replay_is_oldest_first_and_cursor_paginated() -> None:
+    bus = InMemoryEventBus()
+    for event_id in ("one", "two", "three"):
+        await bus.publish(
+            Event(
+                event_id=event_id,
+                event_type="seismic.earthquake",
+                source="usgs",
+                occurred_at=datetime(2024, 7, 10, tzinfo=UTC),
+            )
+        )
+    transport = httpx.ASGITransport(app=create_app(bus))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first_page = await client.get("/v1/events/replay", params={"limit": 2})
+        second_page = await client.get(
+            "/v1/events/replay",
+            params={"limit": 2, "after": first_page.json()["next_cursor"]},
+        )
+
+    assert first_page.status_code == 200
+    assert [item["event"]["event_id"] for item in first_page.json()["items"]] == [
+        "one",
+        "two",
+    ]
+    assert first_page.json()["next_cursor"] == "0-2"
+    assert first_page.json()["has_more"] is True
+    assert first_page.json()["order"] == "oldest_first"
+    assert [item["event"]["event_id"] for item in second_page.json()["items"]] == ["three"]
+    assert second_page.json()["next_cursor"] == "0-3"
+    assert second_page.json()["has_more"] is False
+
+
+async def test_replay_rejects_an_invalid_stream_cursor() -> None:
+    transport = httpx.ASGITransport(app=create_app(InMemoryEventBus()))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/events/replay", params={"after": "not-a-cursor"})
+
+    assert response.status_code == 422

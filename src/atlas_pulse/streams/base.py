@@ -45,6 +45,10 @@ class EventBus(Protocol):
         """Return newest messages first."""
         ...
 
+    async def replay(self, *, after: str | None, limit: int) -> tuple[StreamMessage, ...]:
+        """Return a stable oldest-first page strictly after an optional cursor."""
+        ...
+
     async def is_ready(self) -> bool:
         """Return whether the backing stream is available."""
         ...

@@ -1,0 +1,304 @@
+"""Transactional PostgreSQL/PostGIS current-signal projection."""
+
+import json
+from collections.abc import Mapping
+from datetime import datetime
+from typing import cast
+
+from agent_rag_core import Event
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+from atlas_pulse.projections.base import SignalPage, SignalQuery
+from atlas_pulse.streams import StreamMessage
+
+_INSERT_REVISIONS = """
+INSERT INTO event_revisions (
+    stream_id,
+    stream_ms,
+    stream_seq,
+    source,
+    event_id,
+    event_type,
+    occurred_at,
+    ingested_at,
+    event_json,
+    point,
+    footprint,
+    severity_rank,
+    magnitude,
+    expires_at,
+    place,
+    title
+) VALUES (
+    :stream_id,
+    :stream_ms,
+    :stream_seq,
+    :source,
+    :event_id,
+    :event_type,
+    :occurred_at,
+    :ingested_at,
+    CAST(:event_json AS jsonb),
+    CASE
+        WHEN CAST(:longitude AS double precision) IS NULL THEN NULL
+        ELSE ST_SetSRID(
+            ST_MakePoint(
+                CAST(:longitude AS double precision),
+                CAST(:latitude AS double precision)
+            ),
+            4326
+        )
+    END,
+    CASE
+        WHEN CAST(:footprint_json AS text) IS NULL THEN NULL
+        ELSE ST_SetSRID(ST_GeomFromGeoJSON(CAST(:footprint_json AS text)), 4326)
+    END,
+    :severity_rank,
+    :magnitude,
+    :expires_at,
+    :place,
+    :title
+)
+ON CONFLICT (stream_id) DO NOTHING
+"""
+
+_UPSERT_CURRENT = """
+INSERT INTO current_signals (source, event_id, stream_id, stream_ms, stream_seq)
+VALUES (:source, :event_id, :stream_id, :stream_ms, :stream_seq)
+ON CONFLICT (source, event_id) DO UPDATE SET
+    stream_id = EXCLUDED.stream_id,
+    stream_ms = EXCLUDED.stream_ms,
+    stream_seq = EXCLUDED.stream_seq
+WHERE (current_signals.stream_ms, current_signals.stream_seq)
+    < (EXCLUDED.stream_ms, EXCLUDED.stream_seq)
+"""
+
+_UPSERT_CHECKPOINT = """
+INSERT INTO projection_checkpoints (
+    projection_name,
+    last_stream_id,
+    last_stream_ms,
+    last_stream_seq,
+    updated_at
+)
+VALUES (:projection_name, :stream_id, :stream_ms, :stream_seq, CURRENT_TIMESTAMP)
+ON CONFLICT (projection_name) DO UPDATE SET
+    last_stream_id = EXCLUDED.last_stream_id,
+    last_stream_ms = EXCLUDED.last_stream_ms,
+    last_stream_seq = EXCLUDED.last_stream_seq,
+    updated_at = EXCLUDED.updated_at
+WHERE (projection_checkpoints.last_stream_ms, projection_checkpoints.last_stream_seq)
+    < (EXCLUDED.last_stream_ms, EXCLUDED.last_stream_seq)
+"""
+
+
+def parse_stream_id(stream_id: str) -> tuple[int, int]:
+    """Parse a Valkey Stream ID into sortable numeric components."""
+    parts = stream_id.split("-", maxsplit=1)
+    if len(parts) != 2 or not all(part.isdigit() for part in parts):
+        raise ValueError(f"invalid stream id: {stream_id}")
+    return int(parts[0]), int(parts[1])
+
+
+def _payload_number(value: object) -> float | None:
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _payload_integer(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _payload_text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _payload_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def projection_values(message: StreamMessage) -> dict[str, object]:
+    """Extract indexed columns while retaining the authoritative event JSON."""
+    event = message.event
+    stream_ms, stream_seq = parse_stream_id(message.stream_id)
+    geometry = event.payload.get("geometry")
+    footprint_json = (
+        json.dumps(geometry, sort_keys=True, separators=(",", ":"))
+        if isinstance(geometry, dict) and geometry.get("type") in {"Polygon", "MultiPolygon"}
+        else None
+    )
+    return {
+        "stream_id": message.stream_id,
+        "stream_ms": stream_ms,
+        "stream_seq": stream_seq,
+        "source": event.source,
+        "event_id": event.event_id,
+        "event_type": event.event_type,
+        "occurred_at": event.occurred_at,
+        "ingested_at": event.ingested_at,
+        "event_json": event.model_dump_json(),
+        "longitude": event.location.longitude if event.location else None,
+        "latitude": event.location.latitude if event.location else None,
+        "footprint_json": footprint_json,
+        "severity_rank": _payload_integer(event.payload.get("severity_rank")),
+        "magnitude": _payload_number(event.payload.get("magnitude")),
+        "expires_at": _payload_datetime(event.payload.get("expires_at")),
+        "place": _payload_text(event.payload.get("place")),
+        "title": _payload_text(event.payload.get("title")),
+    }
+
+
+def _event_from_database(value: object) -> Event:
+    if isinstance(value, bytes | str):
+        return Event.model_validate_json(value)
+    if isinstance(value, Mapping):
+        return Event.model_validate(dict(value))
+    raise TypeError("event_json must be a JSON object, string, or bytes")
+
+
+class PostgresSignalStore:
+    """Durable immutable revisions, current pointers, and atomic checkpoints."""
+
+    def __init__(
+        self,
+        *,
+        database_url: str,
+        engine: AsyncEngine | None = None,
+    ) -> None:
+        self._owns_engine = engine is None
+        self._engine = engine or create_async_engine(
+            database_url,
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=5,
+        )
+
+    async def checkpoint(self, projection_name: str) -> str | None:
+        async with self._engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT last_stream_id FROM projection_checkpoints "
+                    "WHERE projection_name = :projection_name"
+                ),
+                {"projection_name": projection_name},
+            )
+            return cast(str | None, result.scalar_one_or_none())
+
+    async def project(
+        self,
+        *,
+        projection_name: str,
+        messages: tuple[StreamMessage, ...],
+    ) -> None:
+        if not messages:
+            return
+        positions = [parse_stream_id(message.stream_id) for message in messages]
+        if positions != sorted(set(positions)):
+            raise ValueError("projection batches must contain unique oldest-first stream IDs")
+
+        values = [projection_values(message) for message in messages]
+        async with self._engine.begin() as connection:
+            await connection.execute(text(_INSERT_REVISIONS), values)
+            await connection.execute(text(_UPSERT_CURRENT), values)
+            await connection.execute(
+                text(_UPSERT_CHECKPOINT),
+                {
+                    "projection_name": projection_name,
+                    "stream_id": messages[-1].stream_id,
+                    "stream_ms": positions[-1][0],
+                    "stream_seq": positions[-1][1],
+                },
+            )
+
+    async def query_current(self, query: SignalQuery) -> SignalPage:
+        conditions = ["TRUE"]
+        parameters: dict[str, object] = {"fetch_limit": query.limit + 1}
+        if query.source is not None:
+            conditions.append("cs.source = :source")
+            parameters["source"] = query.source
+        if query.min_severity is not None:
+            conditions.append("er.severity_rank >= :min_severity")
+            parameters["min_severity"] = query.min_severity
+        if query.occurred_after is not None:
+            conditions.append("er.occurred_at >= :occurred_after")
+            parameters["occurred_after"] = query.occurred_after
+        if query.occurred_before is not None:
+            conditions.append("er.occurred_at <= :occurred_before")
+            parameters["occurred_before"] = query.occurred_before
+        if query.active_only:
+            conditions.append("(er.expires_at IS NULL OR er.expires_at > CURRENT_TIMESTAMP)")
+        if query.after is not None:
+            cursor_ms, cursor_seq = parse_stream_id(query.after)
+            conditions.append("(cs.stream_ms, cs.stream_seq) < (:cursor_ms, :cursor_seq)")
+            parameters.update(cursor_ms=cursor_ms, cursor_seq=cursor_seq)
+        if query.bounds is not None:
+            bounds = query.bounds
+            spatial = (
+                "((er.footprint IS NOT NULL AND ST_Intersects(er.footprint, "
+                "ST_MakeEnvelope(:west, :south, :east, :north, 4326))) OR "
+                "(er.footprint IS NULL AND er.point IS NOT NULL AND ST_Intersects(er.point, "
+                "ST_MakeEnvelope(:west, :south, :east, :north, 4326))))"
+            )
+            if query.include_area_only:
+                spatial = f"({spatial} OR (er.footprint IS NULL AND er.point IS NULL))"
+            conditions.append(spatial)
+            parameters.update(
+                west=bounds.west,
+                south=bounds.south,
+                east=bounds.east,
+                north=bounds.north,
+            )
+
+        statement = text(
+            """
+            SELECT er.stream_id, er.event_json
+            FROM current_signals AS cs
+            JOIN event_revisions AS er ON er.stream_id = cs.stream_id
+            WHERE """
+            + " AND ".join(conditions)
+            + """
+            ORDER BY cs.stream_ms DESC, cs.stream_seq DESC
+            LIMIT :fetch_limit
+            """
+        )
+        async with self._engine.connect() as connection:
+            result = await connection.execute(statement, parameters)
+            rows = result.mappings().all()
+
+        has_more = len(rows) > query.limit
+        visible = rows[: query.limit]
+        messages = tuple(
+            StreamMessage(
+                stream_id=cast(str, row["stream_id"]),
+                event=_event_from_database(row["event_json"]),
+            )
+            for row in visible
+        )
+        return SignalPage(
+            items=messages,
+            next_cursor=messages[-1].stream_id if messages else None,
+            has_more=has_more,
+        )
+
+    async def is_ready(self) -> bool:
+        try:
+            async with self._engine.connect() as connection:
+                await connection.execute(text("SELECT 1 FROM projection_checkpoints LIMIT 1"))
+            return True
+        except (OSError, SQLAlchemyError):
+            return False
+
+    async def close(self) -> None:
+        if self._owns_engine:
+            await self._engine.dispose()

@@ -1,11 +1,10 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { fetchLatest, fetchReplay } from "./api";
+import { fetchCurrentSignals, fetchReplay } from "./api";
 import { EventFeed } from "./components/EventFeed";
 import { ReplayControls } from "./components/ReplayControls";
 import {
   formatTimestamp,
-  isActiveAt,
   isWeatherAlert,
   magnitudeOf,
   newestUpdate,
@@ -16,7 +15,7 @@ import {
   strongestMagnitude,
   titleOf,
 } from "./event-utils";
-import type { EventEnvelope } from "./types";
+import type { EventEnvelope, ViewportBounds } from "./types";
 
 type ViewMode = "live" | "replay";
 type SourceFilter = "all" | "usgs" | "nws";
@@ -158,11 +157,33 @@ export default function App() {
   const [replayIndex, setReplayIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [viewport, setViewport] = useState<ViewportBounds | null>(null);
 
-  const latestQuery = useQuery({
-    queryKey: ["events", "latest"],
-    queryFn: ({ signal }) => fetchLatest(signal),
+  const liveQuery = useQuery({
+    queryKey: ["signals", "current", sourceFilter],
+    queryFn: ({ signal }) =>
+      fetchCurrentSignals(
+        {
+          source: sourceFilter === "all" ? undefined : sourceFilter,
+          includeAreaOnly: true,
+        },
+        signal,
+      ),
     refetchInterval: 10_000,
+    enabled: mode === "live",
+  });
+  const viewportQuery = useQuery({
+    queryKey: ["signals", "viewport", sourceFilter, viewport],
+    queryFn: ({ signal }) =>
+      fetchCurrentSignals(
+        {
+          source: sourceFilter === "all" ? undefined : sourceFilter,
+          bounds: viewport ?? undefined,
+        },
+        signal,
+      ),
+    refetchInterval: 10_000,
+    enabled: mode === "live" && viewport !== null,
   });
   const replayQuery = useInfiniteQuery({
     queryKey: ["events", "replay"],
@@ -173,19 +194,27 @@ export default function App() {
     enabled: mode === "replay",
   });
 
-  const latestItems = latestQuery.data?.items ?? [];
+  const liveItems = liveQuery.data?.items ?? [];
   const replayItems = useMemo(
     () => replayQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [replayQuery.data],
   );
   const replayVisible = replayItems.slice(0, Math.min(replayIndex + 1, replayItems.length));
-  const activeLatestItems = latestItems.filter(({ event }) => isActiveAt(event));
-  const currentItems = mode === "live" ? activeLatestItems : replayVisible;
-  const mappedEvents = currentItems.filter(
+  const currentItems = mode === "live" ? liveItems : replayVisible;
+  const filteredEvents = currentItems.filter(
     ({ event }) => sourceFilter === "all" || event.source === sourceFilter,
   );
-  const feedEvents = mode === "live" ? mappedEvents : [...mappedEvents].reverse();
-  const selected = mappedEvents.find((item) => item.stream_id === selectedStreamId) ?? null;
+  const mappedEvents =
+    mode === "live" && viewport !== null
+      ? (viewportQuery.data?.items ?? []).filter(
+          ({ event }) => sourceFilter === "all" || event.source === sourceFilter,
+        )
+      : filteredEvents;
+  const feedEvents = mode === "live" ? filteredEvents : [...filteredEvents].reverse();
+  const selected =
+    mappedEvents.find((item) => item.stream_id === selectedStreamId) ??
+    filteredEvents.find((item) => item.stream_id === selectedStreamId) ??
+    null;
 
   useEffect(() => {
     if (mode !== "replay" || !playing || replayItems.length === 0) return;
@@ -224,21 +253,24 @@ export default function App() {
     setSelectedStreamId(null);
   };
 
-  const uniqueEvents = new Set(mappedEvents.map(({ event }) => event.event_id)).size;
-  const revisions = Math.max(0, mappedEvents.length - uniqueEvents);
-  const earthquakes = mappedEvents.filter(({ event }) => event.source === "usgs");
-  const weatherAlerts = mappedEvents.filter(({ event }) => isWeatherAlert(event));
+  const uniqueEvents = new Set(filteredEvents.map(({ event }) => event.event_id)).size;
+  const revisions = Math.max(0, filteredEvents.length - uniqueEvents);
+  const earthquakes = filteredEvents.filter(({ event }) => event.source === "usgs");
+  const weatherAlerts = filteredEvents.filter(({ event }) => isWeatherAlert(event));
   const strongest = strongestMagnitude(earthquakes);
   const highSeverity = weatherAlerts.filter(({ event }) => severityRankOf(event) >= 3).length;
   const areaOnly = weatherAlerts.filter(({ event }) => !event.payload.geometry).length;
   const usgsFreshness = relativeAge(
-    newestUpdate(latestItems.filter(({ event }) => event.source === "usgs")),
+    newestUpdate(liveItems.filter(({ event }) => event.source === "usgs")),
   );
   const nwsFreshness = relativeAge(
-    newestUpdate(latestItems.filter(({ event }) => event.source === "nws")),
+    newestUpdate(liveItems.filter(({ event }) => event.source === "nws")),
   );
-  const loading = mode === "live" ? latestQuery.isPending : replayQuery.isPending;
-  const error = mode === "live" ? latestQuery.error : replayQuery.error;
+  const loading =
+    mode === "live"
+      ? liveQuery.isPending || (viewport !== null && viewportQuery.isPending)
+      : replayQuery.isPending;
+  const error = mode === "live" ? liveQuery.error || viewportQuery.error : replayQuery.error;
 
   return (
     <main className="app-shell">
@@ -256,8 +288,8 @@ export default function App() {
           <small>USGS + NWS · AUDITABLE · REPLAYABLE</small>
         </div>
         <div className="system-state">
-          <span className={`live-dot ${latestQuery.isError ? "error" : ""}`} />
-          <span>{latestQuery.isError ? "SOURCE DEGRADED" : "SYSTEM LIVE"}</span>
+          <span className={`live-dot ${liveQuery.isError ? "error" : ""}`} />
+          <span>{liveQuery.isError ? "SOURCE DEGRADED" : "SYSTEM LIVE"}</span>
         </div>
       </header>
 
@@ -298,7 +330,7 @@ export default function App() {
         </fieldset>
         <p>
           {mode === "live"
-            ? "Newest stream revisions · refreshes every 10 seconds"
+            ? "Durable current state · viewport queried · refreshes every 10 seconds"
             : "Oldest-first immutable event history · cursor deterministic"}
         </p>
         <span className="utc-clock">UTC · {new Date().toISOString().slice(11, 19)}</span>
@@ -306,9 +338,9 @@ export default function App() {
 
       <section className="metrics" aria-label="Current stream metrics">
         <Metric
-          label="Visible revisions"
-          value={String(mappedEvents.length)}
-          detail={`${currentItems.length} across all sources`}
+          label={mode === "live" ? "Current signals" : "Visible revisions"}
+          value={String(filteredEvents.length)}
+          detail={`${mappedEvents.length} inside map viewport`}
         />
         <Metric
           label="Unique events"
@@ -340,6 +372,7 @@ export default function App() {
               events={mappedEvents}
               selectedStreamId={selectedStreamId}
               onSelect={setSelectedStreamId}
+              onViewportChange={setViewport}
             />
           </Suspense>
           <div className="map-scanline" aria-hidden="true" />
@@ -380,7 +413,7 @@ export default function App() {
       </section>
 
       <footer>
-        <span>ATLASPULSE / MULTI-SOURCE SLICE / v0.2.0</span>
+        <span>ATLASPULSE / DURABLE SPATIAL SLICE / v0.3.0</span>
         <span>Evidence: USGS + NOAA/NWS · Basemap: OpenFreeMap/OpenStreetMap</span>
       </footer>
     </main>

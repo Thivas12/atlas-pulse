@@ -7,11 +7,12 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — live, replayable multi-source disruption command center.** Independent
+> **Current milestone — durable, spatially queried disruption state.** Independent
 > workers poll official USGS earthquakes every 60 seconds and NOAA/NWS actual alerts every 120
 > seconds. Every unmodified response is preserved, strictly validated, normalized, and
-> atomically published to Valkey Streams. The MapLibre dashboard combines clustered earthquakes,
-> NWS alert polygons, geometry-less area alerts, source filters, and deterministic replay.
+> atomically published to Valkey Streams. A restart-safe worker transactionally projects every
+> revision, current event pointers, and its checkpoint into PostGIS. The dashboard reads
+> de-duplicated live state by source and map viewport while preserving deterministic replay.
 
 ## Why this is portfolio-grade
 
@@ -22,9 +23,11 @@ component can run without a paid API key.
 | Reliable delivery | Bounded HTTP retry plus revision-aware atomic Lua deduplication |
 | Shared contracts | Immutable `Event` and `GeoPoint` models pinned to `agent-rag-core` commit `7732801` |
 | Deterministic replay | Exclusive Valkey Stream cursors page retained history oldest-first without boundary duplicates |
+| Durable current state | Immutable PostgreSQL revisions plus atomic current pointers and restart-safe checkpoint |
+| Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
 | Decision UI | Mixed-geometry map, source filters, severity metrics, live expiry, replay, evidence links |
-| Engineering quality | Strict mypy/TypeScript, locked dependencies, enforced branch coverage, real-Valkey CI |
+| Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS CI |
 | Supply-chain hygiene | Read-only workflow permissions, commit-pinned Actions, weekly dependency updates |
 
 ## Architecture
@@ -37,8 +40,11 @@ flowchart TD
     Adapters --> Validate["Strict source validation"]
     Validate --> Contract["Shared Event contract"]
     Contract --> Stream["Valkey Streams + atomic dedupe"]
-    Stream --> API["FastAPI read API"]
-    API --> Web["React + MapLibre command center"]
+    Stream --> Projector["Restart-safe projector"]
+    Projector --> PostGIS["PostGIS revisions + current state"]
+    PostGIS --> API["FastAPI current-state API"]
+    Stream --> API
+    API --> Web["Viewport-driven command center"]
     Stream --> Agents["RAG and agent consumers — next milestones"]
 ```
 
@@ -46,6 +52,12 @@ Each source is at-least-once and failure-isolated: a slow or unavailable NWS req
 USGS polling, and vice versa. Identical semantic content is idempotent for the configured
 seven-day dedupe window, while a source correction remains a new immutable revision. AtlasPulse
 deliberately does not claim impossible end-to-end "exactly once" semantics.
+
+Projection is also at-least-once. On every cycle, the worker reads strictly after the checkpoint
+stored in PostgreSQL, then commits immutable revisions, newer-only current pointers, and the new
+checkpoint in one transaction. A crash before commit replays the batch; idempotent constraints
+make that safe. A crash after commit resumes after it. The first run backfills the oldest entries
+still retained by Valkey.
 
 ## Run the full slice
 
@@ -58,7 +70,8 @@ cd atlas-pulse
 docker compose up --build
 ```
 
-After the ingestor completes its first cycle, open the command center at
+Compose waits for PostGIS, applies Alembic migrations once, and starts the ingestor, projector,
+API, and web edge. After the first ingestion and projection cycles, open the command center at
 <http://localhost:3000>. The API and its operational probes remain directly available:
 
 ```bash
@@ -66,35 +79,48 @@ curl -s http://localhost:8000/healthz
 curl -s http://localhost:8000/readyz
 curl -s 'http://localhost:8000/v1/events?limit=5'
 curl -s 'http://localhost:8000/v1/events/replay?limit=5'
+curl -s 'http://localhost:8000/v1/signals?limit=5&active_only=true'
+curl -s 'http://localhost:8000/v1/signals?source=nws&min_severity=3&bbox=-125,24,-66,50'
 ```
 
 Switch between **Live** and **Replay**, then filter **All**, **Earthquakes**, or **Weather**.
-Live mode omits expired weather alerts while replay intentionally preserves them. Replay starts
+Live mode is served from current PostGIS state, omits expired weather alerts, and refreshes the
+map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
+remain in the global feed without being falsely placed on the map. Replay starts
 at the oldest retained stream entry; its controls operate on cursor-paged history. Interactive
 OpenAPI documentation is at <http://localhost:8000/docs>. Stop the stack with
-`docker compose down`. Add `--volumes` only when you intentionally want to delete local stream
-data and raw snapshots.
+`docker compose down`. Add `--volumes` only when you intentionally want to delete local stream,
+PostGIS, and raw snapshot data.
 
 ## Develop without rebuilding containers
 
 [uv](https://docs.astral.sh/uv/) manages Python and installs the exact lockfile. Keep only
-Valkey in Docker and run both Python processes in WSL:
+Valkey and PostGIS in Docker and run the Python processes in WSL:
 
 ```bash
 cp .env.example .env
-docker compose up -d valkey
+docker compose up -d valkey postgres
 uv sync --frozen --all-groups
+uv run alembic upgrade head
 ATLAS_VALKEY_URL=valkey://localhost:6379/0 uv run atlas-pulse-ingest
 ```
 
-In a second terminal:
+In a second terminal, follow the retained stream into PostGIS:
+
+```bash
+ATLAS_VALKEY_URL=valkey://localhost:6379/0 \
+ATLAS_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
+  uv run atlas-pulse-project
+```
+
+In a third terminal:
 
 ```bash
 ATLAS_VALKEY_URL=valkey://localhost:6379/0 \
   uv run uvicorn atlas_pulse.asgi:app --reload --port 8000
 ```
 
-Run the dashboard with Vite in a third terminal. Its development proxy forwards `/api` to the
+Run the dashboard with Vite in a fourth terminal. Its development proxy forwards `/api` to the
 local FastAPI process:
 
 ```bash
@@ -116,10 +142,12 @@ npm run test:coverage
 npm run build
 ```
 
-The integration test activates automatically when `ATLAS_TEST_VALKEY_URL` is present:
+The real-service integration tests activate when their explicit test URLs are present:
 
 ```bash
-ATLAS_TEST_VALKEY_URL=valkey://localhost:6379/0 uv run pytest -m integration
+ATLAS_TEST_VALKEY_URL=valkey://localhost:6379/0 \
+ATLAS_TEST_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
+  uv run pytest -m integration
 ```
 
 ## API
@@ -127,9 +155,16 @@ ATLAS_TEST_VALKEY_URL=valkey://localhost:6379/0 uv run pytest -m integration
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/healthz` | Process liveness; does not depend on Valkey |
-| `GET` | `/readyz` | Returns `503` when Valkey is unavailable |
+| `GET` | `/readyz` | Returns `503` when Valkey or PostGIS is unavailable |
 | `GET` | `/v1/events?limit=50` | Newest normalized events and their replay IDs |
 | `GET` | `/v1/events/replay?limit=100&after=<stream-id>` | Oldest-first page strictly after an optional cursor |
+| `GET` | `/v1/signals?limit=100&after=<stream-id>` | Newest-first, de-duplicated current signals with keyset pagination |
+
+`/v1/signals` accepts `source=usgs|nws`, `min_severity=0..4`, aware
+`occurred_after`/`occurred_before` timestamps, `active_only`, and a non-wrapping WGS84
+`bbox=west,south,east,north`. Spatial requests return intersecting point or polygon evidence.
+Set `include_area_only=true` only when a viewport consumer explicitly wants valid NWS alerts
+that have area codes but no source geometry.
 
 Every event contains a stable source ID, an aware occurrence time, ingestion time, semantic
 type, optional WGS84 focus point, source name, schema version, and JSON-safe payload. USGS depth
@@ -155,12 +190,17 @@ deterministic for retained entries rather than an indefinite event archive.
 - Snapshots are content-addressed, so byte-identical polls consume no additional space. Raw
   retention is currently operator-managed; NWS defaults to a two-minute poll because its active
   collection is materially larger than the USGS hourly feed.
-- Readiness fails closed when the stream is unavailable; liveness remains available.
+- Revision insert, newer-only current pointer, and projection checkpoint commit together. A
+  failed batch is retried from the unchanged cursor and duplicate revision inserts are harmless.
+- Readiness fails closed when the stream or durable query store is unavailable; liveness remains
+  available.
 
 See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision,
 [ADR 0002](docs/adr/0002-snapshot-before-validation.md) for the evidence boundary, and
 [ADR 0003](docs/adr/0003-cursor-based-replay.md) for replay semantics, and
-[ADR 0004](docs/adr/0004-multi-source-weather-geometry.md) for source isolation and NWS geometry.
+[ADR 0004](docs/adr/0004-multi-source-weather-geometry.md) for source isolation and NWS geometry,
+and [ADR 0005](docs/adr/0005-transactional-postgis-projection.md) for durable projection and
+checkpoint semantics.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -174,6 +214,7 @@ No part of this milestone needs a paid model, paid dataset, or API key.
 | Live source | [NOAA/NWS API](https://www.weather.gov/documentation/services-web-api) | Public, no key; identifying User-Agent required |
 | API/contracts | Python, FastAPI, Pydantic | Open source |
 | Event stream | Valkey + `valkey-py` | Open source |
+| Durable geospatial state | PostgreSQL + PostGIS + SQLAlchemy/Alembic | Open source |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
 | Static serving | Caddy | Open source |
@@ -184,7 +225,8 @@ No part of this milestone needs a paid model, paid dataset, or API key.
 
 ## Next milestones
 
-1. NASA FIRMS wildfire data and GDELT news signals using the same source-adapter contract.
+1. NASA FIRMS wildfire data and GDELT news signals using the same source-adapter contract and
+   durable projection boundary.
 2. Hybrid sparse/dense/geospatial retrieval, reranking, temporal filtering, and citation
    verification.
 3. A hierarchy of specialist agents for signal fusion, contradiction detection, impact

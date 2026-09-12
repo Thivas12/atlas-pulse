@@ -1,14 +1,28 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { makeEnvelope } from "./test/fixtures";
-import type { EventEnvelope } from "./types";
+import type { EventEnvelope, ViewportBounds } from "./types";
 
 vi.mock("./components/EventMap", () => ({
-  EventMap: ({ events }: { events: EventEnvelope[] }) => (
-    <div data-testid="event-map">Mapped in test: {events.length}</div>
+  EventMap: ({
+    events,
+    onViewportChange,
+  }: {
+    events: EventEnvelope[];
+    onViewportChange: (bounds: ViewportBounds) => void;
+  }) => (
+    <div data-testid="event-map">
+      Mapped in test: {events.length}
+      <button
+        type="button"
+        onClick={() => onViewportChange({ west: -10, south: -5, east: 20, north: 30 })}
+      >
+        Set test viewport
+      </button>
+    </div>
   ),
 }));
 
@@ -19,6 +33,16 @@ function jsonResponse(value: unknown): Response {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function signalsResponse(items: EventEnvelope[]) {
+  return {
+    count: items.length,
+    items,
+    next_cursor: items.at(-1)?.stream_id ?? null,
+    has_more: false,
+    order: "newest_revision_first" as const,
+  };
 }
 
 function renderApp(ui: ReactNode) {
@@ -54,7 +78,7 @@ describe("AtlasPulse dashboard", () => {
               has_more: false,
               order: "oldest_first",
             })
-          : jsonResponse({ count: 2, items: liveItems }),
+          : jsonResponse(signalsResponse(liveItems)),
       );
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -102,7 +126,9 @@ describe("AtlasPulse dashboard", () => {
     ];
     vi.stubGlobal(
       "fetch",
-      vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ count: 2, items: liveItems })),
+      vi
+        .fn<typeof fetch>()
+        .mockImplementation(() => Promise.resolve(jsonResponse(signalsResponse(liveItems)))),
     );
 
     renderApp(<App />);
@@ -110,10 +136,12 @@ describe("AtlasPulse dashboard", () => {
     expect(await screen.findByText("Tornado Warning")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Earthquakes" }));
     expect(screen.queryByText("Tornado Warning")).not.toBeInTheDocument();
-    expect(screen.getByTestId("event-map")).toHaveTextContent("Mapped in test: 1");
+    await waitFor(() =>
+      expect(screen.getByTestId("event-map")).toHaveTextContent("Mapped in test: 1"),
+    );
 
     await user.click(screen.getByRole("button", { name: "Weather" }));
-    await user.click(screen.getByRole("button", { name: /Tornado Warning/ }));
+    await user.click(await screen.findByRole("button", { name: /Tornado Warning/ }));
 
     const detail = screen.getByRole("complementary", { name: "Selected signal details" });
     expect(within(detail).getByText("Severe")).toBeInTheDocument();
@@ -123,5 +151,34 @@ describe("AtlasPulse dashboard", () => {
 
     await user.click(within(detail).getByRole("button", { name: "Close details" }));
     expect(screen.queryByRole("complementary", { name: "Selected signal details" })).toBeNull();
+  });
+
+  it("loads map signals using settled viewport bounds", async () => {
+    const user = userEvent.setup();
+    const globalItems = [makeEnvelope({ eventId: "global", place: "Global signal" })];
+    const viewportItems = [
+      makeEnvelope({ eventId: "inside", place: "Viewport signal" }),
+      makeEnvelope({ eventId: "inside-two", place: "Second viewport signal" }),
+    ];
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
+      const url = String(input);
+      return Promise.resolve(
+        jsonResponse(signalsResponse(url.includes("bbox=") ? viewportItems : globalItems)),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp(<App />);
+    expect(await screen.findByText("Global signal")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Set test viewport" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("event-map")).toHaveTextContent("Mapped in test: 2"),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/signals?limit=500&active_only=true&bbox=-10%2C-5%2C20%2C30",
+      expect.any(Object),
+    );
   });
 });

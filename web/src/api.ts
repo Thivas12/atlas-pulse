@@ -4,6 +4,9 @@ import {
   eventsResponseSchema,
   type ReplayResponse,
   replayResponseSchema,
+  type SignalsResponse,
+  signalsResponseSchema,
+  type ViewportBounds,
 } from "./types";
 
 async function fetchValidated<T>(
@@ -29,4 +32,24 @@ export function fetchReplay(after?: string, signal?: AbortSignal): Promise<Repla
   const search = new URLSearchParams({ limit: "500" });
   if (after) search.set("after", after);
   return fetchValidated(`/api/v1/events/replay?${search}`, replayResponseSchema, signal);
+}
+
+interface CurrentSignalsQuery {
+  source?: "usgs" | "nws";
+  bounds?: ViewportBounds;
+  includeAreaOnly?: boolean;
+}
+
+export function fetchCurrentSignals(
+  query: CurrentSignalsQuery,
+  signal?: AbortSignal,
+): Promise<SignalsResponse> {
+  const search = new URLSearchParams({ limit: "500", active_only: "true" });
+  if (query.source) search.set("source", query.source);
+  if (query.bounds) {
+    const { west, south, east, north } = query.bounds;
+    search.set("bbox", [west, south, east, north].join(","));
+  }
+  if (query.includeAreaOnly) search.set("include_area_only", "true");
+  return fetchValidated(`/api/v1/signals?${search}`, signalsResponseSchema, signal);
 }

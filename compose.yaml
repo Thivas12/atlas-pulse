@@ -4,6 +4,7 @@ x-atlas-environment: &atlas-environment
   ATLAS_ENVIRONMENT: local-compose
   ATLAS_LOG_LEVEL: INFO
   ATLAS_VALKEY_URL: valkey://valkey:6379/0
+  ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:atlas@postgres:5432/atlas
   ATLAS_RAW_DATA_DIR: /app/data/raw
 
 services:
@@ -21,6 +22,32 @@ services:
       timeout: 2s
       retries: 10
 
+  postgres:
+    image: postgis/postgis:17-3.5-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: atlas
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgis-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    environment: *atlas-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build: .
     restart: unless-stopped
@@ -28,6 +55,8 @@ services:
     depends_on:
       valkey:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     healthcheck:
@@ -53,6 +82,17 @@ services:
     volumes:
       - raw-snapshots:/app/data/raw
 
+  projector:
+    build: .
+    command: ["atlas-pulse-project"]
+    restart: unless-stopped
+    environment: *atlas-environment
+    depends_on:
+      valkey:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   web:
     build: ./web
     restart: unless-stopped
@@ -68,5 +108,6 @@ services:
       retries: 5
 
 volumes:
+  postgis-data:
   raw-snapshots:
   valkey-data:

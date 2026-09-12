@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchLatest, fetchReplay } from "./api";
+import { fetchCurrentSignals, fetchLatest, fetchReplay } from "./api";
 import { makeEnvelope } from "./test/fixtures";
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -36,6 +36,29 @@ describe("AtlasPulse API client", () => {
     await expect(fetchReplay("999-0")).resolves.toEqual(body);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/events/replay?limit=500&after=999-0",
+      expect.any(Object),
+    );
+  });
+
+  it("encodes current-state source and viewport filters", async () => {
+    const body = {
+      count: 1,
+      items: [makeEnvelope()],
+      next_cursor: "1000-0",
+      has_more: false,
+      order: "newest_revision_first" as const,
+    };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchCurrentSignals({
+        source: "usgs",
+        bounds: { west: -10, south: -5, east: 20, north: 30 },
+      }),
+    ).resolves.toEqual(body);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/signals?limit=500&active_only=true&source=usgs&bbox=-10%2C-5%2C20%2C30",
       expect.any(Object),
     );
   });

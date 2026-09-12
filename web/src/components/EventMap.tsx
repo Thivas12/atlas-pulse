@@ -7,7 +7,7 @@ import {
 } from "maplibre-gl";
 import { useEffect, useRef } from "react";
 import { eventsToGeoJson, weatherPolygonsToGeoJson } from "../geo";
-import type { EventEnvelope } from "../types";
+import type { EventEnvelope, ViewportBounds } from "../types";
 
 const SOURCE_ID = "point-events";
 const WEATHER_SOURCE_ID = "weather-polygons";
@@ -22,15 +22,18 @@ interface EventMapProps {
   events: EventEnvelope[];
   selectedStreamId: string | null;
   onSelect: (streamId: string) => void;
+  onViewportChange: (bounds: ViewportBounds) => void;
 }
 
-export function EventMap({ events, selectedStreamId, onSelect }: EventMapProps) {
+export function EventMap({ events, selectedStreamId, onSelect, onViewportChange }: EventMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const latestEventsRef = useRef(events);
   const onSelectRef = useRef(onSelect);
+  const onViewportChangeRef = useRef(onViewportChange);
   latestEventsRef.current = events;
   onSelectRef.current = onSelect;
+  onViewportChangeRef.current = onViewportChange;
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -49,6 +52,19 @@ export function EventMap({ events, selectedStreamId, onSelect }: EventMapProps) 
       new AttributionControl({ compact: true, customAttribution: "USGS · NOAA/NWS · OpenFreeMap" }),
       "bottom-right",
     );
+
+    const emitViewport = () => {
+      const bounds = map.getBounds();
+      const viewport = {
+        west: Number(Math.max(-180, bounds.getWest()).toFixed(4)),
+        south: Number(Math.max(-90, bounds.getSouth()).toFixed(4)),
+        east: Number(Math.min(180, bounds.getEast()).toFixed(4)),
+        north: Number(Math.min(90, bounds.getNorth()).toFixed(4)),
+      };
+      if (viewport.west < viewport.east && viewport.south < viewport.north) {
+        onViewportChangeRef.current(viewport);
+      }
+    };
 
     map.on("load", () => {
       map.addSource(SOURCE_ID, {
@@ -187,7 +203,9 @@ export function EventMap({ events, selectedStreamId, onSelect }: EventMapProps) 
           "circle-opacity": 0.95,
         },
       });
+      emitViewport();
     });
+    map.on("moveend", emitViewport);
 
     map.on("click", EVENT_LAYER, (event: MapLayerMouseEvent) => {
       const streamId = event.features?.[0]?.properties?.streamId;

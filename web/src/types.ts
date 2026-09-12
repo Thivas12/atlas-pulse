@@ -48,8 +48,25 @@ export const replayResponseSchema = eventsResponseSchema.extend({
   order: z.literal("oldest_first"),
 });
 
+export const signalsResponseSchema = eventsResponseSchema.extend({
+  next_cursor: z
+    .string()
+    .regex(/^\d+-\d+$/)
+    .nullable(),
+  has_more: z.boolean(),
+  order: z.literal("newest_revision_first"),
+});
+
+export interface ViewportBounds {
+  west: number;
+  south: number;
+  east: number;
+  north: number;
+}
+
 export type AtlasEvent = z.infer<typeof eventSchema>;
 export type AlertGeometry = z.infer<typeof alertGeometrySchema>;
 export type EventEnvelope = z.infer<typeof eventEnvelopeSchema>;
 export type EventsResponse = z.infer<typeof eventsResponseSchema>;
 export type ReplayResponse = z.infer<typeof replayResponseSchema>;
+export type SignalsResponse = z.infer<typeof signalsResponseSchema>;

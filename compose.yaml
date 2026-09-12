@@ -29,7 +29,7 @@ services:
     build:
       context: .
       dockerfile: docker/postgres/Dockerfile
-    image: atlas-pulse-postgres:17-postgis3.5-pgvector0.8.6
+    image: atlas-pulse-postgres:17-postgis3.5-pgvector0.8.6-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: atlas

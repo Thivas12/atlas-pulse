@@ -217,6 +217,8 @@ async def test_project_atomically_writes_revisions_current_rows_and_checkpoint()
     assert len(engine.connection.executions) == 3
     statements = [statement for statement, _parameters in engine.connection.executions]
     assert "INSERT INTO event_revisions" in statements[0]
+    assert "CAST(:longitude AS double precision)" in statements[0]
+    assert "CAST(:footprint_json AS text)" in statements[0]
     assert "INSERT INTO current_signals" in statements[1]
     assert "INSERT INTO projection_checkpoints" in statements[2]
     assert engine.connection.executions[2][1] == {

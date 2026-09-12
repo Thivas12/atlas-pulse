@@ -42,12 +42,18 @@ INSERT INTO event_revisions (
     :ingested_at,
     CAST(:event_json AS jsonb),
     CASE
-        WHEN :longitude IS NULL THEN NULL
-        ELSE ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326)
+        WHEN CAST(:longitude AS double precision) IS NULL THEN NULL
+        ELSE ST_SetSRID(
+            ST_MakePoint(
+                CAST(:longitude AS double precision),
+                CAST(:latitude AS double precision)
+            ),
+            4326
+        )
     END,
     CASE
-        WHEN :footprint_json IS NULL THEN NULL
-        ELSE ST_SetSRID(ST_GeomFromGeoJSON(:footprint_json), 4326)
+        WHEN CAST(:footprint_json AS text) IS NULL THEN NULL
+        ELSE ST_SetSRID(ST_GeomFromGeoJSON(CAST(:footprint_json AS text)), 4326)
     END,
     :severity_rank,
     :magnitude,

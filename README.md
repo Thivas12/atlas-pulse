@@ -7,20 +7,22 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — durable, spatially queried disruption state.** Independent
-> workers poll official USGS earthquakes every 60 seconds and NOAA/NWS actual alerts every 120
-> seconds. Every unmodified response is preserved, strictly validated, normalized, and
-> atomically published to Valkey Streams. A restart-safe worker transactionally projects every
-> revision, current event pointers, and its checkpoint into PostGIS. The dashboard reads
-> de-duplicated live state by source and map viewport while preserving deterministic replay.
+> **Current milestone — satellite-aware, spatially queried disruption state.** Independent
+> workers poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120
+> seconds, and opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes. Every unmodified
+> response is preserved, strictly validated, normalized, and atomically published to Valkey
+> Streams. A restart-safe worker transactionally projects every revision, current event pointer,
+> and its checkpoint into PostGIS. The dashboard reads de-duplicated live state by source and map
+> viewport while preserving deterministic replay.
 
 ## Why this is portfolio-grade
 
 | Capability | Concrete proof in this repository |
 | --- | --- |
-| Real public data | Independent live USGS earthquake and NOAA/NWS severe-weather feeds |
+| Real public data | Independent USGS, NOAA/NWS, and NASA FIRMS near-real-time feeds |
 | Auditability | SHA-256 content-addressed raw snapshots are written before parsing |
-| Reliable delivery | Bounded HTTP retry plus revision-aware atomic Lua deduplication |
+| Reliable delivery | Bounded HTTP retry plus pipelined, revision-aware atomic Lua deduplication |
+| Credential safety | Free FIRMS key is ingestor-only and redacted from events, errors, and spans |
 | Shared contracts | Immutable `Event` and `GeoPoint` models pinned to `agent-rag-core` commit `7732801` |
 | Deterministic replay | Exclusive Valkey Stream cursors page retained history oldest-first without boundary duplicates |
 | Durable current state | Immutable PostgreSQL revisions plus atomic current pointers and restart-safe checkpoint |
@@ -36,6 +38,7 @@ component can run without a paid API key.
 flowchart TD
     USGS["USGS earthquakes"] --> Adapters["Independent source adapters"]
     NWS["NWS active alerts"] --> Adapters
+    FIRMS["NASA FIRMS VIIRS"] --> Adapters
     Adapters --> Raw["Immutable raw snapshots"]
     Adapters --> Validate["Strict source validation"]
     Validate --> Contract["Shared Event contract"]
@@ -48,10 +51,10 @@ flowchart TD
     Stream --> Agents["RAG and agent consumers — next milestones"]
 ```
 
-Each source is at-least-once and failure-isolated: a slow or unavailable NWS request cannot stop
-USGS polling, and vice versa. Identical semantic content is idempotent for the configured
-seven-day dedupe window, while a source correction remains a new immutable revision. AtlasPulse
-deliberately does not claim impossible end-to-end "exactly once" semantics.
+Each source is at-least-once and failure-isolated: a slow or unavailable source cannot stop the
+other pollers. Identical semantic content is idempotent for the configured seven-day dedupe
+window, while a source correction remains a new immutable revision. AtlasPulse deliberately does
+not claim impossible end-to-end "exactly once" semantics.
 
 Projection is also at-least-once. On every cycle, the worker reads strictly after the checkpoint
 stored in PostgreSQL, then commits immutable revisions, newer-only current pointers, and the new
@@ -70,6 +73,20 @@ cd atlas-pulse
 docker compose up --build
 ```
 
+That zero-configuration command runs USGS and NWS. NASA FIRMS needs a free, email-issued
+`MAP_KEY` because its servers meter transactions. Request one from the
+[official FIRMS key page](https://firms.modaps.eosdis.nasa.gov/api/map_key/), then enable only the
+ingestor-facing credential:
+
+```bash
+cp .env.example .env
+# Edit .env: set ATLAS_FIRMS_ENABLED=true and ATLAS_FIRMS_MAP_KEY=<your key>
+docker compose up --build
+```
+
+Do not commit `.env`; it is ignored by Git. The key lives only in the ingestor container and is
+removed from source metadata, raised errors, and OpenTelemetry URL attributes.
+
 Compose waits for PostGIS, applies Alembic migrations once, and starts the ingestor, projector,
 API, and web edge. After the first ingestion and projection cycles, open the command center at
 <http://localhost:3000>. The API and its operational probes remain directly available:
@@ -81,10 +98,12 @@ curl -s 'http://localhost:8000/v1/events?limit=5'
 curl -s 'http://localhost:8000/v1/events/replay?limit=5'
 curl -s 'http://localhost:8000/v1/signals?limit=5&active_only=true'
 curl -s 'http://localhost:8000/v1/signals?source=nws&min_severity=3&bbox=-125,24,-66,50'
+curl -s 'http://localhost:8000/v1/signals?source=firms&bbox=-120,33,-117,36'
 ```
 
-Switch between **Live** and **Replay**, then filter **All**, **Earthquakes**, or **Weather**.
-Live mode is served from current PostGIS state, omits expired weather alerts, and refreshes the
+Switch between **Live** and **Replay**, then filter **All**, **Earthquakes**, **Weather**, or
+**Fires**.
+Live mode is served from current PostGIS state, omits expired alerts/detections, and refreshes the
 map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
 remain in the global feed without being falsely placed on the map. Replay starts
 at the oldest retained stream entry; its controls operate on cursor-paged history. Interactive
@@ -160,9 +179,10 @@ ATLAS_TEST_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
 | `GET` | `/v1/events/replay?limit=100&after=<stream-id>` | Oldest-first page strictly after an optional cursor |
 | `GET` | `/v1/signals?limit=100&after=<stream-id>` | Newest-first, de-duplicated current signals with keyset pagination |
 
-`/v1/signals` accepts `source=usgs|nws`, `min_severity=0..4`, aware
+`/v1/signals` accepts `source=usgs|nws|firms`, `min_severity=0..4`, aware
 `occurred_after`/`occurred_before` timestamps, `active_only`, and a non-wrapping WGS84
-`bbox=west,south,east,north`. Spatial requests return intersecting point or polygon evidence.
+`bbox=west,south,east,north`. `min_severity` applies to NWS severity ranks. Spatial requests return
+intersecting point or polygon evidence.
 Set `include_area_only=true` only when a viewport consumer explicitly wants valid NWS alerts
 that have area codes but no source geometry.
 
@@ -172,6 +192,12 @@ is kept as positive-down `payload.depth_km`; the shared geographic altitude is i
 value. NWS `Polygon`/`MultiPolygon` geometry is preserved in `payload.geometry`; a deterministic
 bounding-box center is only a map focus. Official alerts whose geometry is `null` remain in the
 feed with UGC/SAME codes and are reported as area-only rather than silently discarded.
+FIRMS rows become stable `fire.thermal_anomaly` point events with satellite, product, confidence,
+brightness, day/night, and fire-radiative-power evidence. A deterministic identity hash excludes
+revisable measurements, so a corrected measurement becomes a new revision of the same detection.
+AtlasPulse applies a documented 24-hour display window; this is an operational freshness rule,
+not a NASA-declared incident closure. A satellite thermal anomaly can be fire or another heat
+source and is never presented as a confirmed wildfire perimeter.
 Replay requests read one extra entry to compute `has_more`, return at most 500 items, and expose
 the final visible stream ID as `next_cursor`. Stream retention is bounded, so replay is
 deterministic for retained entries rather than an indefinite event archive.
@@ -179,17 +205,20 @@ deterministic for retained entries rather than an indefinite event archive.
 ## Failure behavior
 
 - HTTP transport errors, `429`, and `5xx` responses retry with bounded exponential backoff.
-- Permanent `4xx` responses fail immediately.
-- USGS and NWS poll on separate async tasks, so one source's failure does not block the other.
+- Permanent non-success responses fail immediately; `429` and `5xx` are the retryable exceptions.
+- USGS, NWS, and enabled FIRMS poll on separate async tasks, so one failure does not block others.
 - Valid HTTP bodies are snapshotted before schema parsing, so upstream schema drift remains
   inspectable.
-- A canonical content fingerprint ignores poll time but preserves source revisions; a Lua
-  transaction makes its lookup, stream append, and registration atomic.
+- A canonical content fingerprint ignores poll time but preserves source revisions; pipelined Lua
+  transactions make each lookup, stream append, and registration atomic without one network
+  round trip per detection.
 - `MAXLEN ~ 100000` bounds local stream growth; original snapshots remain independently
   retained.
 - Snapshots are content-addressed, so byte-identical polls consume no additional space. Raw
   retention is currently operator-managed; NWS defaults to a two-minute poll because its active
   collection is materially larger than the USGS hourly feed.
+- FIRMS defaults to one day of global NOAA-20 VIIRS NRT detections every 15 minutes. Its API
+  permits day ranges from one to five; narrow `ATLAS_FIRMS_AREA` for smaller deployments.
 - Revision insert, newer-only current pointer, and projection checkpoint commit together. A
   failed batch is retried from the unchanged cursor and duplicate revision inserts are harmless.
 - Readiness fails closed when the stream or durable query store is unavailable; liveness remains
@@ -200,18 +229,21 @@ See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision,
 [ADR 0003](docs/adr/0003-cursor-based-replay.md) for replay semantics, and
 [ADR 0004](docs/adr/0004-multi-source-weather-geometry.md) for source isolation and NWS geometry,
 and [ADR 0005](docs/adr/0005-transactional-postgis-projection.md) for durable projection and
-checkpoint semantics.
+checkpoint semantics, and [ADR 0006](docs/adr/0006-firms-thermal-anomaly-ingestion.md) for FIRMS
+identity, expiry, and credential boundaries.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
 ## Free stack
 
-No part of this milestone needs a paid model, paid dataset, or API key.
+No part of this milestone needs a paid model, dataset, API, or hosted service. FIRMS uses a free
+credential solely for transaction metering.
 
 | Layer | Tool/data | Cost for this project |
 | --- | --- | --- |
 | Live source | [USGS Earthquake GeoJSON feeds](https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php) | Public, no key |
 | Live source | [NOAA/NWS API](https://www.weather.gov/documentation/services-web-api) | Public, no key; identifying User-Agent required |
+| Live source | [NASA FIRMS Area API](https://firms.modaps.eosdis.nasa.gov/api/area/) | Public data; free MAP_KEY, no paid tier required |
 | API/contracts | Python, FastAPI, Pydantic | Open source |
 | Event stream | Valkey + `valkey-py` | Open source |
 | Durable geospatial state | PostgreSQL + PostGIS + SQLAlchemy/Alembic | Open source |
@@ -225,8 +257,7 @@ No part of this milestone needs a paid model, paid dataset, or API key.
 
 ## Next milestones
 
-1. NASA FIRMS wildfire data and GDELT news signals using the same source-adapter contract and
-   durable projection boundary.
+1. GDELT news signals using the same source-adapter contract and durable projection boundary.
 2. Hybrid sparse/dense/geospatial retrieval, reranking, temporal filtering, and citation
    verification.
 3. A hierarchy of specialist agents for signal fusion, contradiction detection, impact
@@ -241,8 +272,16 @@ Earthquake data comes from the
 Weather alerts come from the [NOAA/National Weather Service API](https://www.weather.gov/documentation/services-web-api),
 using `status=actual` so exercises and tests are excluded while Alert and Update message types
 remain visible. NWS requires an identifiable User-Agent; configure
-`ATLAS_SOURCE_USER_AGENT` with a public project or contact URL before deployment. Follow both
+`ATLAS_SOURCE_USER_AGENT` with a public project or contact URL before deployment. Follow all
 providers' policies before operating a public mirror. Frozen fixtures are synthetic
 source-shaped records, not claims about real events.
+
+Thermal-anomaly observations come from NASA's
+[Fire Information for Resource Management System](https://firms.modaps.eosdis.nasa.gov/). FIRMS
+states that global NRT detections are generally available within three hours of satellite
+observation, with faster RT/URT availability for the US and Canada. FIRMS detections identify
+active-fire/hotspot or thermal-anomaly pixels; AtlasPulse preserves that uncertainty. The MAP_KEY
+is free and the official documented limit is 5,000 transactions per ten-minute interval. The
+repository contains only synthetic FIRMS-shaped fixtures and never a real key.
 
 Licensed under the [MIT License](LICENSE).

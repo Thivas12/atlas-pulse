@@ -1,5 +1,13 @@
 import type { Feature, FeatureCollection, MultiPolygon, Point, Polygon } from "geojson";
-import { magnitudeOf, placeOf, severityOf, severityRankOf, titleOf } from "./event-utils";
+import {
+  fireConfidenceRankOf,
+  fireRadiativePowerOf,
+  magnitudeOf,
+  placeOf,
+  severityOf,
+  severityRankOf,
+  titleOf,
+} from "./event-utils";
 import { alertGeometrySchema, type EventEnvelope } from "./types";
 
 export interface EventProperties {
@@ -7,6 +15,8 @@ export interface EventProperties {
   eventId: string;
   source: string;
   magnitude: number | null;
+  fireRadiativePowerMw: number | null;
+  fireConfidenceRank: number;
   severity: string;
   severityRank: number;
   title: string;
@@ -36,6 +46,8 @@ export function eventsToGeoJson(
         eventId: event.event_id,
         source: event.source,
         magnitude: magnitudeOf(event),
+        fireRadiativePowerMw: fireRadiativePowerOf(event),
+        fireConfidenceRank: fireConfidenceRankOf(event),
         severity: severityOf(event) ?? "Unknown",
         severityRank: severityRankOf(event),
         title: titleOf(event),
@@ -67,6 +79,8 @@ export function weatherPolygonsToGeoJson(
         eventId: event.event_id,
         source: event.source,
         magnitude: null,
+        fireRadiativePowerMw: null,
+        fireConfidenceRank: 0,
         severity: severityOf(event) ?? "Unknown",
         severityRank: severityRankOf(event),
         title: titleOf(event),

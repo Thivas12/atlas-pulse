@@ -45,6 +45,16 @@ async def test_memory_bus_preserves_a_revised_source_event() -> None:
     assert len(await bus.latest(10)) == 2
 
 
+async def test_memory_bus_publishes_source_batches_in_order() -> None:
+    bus = InMemoryEventBus()
+    events = (make_event("one"), make_event("two"), make_event("one"))
+
+    outcomes = await bus.publish_many(events)
+
+    assert [outcome.stream_id for outcome in outcomes] == ["0-1", "0-2", "0-1"]
+    assert [outcome.deduplicated for outcome in outcomes] == [False, False, True]
+
+
 async def test_memory_replay_uses_an_exclusive_numeric_cursor() -> None:
     bus = InMemoryEventBus()
     for index in range(12):

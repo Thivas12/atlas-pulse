@@ -41,6 +41,10 @@ class EventBus(Protocol):
         """Publish each distinct event revision once and return its stable stream id."""
         ...
 
+    async def publish_many(self, events: tuple[Event, ...]) -> tuple[PublishResult, ...]:
+        """Publish a source batch without one network round trip per event."""
+        ...
+
     async def latest(self, limit: int) -> tuple[StreamMessage, ...]:
         """Return newest messages first."""
         ...

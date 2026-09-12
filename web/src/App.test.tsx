@@ -87,10 +87,12 @@ describe("AtlasPulse dashboard", () => {
 
     expect(await screen.findByText("Northern Ridge")).toBeInTheDocument();
     expect(screen.getByTestId("event-map")).toHaveTextContent("Mapped in test: 2");
-    const uniqueMetric = screen.getByText("Unique events").closest("article");
-    expect(uniqueMetric).not.toBeNull();
-    expect(within(uniqueMetric as HTMLElement).getByText("1")).toBeInTheDocument();
-    expect(within(uniqueMetric as HTMLElement).getByText("1 revisions")).toBeInTheDocument();
+    const currentMetric = screen.getByText("Current signals").closest("article");
+    expect(currentMetric).not.toBeNull();
+    expect(within(currentMetric as HTMLElement).getByText("2")).toBeInTheDocument();
+    expect(
+      within(currentMetric as HTMLElement).getByText("1 unique · 1 revisions"),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Replay/ }));
 
@@ -179,6 +181,46 @@ describe("AtlasPulse dashboard", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/signals?limit=500&active_only=true&bbox=-10%2C-5%2C20%2C30",
       expect.any(Object),
+    );
+  });
+
+  it("filters and explains NASA FIRMS evidence without claiming confirmed wildfire", async () => {
+    const user = userEvent.setup();
+    const fire = makeEnvelope({
+      streamId: "4000-0",
+      eventId: "viirs-test",
+      source: "firms",
+      place: "34.1235, -118.5432",
+      fireRadiativePowerMw: 18.4,
+      fireConfidence: "High",
+      location: { latitude: 34.1235, longitude: -118.5432, altitude_km: null },
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementation(() => Promise.resolve(jsonResponse(signalsResponse([fire]))));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp(<App />);
+    await user.click(screen.getByRole("button", { name: "Fires" }));
+    await user.click(
+      await screen.findByRole("button", { name: /High-confidence VIIRS thermal anomaly/ }),
+    );
+
+    const detail = screen.getByRole("complementary", { name: "Selected signal details" });
+    expect(within(detail).getByText("18.4 MW")).toBeInTheDocument();
+    expect(within(detail).getByText("High")).toBeInTheDocument();
+    expect(within(detail).getByText("VIIRS_NOAA20_NRT")).toBeInTheDocument();
+    expect(
+      within(detail).getByText(/not an independently confirmed wildfire perimeter/),
+    ).toBeInTheDocument();
+    expect(
+      within(detail).getByRole("link", { name: /Open NASA FIRMS evidence/ }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/signals?limit=500&active_only=true&source=firms&include_area_only=true",
+        expect.any(Object),
+      ),
     );
   });
 });

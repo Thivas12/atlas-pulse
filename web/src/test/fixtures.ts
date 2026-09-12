@@ -8,11 +8,13 @@ interface EnvelopeOptions {
   occurredAt?: string;
   updatedAt?: string | null;
   location?: { latitude: number; longitude: number; altitude_km: number | null } | null;
-  source?: "usgs" | "nws";
+  source?: "usgs" | "nws" | "firms";
   alertType?: string;
   severity?: "Extreme" | "Severe" | "Moderate" | "Minor" | "Unknown";
   geometry?: unknown;
   expiresAt?: string | null;
+  fireRadiativePowerMw?: number;
+  fireConfidence?: "Low" | "Nominal" | "High";
 }
 
 export function makeEnvelope({
@@ -28,27 +30,36 @@ export function makeEnvelope({
   severity = "Severe",
   geometry = null,
   expiresAt = "2099-01-01T00:00:00Z",
+  fireRadiativePowerMw = 18.4,
+  fireConfidence = "High",
 }: EnvelopeOptions = {}): EventEnvelope {
   return {
     stream_id: streamId,
     event: {
       event_id: eventId,
-      event_type: source === "nws" ? "weather.alert" : "seismic.earthquake",
+      event_type:
+        source === "nws"
+          ? "weather.alert"
+          : source === "firms"
+            ? "fire.thermal_anomaly"
+            : "seismic.earthquake",
       source,
       occurred_at: occurredAt,
       ingested_at: "2026-09-12T10:03:00Z",
       schema_version: "1.0.0",
       location,
       payload: {
-        magnitude,
+        magnitude: source === "firms" ? null : magnitude,
         place,
-        depth_km: location ? Math.abs(location.altitude_km ?? 0) : null,
+        depth_km: source === "firms" ? null : location ? Math.abs(location.altitude_km ?? 0) : null,
         updated_at: updatedAt,
         status: "reviewed",
         source_url:
           source === "nws"
             ? `https://api.weather.gov/alerts/${eventId}`
-            : `https://earthquake.usgs.gov/earthquakes/eventpage/${eventId}`,
+            : source === "firms"
+              ? "https://firms.modaps.eosdis.nasa.gov/map/"
+              : `https://earthquake.usgs.gov/earthquakes/eventpage/${eventId}`,
         ...(source === "nws"
           ? {
               alert_type: alertType,
@@ -62,6 +73,21 @@ export function makeEnvelope({
               sender_name: "NWS Test Office",
               description: "Synthetic alert description.",
               instruction: "Take shelter now.",
+            }
+          : {}),
+        ...(source === "firms"
+          ? {
+              title: `${fireConfidence}-confidence VIIRS thermal anomaly`,
+              confidence: fireConfidence,
+              confidence_rank: { Low: 1, Nominal: 2, High: 3 }[fireConfidence],
+              fire_radiative_power_mw: fireRadiativePowerMw,
+              brightness_ti4_k: 367.9,
+              satellite: "N20",
+              instrument: "VIIRS",
+              product: "VIIRS_NOAA20_NRT",
+              day_night: "day",
+              expires_at: expiresAt,
+              expiry_basis: "AtlasPulse 24-hour operational window",
             }
           : {}),
       },

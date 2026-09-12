@@ -66,14 +66,9 @@ class IngestionService:
             batch = self._source.normalize(fetched.raw, ingested_at=fetched.fetched_at)
             events = batch.events
 
-            published = 0
-            deduplicated = 0
-            for event in events:
-                outcome = await self._event_bus.publish(event)
-                if outcome.deduplicated:
-                    deduplicated += 1
-                else:
-                    published += 1
+            outcomes = await self._event_bus.publish_many(events)
+            published = sum(not outcome.deduplicated for outcome in outcomes)
+            deduplicated = len(outcomes) - published
 
             lag_seconds = max(0.0, (fetched.fetched_at - batch.generated_at).total_seconds())
             attributes = {"source": self._source.source_name}

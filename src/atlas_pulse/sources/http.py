@@ -13,6 +13,10 @@ class RetryableSourceError(RuntimeError):
     """A transient source failure that may succeed on another attempt."""
 
 
+class PermanentSourceError(RuntimeError):
+    """A non-retryable source response reported without leaking its request URL."""
+
+
 class RetryingHttpClient:
     """Fetch source documents with bounded retries and explicit identity headers."""
 
@@ -25,10 +29,12 @@ class RetryingHttpClient:
         max_attempts: int,
         user_agent: str,
         accept: str,
+        public_source_url: str | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._source_name = source_name
         self._url = url
+        self._public_source_url = public_source_url or url
         self._max_attempts = max_attempts
         self._headers = {"Accept": accept, "User-Agent": user_agent}
         self._owns_client = client is None
@@ -42,21 +48,29 @@ class RetryingHttpClient:
         retrying = AsyncRetrying(
             stop=stop_after_attempt(self._max_attempts),
             wait=wait_exponential(multiplier=0.25, min=0.25, max=2),
-            retry=retry_if_exception_type((httpx.TransportError, RetryableSourceError)),
+            retry=retry_if_exception_type(RetryableSourceError),
             reraise=True,
         )
         async for attempt in retrying:
             with attempt:
-                response = await self._client.get(self._url, headers=self._headers)
+                try:
+                    response = await self._client.get(self._url, headers=self._headers)
+                except httpx.TransportError as error:
+                    raise RetryableSourceError(
+                        f"{self._source_name} transport failed ({type(error).__name__})"
+                    ) from None
                 if response.status_code == 429 or response.status_code >= 500:
                     raise RetryableSourceError(
                         f"{self._source_name} returned retryable HTTP {response.status_code}"
                     )
-                response.raise_for_status()
+                if not 200 <= response.status_code < 300:
+                    raise PermanentSourceError(
+                        f"{self._source_name} returned permanent HTTP {response.status_code}"
+                    )
                 return FetchedDocument(
                     raw=response.content,
                     fetched_at=datetime.now(UTC),
-                    source_url=str(response.url),
+                    source_url=self._public_source_url,
                     content_type=response.headers.get("content-type"),
                 )
         raise AssertionError("retry loop completed without a response")  # pragma: no cover

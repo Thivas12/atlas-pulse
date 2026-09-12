@@ -1,5 +1,8 @@
 import {
+  fireConfidenceOf,
+  fireRadiativePowerOf,
   formatTimestamp,
+  isFireDetection,
   isWeatherAlert,
   magnitudeOf,
   placeOf,
@@ -31,7 +34,10 @@ export function EventFeed({ events, selectedStreamId, onSelect }: EventFeedProps
           events.map((item) => {
             const magnitude = magnitudeOf(item.event);
             const weather = isWeatherAlert(item.event);
+            const fire = isFireDetection(item.event);
             const severity = severityOf(item.event);
+            const confidence = fireConfidenceOf(item.event);
+            const fireRadiativePower = fireRadiativePowerOf(item.event);
             return (
               <button
                 className={`event-row ${selectedStreamId === item.stream_id ? "selected" : ""}`}
@@ -40,17 +46,25 @@ export function EventFeed({ events, selectedStreamId, onSelect }: EventFeedProps
                 type="button"
               >
                 <span
-                  className={`signal-marker ${weather ? `weather severity-${severity?.toLowerCase() ?? "unknown"}` : "quake"}`}
+                  className={`signal-marker ${
+                    weather
+                      ? `weather severity-${severity?.toLowerCase() ?? "unknown"}`
+                      : fire
+                        ? `fire confidence-${confidence?.toLowerCase() ?? "unknown"}`
+                        : "quake"
+                  }`}
                 >
                   {weather
                     ? (severity?.slice(0, 3).toUpperCase() ?? "WX")
-                    : (magnitude?.toFixed(1) ?? "?")}
+                    : fire
+                      ? `${fireRadiativePower?.toFixed(0) ?? "?"}MW`
+                      : (magnitude?.toFixed(1) ?? "?")}
                 </span>
                 <span className="event-copy">
                   <strong>{titleOf(item.event)}</strong>
                   <small>
                     <span className={`source-badge ${item.event.source}`}>{item.event.source}</span>
-                    {weather ? `${placeOf(item.event)} · ` : ""}
+                    {weather || fire ? `${placeOf(item.event)} · ` : ""}
                     {formatTimestamp(item.event.occurred_at)} UTC
                   </small>
                 </span>

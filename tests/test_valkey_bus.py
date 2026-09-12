@@ -24,6 +24,7 @@ class FakeValkey:
         self.messages: list[tuple[bytes, Mapping[bytes, bytes]]] = []
         self.closed = False
         self.ready = True
+        self.pipeline_batches: list[int] = []
 
     async def eval(self, _script: str, _numkeys: int, *keys_and_args: str | bytes | int) -> object:
         dedupe_key = str(keys_and_args[0])
@@ -61,6 +62,33 @@ class FakeValkey:
     async def aclose(self) -> None:
         self.closed = True
 
+    def pipeline(self, transaction: bool = True) -> "FakePipeline":
+        assert transaction is False
+        return FakePipeline(self)
+
+
+class FakePipeline:
+    def __init__(self, client: FakeValkey) -> None:
+        self.client = client
+        self.commands: list[tuple[str, int, tuple[str | bytes | int, ...]]] = []
+
+    def eval(self, script: str, numkeys: int, *keys_and_args: str | bytes | int) -> object:
+        self.commands.append((script, numkeys, keys_and_args))
+        return self
+
+    async def execute(self) -> object:
+        self.client.pipeline_batches.append(len(self.commands))
+        return [
+            await self.client.eval(script, numkeys, *keys_and_args)
+            for script, numkeys, keys_and_args in self.commands
+        ]
+
+    async def __aenter__(self) -> "FakePipeline":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
 
 async def test_valkey_bus_publishes_once_and_decodes_latest() -> None:
     client = FakeValkey()
@@ -84,6 +112,27 @@ async def test_valkey_bus_publishes_once_and_decodes_latest() -> None:
     assert await bus.is_ready() is True
     await bus.close()
     assert client.closed is False
+
+
+async def test_valkey_bus_pipelines_large_source_batches_with_atomic_dedupe() -> None:
+    client = FakeValkey()
+    bus = ValkeyEventBus(
+        url="valkey://unused",
+        stream="{atlas}:events",
+        max_length=1_000,
+        dedupe_ttl_seconds=60,
+        client=client,
+    )
+    events = tuple(make_event(str(index)) for index in range(501))
+
+    first = await bus.publish_many(events)
+    repeated = await bus.publish_many(events[:2])
+
+    assert len(first) == 501
+    assert all(not result.deduplicated for result in first)
+    assert all(result.deduplicated for result in repeated)
+    assert client.pipeline_batches == [500, 1, 2]
+    assert await bus.publish_many(()) == ()
 
 
 async def test_valkey_replay_uses_exclusive_xrange_cursor() -> None:
@@ -144,6 +193,28 @@ async def test_publish_rejects_malformed_script_replies(reply: object) -> None:
     )
     with pytest.raises((TypeError, ValueError)):
         await bus.publish(make_event())
+
+
+@pytest.mark.parametrize("reply", [None, [object()], [[1, b"1-0"], [1, b"2-0"]]])
+async def test_publish_many_rejects_malformed_pipeline_replies(reply: object) -> None:
+    class MalformedPipeline(FakePipeline):
+        async def execute(self) -> object:
+            return reply
+
+    class MalformedValkey(FakeValkey):
+        def pipeline(self, transaction: bool = True) -> FakePipeline:
+            assert transaction is False
+            return MalformedPipeline(self)
+
+    bus = ValkeyEventBus(
+        url="valkey://unused",
+        stream="{atlas}:events",
+        max_length=100,
+        dedupe_ttl_seconds=60,
+        client=MalformedValkey(),
+    )
+    with pytest.raises((TypeError, ValueError)):
+        await bus.publish_many((make_event(),))
 
 
 @pytest.mark.parametrize(

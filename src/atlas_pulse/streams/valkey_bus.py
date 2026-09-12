@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Protocol, cast
+from typing import Protocol, Self, cast
 
 from agent_rag_core import Event
 from valkey.asyncio import Valkey
@@ -21,6 +21,19 @@ local stream_id = redis.call(
 redis.call('SET', KEYS[1], stream_id, 'EX', ARGV[3])
 return {1, stream_id}
 """
+_PUBLISH_PIPELINE_SIZE = 500
+
+
+class AsyncValkeyPipeline(Protocol):
+    """Commands needed from a non-transactional async Valkey pipeline."""
+
+    def eval(self, script: str, numkeys: int, *keys_and_args: str | bytes | int) -> object: ...
+
+    async def execute(self) -> object: ...
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(self, *_exc: object) -> None: ...
 
 
 class AsyncValkeyClient(Protocol):
@@ -41,6 +54,8 @@ class AsyncValkeyClient(Protocol):
     async def ping(self) -> object: ...
 
     async def aclose(self) -> None: ...
+
+    def pipeline(self, transaction: bool = True) -> AsyncValkeyPipeline: ...
 
 
 def _as_text(value: object) -> str:
@@ -75,6 +90,29 @@ class ValkeyEventBus:
     def _dedupe_key(self, event: Event) -> str:
         return f"{{atlas}}:dedupe:{event_fingerprint(event)}"
 
+    def _queue_publish(self, target: AsyncValkeyPipeline, event: Event) -> None:
+        target.eval(
+            _PUBLISH_ONCE,
+            2,
+            self._dedupe_key(event),
+            self._stream,
+            self._max_length,
+            event.model_dump_json(),
+            self._dedupe_ttl_seconds,
+        )
+
+    @staticmethod
+    def _decode_publish_result(result: object) -> PublishResult:
+        if not isinstance(result, Sequence) or isinstance(result, (str, bytes)):
+            raise TypeError("Valkey publish script returned an invalid response")
+        if len(result) != 2:
+            raise ValueError("Valkey publish script returned an unexpected response length")
+        created = int(_as_text(result[0])) if isinstance(result[0], bytes | str) else int(result[0])
+        return PublishResult(
+            stream_id=_as_text(result[1]),
+            deduplicated=not bool(created),
+        )
+
     async def publish(self, event: Event) -> PublishResult:
         result = await self._client.eval(
             _PUBLISH_ONCE,
@@ -85,15 +123,23 @@ class ValkeyEventBus:
             event.model_dump_json(),
             self._dedupe_ttl_seconds,
         )
-        if not isinstance(result, Sequence) or isinstance(result, (str, bytes)):
-            raise TypeError("Valkey publish script returned an invalid response")
-        if len(result) != 2:
-            raise ValueError("Valkey publish script returned an unexpected response length")
-        created = int(_as_text(result[0])) if isinstance(result[0], bytes | str) else int(result[0])
-        return PublishResult(
-            stream_id=_as_text(result[1]),
-            deduplicated=not bool(created),
-        )
+        return self._decode_publish_result(result)
+
+    async def publish_many(self, events: tuple[Event, ...]) -> tuple[PublishResult, ...]:
+        """Pipeline bounded groups while retaining one atomic Lua decision per event."""
+        outcomes: list[PublishResult] = []
+        for start in range(0, len(events), _PUBLISH_PIPELINE_SIZE):
+            batch = events[start : start + _PUBLISH_PIPELINE_SIZE]
+            async with self._client.pipeline(transaction=False) as pipeline:
+                for event in batch:
+                    self._queue_publish(pipeline, event)
+                raw_results = await pipeline.execute()
+            if not isinstance(raw_results, Sequence) or isinstance(raw_results, (str, bytes)):
+                raise TypeError("Valkey publish pipeline returned an invalid response")
+            if len(raw_results) != len(batch):
+                raise ValueError("Valkey publish pipeline returned an unexpected response length")
+            outcomes.extend(self._decode_publish_result(result) for result in raw_results)
+        return tuple(outcomes)
 
     async def latest(self, limit: int) -> tuple[StreamMessage, ...]:
         raw_messages = await self._client.xrevrange(self._stream, count=limit)

@@ -63,6 +63,25 @@ describe("eventsToGeoJson", () => {
     });
   });
 
+  it("maps FIRMS point measurements without inventing earthquake magnitude", () => {
+    const fire = makeEnvelope({
+      source: "firms",
+      fireRadiativePowerMw: 18.4,
+      fireConfidence: "High",
+      location: { latitude: 34.1235, longitude: -118.5432, altitude_km: null },
+    });
+
+    expect(eventsToGeoJson([fire]).features[0]).toMatchObject({
+      geometry: { type: "Point", coordinates: [-118.5432, 34.1235] },
+      properties: {
+        source: "firms",
+        magnitude: null,
+        fireRadiativePowerMw: 18.4,
+        fireConfidenceRank: 3,
+      },
+    });
+  });
+
   it("omits area-only and malformed alert geometry from the polygon layer", () => {
     const areaOnly = makeEnvelope({ source: "nws", geometry: null, location: null });
     const malformed = makeEnvelope({ source: "nws", geometry: { type: "Polygon" } });

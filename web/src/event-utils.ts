@@ -8,6 +8,12 @@ const SEVERITY_RANKS = {
   Extreme: 4,
 } as const;
 
+const FIRE_CONFIDENCE_RANKS = {
+  Low: 1,
+  Nominal: 2,
+  High: 3,
+} as const;
+
 export function magnitudeOf(event: AtlasEvent): number | null {
   const magnitude = event.payload.magnitude;
   return typeof magnitude === "number" && Number.isFinite(magnitude) ? magnitude : null;
@@ -20,6 +26,27 @@ export function placeOf(event: AtlasEvent): string {
 
 export function isWeatherAlert(event: AtlasEvent): boolean {
   return event.source === "nws" && event.event_type === "weather.alert";
+}
+
+export function isFireDetection(event: AtlasEvent): boolean {
+  return event.source === "firms" && event.event_type === "fire.thermal_anomaly";
+}
+
+export function fireRadiativePowerOf(event: AtlasEvent): number | null {
+  const value = event.payload.fire_radiative_power_mw;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function fireConfidenceOf(event: AtlasEvent): keyof typeof FIRE_CONFIDENCE_RANKS | null {
+  const confidence = event.payload.confidence;
+  return typeof confidence === "string" && confidence in FIRE_CONFIDENCE_RANKS
+    ? (confidence as keyof typeof FIRE_CONFIDENCE_RANKS)
+    : null;
+}
+
+export function fireConfidenceRankOf(event: AtlasEvent): number {
+  const confidence = fireConfidenceOf(event);
+  return confidence ? FIRE_CONFIDENCE_RANKS[confidence] : 0;
 }
 
 export function alertTypeOf(event: AtlasEvent): string | null {
@@ -40,11 +67,14 @@ export function severityRankOf(event: AtlasEvent): number {
 }
 
 export function titleOf(event: AtlasEvent): string {
+  if (isFireDetection(event)) {
+    const title = event.payload.title;
+    if (typeof title === "string" && title.trim()) return title;
+  }
   return alertTypeOf(event) ?? placeOf(event);
 }
 
 export function isActiveAt(event: AtlasEvent, now = new Date()): boolean {
-  if (!isWeatherAlert(event)) return true;
   const expiresAt = event.payload.expires_at;
   if (typeof expiresAt !== "string") return true;
   const expires = new Date(expiresAt);

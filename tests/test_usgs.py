@@ -7,7 +7,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from atlas_pulse.sources import RetryableSourceError
+from atlas_pulse.sources import PermanentSourceError, RetryableSourceError
 from atlas_pulse.sources.usgs import USGSClient, USGSFeed
 
 
@@ -115,7 +115,7 @@ async def test_client_does_not_retry_permanent_client_failure() -> None:
             max_attempts=3,
             client=http_client,
         )
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(PermanentSourceError, match="permanent HTTP 404"):
             await source.fetch()
     assert calls == 1
 
@@ -134,6 +134,24 @@ async def test_client_exhausts_retryable_failures() -> None:
         )
         with pytest.raises(RetryableSourceError, match="429"):
             await source.fetch()
+
+
+@pytest.mark.asyncio
+async def test_client_sanitizes_transport_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("failed for https://example.test/secret-value", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        source = USGSClient(
+            feed_url="https://example.test/secret-value",
+            timeout_seconds=1,
+            max_attempts=1,
+            client=http_client,
+        )
+        with pytest.raises(RetryableSourceError) as caught:
+            await source.fetch()
+
+    assert "secret-value" not in str(caught.value)
 
 
 @pytest.mark.asyncio

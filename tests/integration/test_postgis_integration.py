@@ -14,8 +14,15 @@ from atlas_pulse.streams import StreamMessage
 DATABASE_URL = os.getenv("ATLAS_TEST_DATABASE_URL")
 pytestmark = pytest.mark.integration
 
-_STREAM_IDS = ("9100000-0", "9100001-0", "9100002-0", "9100003-0", "9100004-0")
-_EVENT_IDS = ("day5-quake", "day5-polygon", "day5-area-only", "day5-expired")
+_STREAM_IDS = (
+    "9100000-0",
+    "9100001-0",
+    "9100002-0",
+    "9100003-0",
+    "9100004-0",
+    "9100005-0",
+)
+_EVENT_IDS = ("day5-quake", "day5-polygon", "day5-area-only", "day5-expired", "day5-fire")
 _PROJECTION = "day5-integration"
 
 
@@ -41,7 +48,13 @@ def _event(
 ) -> Event:
     return Event(
         event_id=event_id,
-        event_type="weather.alert" if source == "nws" else "seismic.earthquake",
+        event_type=(
+            "weather.alert"
+            if source == "nws"
+            else "fire.thermal_anomaly"
+            if source == "firms"
+            else "seismic.earthquake"
+        ),
         source=source,
         occurred_at=occurred_at,
         ingested_at=occurred_at,
@@ -125,6 +138,22 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
                 },
             ),
         ),
+        StreamMessage(
+            stream_id=_STREAM_IDS[5],
+            event=_event(
+                "day5-fire",
+                source="firms",
+                occurred_at=occurred,
+                location=GeoPoint(latitude=34.12, longitude=-118.54, altitude_km=None),
+                payload={
+                    "confidence": "High",
+                    "confidence_rank": 3,
+                    "fire_radiative_power_mw": 18.4,
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "title": "VIIRS thermal anomaly",
+                },
+            ),
+        ),
     )
 
     try:
@@ -133,7 +162,7 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
 
         assert await store.checkpoint(_PROJECTION) == _STREAM_IDS[-1]
         all_current = await store.query_current(SignalQuery(limit=10, active_only=False))
-        assert len(all_current.items) == 4
+        assert len(all_current.items) == 5
         assert all_current.items[-1].event.payload["title"] == "Revised quake"
 
         active = await store.query_current(SignalQuery(limit=10))
@@ -141,6 +170,7 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
             "day5-quake",
             "day5-polygon",
             "day5-area-only",
+            "day5-fire",
         }
 
         bounds = GeoBounds(west=-100, south=30, east=-90, north=40)
@@ -154,19 +184,28 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
             "day5-polygon",
         ]
 
+        fires = await store.query_current(
+            SignalQuery(
+                limit=10,
+                source="firms",
+                bounds=GeoBounds(west=-120, south=33, east=-117, north=36),
+            )
+        )
+        assert [message.event.event_id for message in fires.items] == ["day5-fire"]
+
         first_page = await store.query_current(SignalQuery(limit=2, active_only=False))
         second_page = await store.query_current(
             SignalQuery(limit=2, after=first_page.next_cursor, active_only=False)
         )
         assert first_page.has_more is True
-        assert [message.stream_id for message in first_page.items] == list(_STREAM_IDS[4:2:-1])
-        assert [message.stream_id for message in second_page.items] == list(_STREAM_IDS[2:0:-1])
+        assert [message.stream_id for message in first_page.items] == list(_STREAM_IDS[5:3:-1])
+        assert [message.stream_id for message in second_page.items] == list(_STREAM_IDS[3:1:-1])
 
         async with engine.connect() as connection:
             revision_count = await connection.scalar(
                 text("SELECT count(*) FROM event_revisions WHERE stream_id LIKE '910000%'")
             )
-        assert revision_count == 5
+        assert revision_count == 6
     finally:
         await engine.dispose()
         await _clean(DATABASE_URL)

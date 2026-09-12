@@ -7,7 +7,7 @@ from typing import Literal, Protocol
 
 from atlas_pulse.streams import StreamMessage
 
-SourceName = Literal["usgs", "nws"]
+SourceName = Literal["usgs", "nws", "firms"]
 
 
 @dataclass(frozen=True, slots=True)

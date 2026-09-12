@@ -38,4 +38,20 @@ describe("EventFeed", () => {
     expect(screen.getByText("nws")).toBeInTheDocument();
     expect(screen.getByText(/Test County/)).toBeInTheDocument();
   });
+
+  it("renders FIRMS confidence and radiative power as a fire signal", () => {
+    const item = makeEnvelope({
+      source: "firms",
+      place: "34.1235, -118.5432",
+      fireRadiativePowerMw: 18.4,
+      fireConfidence: "High",
+    });
+    render(<EventFeed events={[item]} selectedStreamId={null} onSelect={vi.fn()} />);
+
+    expect(screen.getByText("18MW")).toHaveClass("fire", "confidence-high");
+    expect(screen.getByText("firms")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /High-confidence VIIRS thermal anomaly/ }),
+    ).toBeInTheDocument();
+  });
 });

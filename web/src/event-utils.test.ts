@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   alertTypeOf,
+  fireConfidenceOf,
+  fireConfidenceRankOf,
+  fireRadiativePowerOf,
   formatTimestamp,
   isActiveAt,
+  isFireDetection,
   isWeatherAlert,
   magnitudeOf,
   newestUpdate,
@@ -92,5 +96,29 @@ describe("event utilities", () => {
     expect(isActiveAt(weather.event)).toBe(true);
     delete weather.event.payload.expires_at;
     expect(isActiveAt(weather.event)).toBe(true);
+  });
+
+  it("reads FIRMS measurements and applies the operational active window", () => {
+    const fire = makeEnvelope({
+      source: "firms",
+      fireRadiativePowerMw: 18.4,
+      fireConfidence: "High",
+      expiresAt: "2026-09-12T13:00:00Z",
+    });
+    expect(isFireDetection(fire.event)).toBe(true);
+    expect(fireRadiativePowerOf(fire.event)).toBe(18.4);
+    expect(fireConfidenceOf(fire.event)).toBe("High");
+    expect(fireConfidenceRankOf(fire.event)).toBe(3);
+    expect(titleOf(fire.event)).toBe("High-confidence VIIRS thermal anomaly");
+    expect(isActiveAt(fire.event, new Date("2026-09-12T12:00:00Z"))).toBe(true);
+    expect(isActiveAt(fire.event, new Date("2026-09-12T14:00:00Z"))).toBe(false);
+
+    fire.event.payload.fire_radiative_power_mw = "18.4";
+    fire.event.payload.confidence = "Certain";
+    fire.event.payload.title = "";
+    expect(fireRadiativePowerOf(fire.event)).toBeNull();
+    expect(fireConfidenceOf(fire.event)).toBeNull();
+    expect(fireConfidenceRankOf(fire.event)).toBe(0);
+    expect(titleOf(fire.event)).toBe("Test Ridge");
   });
 });

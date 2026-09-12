@@ -75,7 +75,16 @@ services:
     build: .
     command: ["atlas-pulse-ingest"]
     restart: unless-stopped
-    environment: *atlas-environment
+    environment:
+      <<: *atlas-environment
+      # The FIRMS credential is intentionally available only to this source-facing process.
+      ATLAS_FIRMS_ENABLED: ${ATLAS_FIRMS_ENABLED:-false}
+      ATLAS_FIRMS_MAP_KEY: ${ATLAS_FIRMS_MAP_KEY:-}
+      ATLAS_FIRMS_PRODUCT: ${ATLAS_FIRMS_PRODUCT:-VIIRS_NOAA20_NRT}
+      ATLAS_FIRMS_AREA: ${ATLAS_FIRMS_AREA:-world}
+      ATLAS_FIRMS_DAY_RANGE: ${ATLAS_FIRMS_DAY_RANGE:-1}
+      ATLAS_FIRMS_POLL_SECONDS: ${ATLAS_FIRMS_POLL_SECONDS:-900}
+      ATLAS_FIRMS_ACTIVE_WINDOW_HOURS: ${ATLAS_FIRMS_ACTIVE_WINDOW_HOURS:-24}
     depends_on:
       valkey:
         condition: service_healthy

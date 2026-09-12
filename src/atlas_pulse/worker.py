@@ -9,7 +9,7 @@ import structlog
 from atlas_pulse.config import get_settings
 from atlas_pulse.ingestion import IngestionService, RawSnapshotStore
 from atlas_pulse.logging import configure_logging
-from atlas_pulse.sources import NWSClient, SourceAdapter, USGSClient
+from atlas_pulse.sources import FIRMSClient, NWSClient, SourceAdapter, USGSClient
 from atlas_pulse.streams import ValkeyEventBus
 from atlas_pulse.telemetry import configure_telemetry
 
@@ -64,7 +64,24 @@ async def run() -> None:
         user_agent=settings.source_user_agent,
     )
     snapshots = RawSnapshotStore(settings.raw_data_dir)
-    sources = ((usgs, settings.usgs_poll_seconds), (nws, settings.nws_poll_seconds))
+    sources: list[tuple[SourceAdapter, float]] = [
+        (usgs, settings.usgs_poll_seconds),
+        (nws, settings.nws_poll_seconds),
+    ]
+    if settings.firms_enabled:
+        assert settings.firms_map_key is not None
+        firms = FIRMSClient(
+            api_base_url=str(settings.firms_api_base_url),
+            map_key=settings.firms_map_key.get_secret_value(),
+            product=settings.firms_product,
+            area=settings.firms_area,
+            day_range=settings.firms_day_range,
+            active_window_hours=settings.firms_active_window_hours,
+            timeout_seconds=settings.source_timeout_seconds,
+            max_attempts=settings.source_max_attempts,
+            user_agent=settings.source_user_agent,
+        )
+        sources.append((firms, settings.firms_poll_seconds))
     tasks = [
         asyncio.create_task(
             poll_source(

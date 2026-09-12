@@ -2,8 +2,9 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field, HttpUrl
+from pydantic import Field, HttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,8 +26,20 @@ class Settings(BaseSettings):
     usgs_poll_seconds: float = Field(default=60.0, gt=0)
     nws_alerts_url: HttpUrl = HttpUrl("https://api.weather.gov/alerts/active?status=actual")
     nws_poll_seconds: float = Field(default=120.0, gt=0)
+    firms_enabled: bool = False
+    firms_api_base_url: HttpUrl = HttpUrl("https://firms.modaps.eosdis.nasa.gov/api/area/csv")
+    firms_map_key: SecretStr | None = None
+    firms_product: Literal[
+        "VIIRS_NOAA20_NRT",
+        "VIIRS_NOAA21_NRT",
+        "VIIRS_SNPP_NRT",
+    ] = "VIIRS_NOAA20_NRT"
+    firms_area: str = "world"
+    firms_day_range: int = Field(default=1, ge=1, le=5)
+    firms_poll_seconds: float = Field(default=900.0, ge=300)
+    firms_active_window_hours: int = Field(default=24, ge=1, le=120)
     source_user_agent: str = Field(
-        default="AtlasPulse/0.3 (+https://github.com/Thivas12/atlas-pulse)",
+        default="AtlasPulse/0.4 (+https://github.com/Thivas12/atlas-pulse)",
         min_length=10,
     )
     source_timeout_seconds: float = Field(default=15.0, gt=0)
@@ -42,6 +55,29 @@ class Settings(BaseSettings):
     projection_poll_seconds: float = Field(default=1.0, gt=0)
     otel_service_name: str = "atlas-pulse"
     otel_exporter_otlp_endpoint: str | None = None
+
+    @field_validator("firms_area")
+    @classmethod
+    def validate_firms_area(cls, value: str) -> str:
+        """Accept NASA's global token or a valid non-wrapping WGS84 bbox."""
+        normalized = value.strip()
+        if normalized == "world":
+            return normalized
+        try:
+            west, south, east, north = (float(part.strip()) for part in normalized.split(","))
+        except (TypeError, ValueError) as error:
+            raise ValueError("firms_area must be 'world' or west,south,east,north") from error
+        if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+            raise ValueError("firms_area must be a valid non-wrapping WGS84 bbox")
+        return ",".join(format(part, "g") for part in (west, south, east, north))
+
+    @model_validator(mode="after")
+    def require_firms_key_when_enabled(self) -> "Settings":
+        """Fail fast when a deployed FIRMS poller has no free API credential."""
+        key = self.firms_map_key.get_secret_value().strip() if self.firms_map_key else ""
+        if self.firms_enabled and not key:
+            raise ValueError("ATLAS_FIRMS_MAP_KEY is required when ATLAS_FIRMS_ENABLED=true")
+        return self
 
 
 @lru_cache

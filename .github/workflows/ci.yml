@@ -113,6 +113,19 @@ jobs:
       - name: Validate Compose model
         run: docker compose config --quiet
 
+      - name: Verify FIRMS credential is ingestor-only
+        run: |
+          ATLAS_FIRMS_ENABLED=true ATLAS_FIRMS_MAP_KEY=ci-sentinel \
+            docker compose config --format json | python3 -c '
+          import json, sys
+          services = json.load(sys.stdin)["services"]
+          assert services["ingestor"]["environment"]["ATLAS_FIRMS_MAP_KEY"] == "ci-sentinel"
+          assert all(
+              "ATLAS_FIRMS_MAP_KEY" not in service.get("environment", {})
+              for name, service in services.items()
+              if name != "ingestor"
+          )'
+
       - name: Build production images
         run: docker compose build
 

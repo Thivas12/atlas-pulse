@@ -23,6 +23,12 @@ class InMemoryEventBus:
         self._dedupe[fingerprint] = stream_id
         return PublishResult(stream_id=stream_id, deduplicated=False)
 
+    async def publish_many(self, events: tuple[Event, ...]) -> tuple[PublishResult, ...]:
+        outcomes: list[PublishResult] = []
+        for event in events:
+            outcomes.append(await self.publish(event))
+        return tuple(outcomes)
+
     async def latest(self, limit: int) -> tuple[StreamMessage, ...]:
         return tuple(reversed(self._messages[-limit:]))
 

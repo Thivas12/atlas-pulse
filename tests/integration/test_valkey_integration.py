@@ -36,9 +36,7 @@ async def test_real_valkey_atomic_duplicate_delivery() -> None:
     )
 
     try:
-        first = await bus.publish(event)
-        duplicate = await bus.publish(event)
-        later = await bus.publish(later_event)
+        first, duplicate, later = await bus.publish_many((event, event, later_event))
         latest = await bus.latest(100)
         replay = await bus.replay(after=first.stream_id, limit=100)
     finally:

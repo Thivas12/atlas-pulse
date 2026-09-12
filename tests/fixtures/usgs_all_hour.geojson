@@ -1,0 +1,62 @@
+{
+  "type": "FeatureCollection",
+  "metadata": {
+    "generated": 1720613100000,
+    "url": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson",
+    "title": "USGS All Earthquakes, Past Hour",
+    "status": 200,
+    "api": "1.10.3",
+    "count": 2
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "mag": 2.4,
+        "place": "10 km S of Testville",
+        "time": 1720612800123,
+        "updated": 1720613000456,
+        "url": "https://earthquake.usgs.gov/earthquakes/eventpage/test001",
+        "detail": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/detail/test001.geojson",
+        "status": "reviewed",
+        "tsunami": 0,
+        "sig": 89,
+        "net": "xx",
+        "code": "test001",
+        "magType": "ml",
+        "type": "earthquake",
+        "title": "M 2.4 - 10 km S of Testville"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-122.25, 37.75, 8.4]
+      },
+      "id": "test001"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "mag": null,
+        "place": null,
+        "time": 1720612860000,
+        "updated": 1720613040000,
+        "url": "https://earthquake.usgs.gov/earthquakes/eventpage/test002",
+        "detail": "https://earthquake.usgs.gov/earthquakes/feed/v1.0/detail/test002.geojson",
+        "status": "automatic",
+        "tsunami": 1,
+        "sig": 0,
+        "net": "yy",
+        "code": "test002",
+        "magType": null,
+        "type": "quarry blast",
+        "title": "M ? - Unknown region"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [140.1, -20.2, -1.5]
+      },
+      "id": "test002"
+    }
+  ],
+  "bbox": [-122.25, -20.2, -1.5, 140.1, 37.75, 8.4]
+}

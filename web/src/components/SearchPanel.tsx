@@ -1,5 +1,5 @@
 import { formatTimestamp, placeOf, titleOf } from "../event-utils";
-import type { SearchHit, SearchResponse } from "../types";
+import type { EvidencePack, SearchHit, SearchResponse } from "../types";
 
 interface SearchPanelProps {
   query: string;
@@ -7,12 +7,16 @@ interface SearchPanelProps {
   useViewport: boolean;
   viewportAvailable: boolean;
   response?: SearchResponse;
+  evidencePack?: EvidencePack;
   loading: boolean;
   error: Error | null;
+  evidencePackLoading: boolean;
+  evidencePackError: Error | null;
   selectedStreamId: string | null;
   onDraftChange: (value: string) => void;
   onUseViewportChange: (value: boolean) => void;
   onSubmit: () => void;
+  onBuildEvidencePack: () => void;
   onSelect: (streamId: string) => void;
 }
 
@@ -30,12 +34,16 @@ export function SearchPanel({
   useViewport,
   viewportAvailable,
   response,
+  evidencePack,
   loading,
   error,
+  evidencePackLoading,
+  evidencePackError,
   selectedStreamId,
   onDraftChange,
   onUseViewportChange,
   onSubmit,
+  onBuildEvidencePack,
   onSelect,
 }: SearchPanelProps) {
   const items = response?.items ?? [];
@@ -95,6 +103,38 @@ export function SearchPanel({
           Search uses semantic and exact-language channels. It returns source events, never a
           generated answer.
         </p>
+      )}
+      {response && (
+        <div className="evidence-pack-control">
+          <div className="evidence-pack-heading">
+            <div>
+              <span>Agent boundary</span>
+              <strong>Deterministic evidence handoff</strong>
+            </div>
+            <button type="button" disabled={evidencePackLoading} onClick={onBuildEvidencePack}>
+              {evidencePackLoading ? "Preparing…" : "Prepare agent pack"}
+            </button>
+          </div>
+          {evidencePackError && <p className="error">{evidencePackError.message}</p>}
+          {!evidencePack && !evidencePackError && (
+            <p>Traceable citations only · 8 items · 12,000 source characters maximum</p>
+          )}
+          {evidencePack && (
+            <div className="evidence-pack-summary">
+              <span className={evidencePack.status}>
+                {evidencePack.status === "traceable_evidence_available"
+                  ? "Traceable evidence available"
+                  : "No traceable evidence"}
+              </span>
+              <code>{evidencePack.pack_id}</code>
+              <p>
+                {evidencePack.item_count} included · {evidencePack.source_text_characters} source
+                characters · {evidencePack.exclusion_count} excluded
+              </p>
+              <small>{evidencePack.trust_boundary}</small>
+            </div>
+          )}
+        </div>
       )}
       {response && (
         <div className="retrieval-results">

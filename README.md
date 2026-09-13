@@ -7,7 +7,7 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — independently reviewed evidence relationships.** Independent workers
+> **Current milestone — content-addressed agent evidence handoffs.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
@@ -28,7 +28,11 @@ component can run without a paid API key.
 > labels, and reports per-label precision/recall/F1 with abstention and predicate/source slices.
 > Two exact first-pass reviews can now be compared with observed agreement and Cohen's kappa;
 > only disagreements enter a separately protected, system-blind adjudication sheet, and the final
-> gold pool retains both review hashes plus the third-person decision provenance.
+> gold pool retains both review hashes plus the third-person decision provenance. Before any
+> generated answer or agent action is introduced, `/v1/evidence-packs` now converts deployed search
+> results into deterministic, content-addressed JSON. It preserves retrieval order and provenance,
+> admits only structurally traceable citations, applies hard item and source-text character budgets,
+> records every exclusion, and marks all included text as untrusted data.
 
 ## Why this is portfolio-grade
 
@@ -48,6 +52,7 @@ component can run without a paid API key.
 | Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable evidence tie-breaks |
 | Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, shared-pool before/after deltas, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
+| Agent handoff | Content-addressed evidence packs, exact retrieval provenance, hard source-text budgets, explicit exclusions, and an untrusted-data policy |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI |
@@ -76,11 +81,13 @@ flowchart TD
     PostGIS --> API["FastAPI current-state API"]
     Hybrid --> Search["RRF + evidence tie-break"]
     Search --> Evaluate["Pooled human evaluation"]
+    Search --> Packs["Bounded evidence-pack builder"]
     Search --> API
+    Packs --> API
     Claims --> API
     Stream --> API
     API --> Web["Viewport-driven command center"]
-    API --> Agents["Grounded RAG and agents — next milestones"]
+    Packs --> Agents["Versioned agents — future milestone"]
 ```
 
 Each source is at-least-once and failure-isolated: a slow or unavailable source cannot stop the
@@ -121,8 +128,8 @@ removed from source metadata, raised errors, and OpenTelemetry URL attributes.
 
 The first image build also downloads a commit-pinned copy of the free 67 MB BGE ONNX model; later
 builds use Docker's cache and runtime inference is offline. Compose waits for PostGIS plus
-pgvector, applies Alembic migrations once, and starts the
-ingestor, canonical projector, retrieval indexer, API, and web edge. After the first ingestion,
+pgvector, applies Alembic migrations once, and starts the ingestor, canonical projector, retrieval
+indexer, API, and web edge. After the first ingestion,
 projection, and indexing cycles, open the command center at
 <http://localhost:3000>. The API and its operational probes remain directly available:
 
@@ -139,6 +146,9 @@ curl -s 'http://localhost:8000/v1/incidents?bbox=-120,30,-110,40&radius_km=50'
 curl -s --get 'http://localhost:8000/v1/search' \
   --data-urlencode 'q=residents ordered to shelter from a dangerous storm' \
   --data-urlencode 'bbox=-125,24,-66,50'
+curl -s --get 'http://localhost:8000/v1/evidence-packs' \
+  --data-urlencode 'q=residents ordered to shelter from a dangerous storm' \
+  --data-urlencode 'bbox=-125,24,-66,50'
 ```
 
 Switch between **Live** and **Replay**, then filter **All**, **Earthquakes**, **Weather**, or
@@ -147,7 +157,10 @@ follow each node back to its public source evidence. The incident panel separate
 corroborating, conflicting, and unresolved claim comparisons, including each normalized claim's
 source field and qualifying uncertainty. Open **Search** and try a paraphrase rather than copying
 a source headline. Every result shows its lexical rank, dense rank, fused/final score, and citation
-status.
+status. Choose **Prepare agent pack** to create a bounded handoff and inspect its full content ID,
+included/excluded counts, exact source-text character use, availability state, and prompt-injection
+trust boundary. The pack contains evidence only and keeps `answer_generated` false. The complete
+contract and consumer rules are in [`docs/evidence-packs.md`](docs/evidence-packs.md).
 Live mode is served from current PostGIS state, omits expired alerts/detections, and refreshes the
 map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
 remain in the global feed without being falsely placed on the map. Replay starts

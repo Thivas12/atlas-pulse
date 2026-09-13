@@ -16,6 +16,18 @@ from atlas_pulse.correlation import (
     IncidentCandidate,
     build_incident_candidates,
 )
+from atlas_pulse.evidence_packs import (
+    EVIDENCE_PACK_CAVEAT,
+    EVIDENCE_PACK_IDENTITY_ALGORITHM,
+    EVIDENCE_PACK_RULE_VERSION,
+    EVIDENCE_PACK_SCHEMA_VERSION,
+    EVIDENCE_PACK_TRUST_BOUNDARY,
+    EvidenceExclusionReason,
+    EvidencePack,
+    EvidencePackBudget,
+    EvidencePackStatus,
+    build_evidence_pack,
+)
 from atlas_pulse.projections import CorrelationQuery, GeoBounds, SignalQuery, SignalStore
 from atlas_pulse.projections.base import SourceName
 from atlas_pulse.relationships import (
@@ -26,7 +38,15 @@ from atlas_pulse.relationships import (
     RelationshipAnalysis,
     analyze_incident,
 )
-from atlas_pulse.retrieval import GeoRadius, RankingMode, SearchQuery, SearchResult, SearchService
+from atlas_pulse.retrieval import (
+    CitationValidation,
+    GeoRadius,
+    RankingExplanation,
+    RankingMode,
+    SearchQuery,
+    SearchResult,
+    SearchService,
+)
 from atlas_pulse.streams.base import EventBus
 
 
@@ -206,6 +226,15 @@ class CitationResponse(BaseModel):
     reasons: tuple[str, ...]
 
 
+class TraceableCitationResponse(BaseModel):
+    """Source link whose required traceability fields are present."""
+
+    status: Literal["traceable"]
+    url: str
+    source_field: str
+    reasons: tuple[str, ...]
+
+
 class RankingResponse(BaseModel):
     """Inspectable hybrid retrieval and evidence tie-break contributions."""
 
@@ -257,6 +286,88 @@ class SearchResponse(BaseModel):
     ranking_rule: str
     caveat: str
     parameters: SearchParametersResponse
+
+
+class EvidencePackBudgetResponse(BaseModel):
+    """Hard, model-neutral source-text limits used for one pack."""
+
+    max_items: int
+    max_characters_per_item: int
+    max_total_characters: int
+    character_unit: Literal["unicode_code_points"] = "unicode_code_points"
+
+
+class EvidencePackRetrievalResponse(BaseModel):
+    """Exact deployed retrieval provenance retained by one pack."""
+
+    candidates_considered: int
+    returned_hits: int
+    embedding_model: str
+    ranking_mode: RankingMode
+    ranking_rule: str
+    caveat: str
+    parameters: SearchParametersResponse
+
+
+class EvidencePackItemResponse(BaseModel):
+    """One structurally traceable source excerpt safe to hand to an agent as data."""
+
+    evidence_id: str
+    retrieval_rank: int
+    stream_id: str
+    event_id: str
+    event_type: str
+    source: str
+    occurred_at: datetime
+    ingested_at: datetime
+    event_schema_version: str
+    text: str
+    document_sha256: str
+    text_sha256: str
+    document_characters: int
+    text_characters: int
+    truncated: bool
+    distance_km: float | None
+    ranking: RankingResponse
+    citation: TraceableCitationResponse
+
+
+class EvidencePackExclusionResponse(BaseModel):
+    """One retrieved result withheld from the bounded agent handoff."""
+
+    retrieval_rank: int
+    stream_id: str
+    event_id: str
+    event_type: str
+    source: str
+    occurred_at: datetime
+    ingested_at: datetime
+    event_schema_version: str
+    document_sha256: str
+    distance_km: float | None
+    ranking: RankingResponse
+    citation: CitationResponse
+    reason: EvidenceExclusionReason
+
+
+class EvidencePackResponse(BaseModel):
+    """Content-addressed evidence handoff with no generated answer."""
+
+    pack_id: str
+    schema_version: str = EVIDENCE_PACK_SCHEMA_VERSION
+    rule_version: str = EVIDENCE_PACK_RULE_VERSION
+    identity_algorithm: str = EVIDENCE_PACK_IDENTITY_ALGORITHM
+    status: EvidencePackStatus
+    item_count: int
+    exclusion_count: int
+    source_text_characters: int
+    budget: EvidencePackBudgetResponse
+    retrieval: EvidencePackRetrievalResponse
+    items: tuple[EvidencePackItemResponse, ...]
+    exclusions: tuple[EvidencePackExclusionResponse, ...]
+    answer_generated: Literal[False] = False
+    trust_boundary: str = EVIDENCE_PACK_TRUST_BOUNDARY
+    caveat: str = EVIDENCE_PACK_CAVEAT
 
 
 def _claim_response(claim: EvidenceClaim) -> EvidenceClaimResponse:
@@ -426,9 +537,93 @@ def _near_from_query(near: str | None, radius_km: float) -> GeoRadius | None:
         ) from error
 
 
-def _search_response(result: SearchResult, query: SearchQuery) -> SearchResponse:
+def _search_query_from_request(
+    *,
+    text: str,
+    limit: int,
+    candidate_limit: int,
+    source: SourceName | None,
+    occurred_after: datetime | None,
+    occurred_before: datetime | None,
+    bbox: str | None,
+    near: str | None,
+    radius_km: float,
+    active_only: bool,
+    ranking_mode: RankingMode,
+) -> SearchQuery:
+    _validate_time_window(occurred_after, occurred_before)
+    try:
+        return SearchQuery(
+            text=text,
+            limit=limit,
+            candidate_limit=candidate_limit,
+            source=source,
+            occurred_after=occurred_after,
+            occurred_before=occurred_before,
+            bounds=_bounds_from_query(bbox),
+            near=_near_from_query(near, radius_km),
+            active_only=active_only,
+            ranking_mode=ranking_mode,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+
+
+def _ranking_response(ranking: RankingExplanation) -> RankingResponse:
+    return RankingResponse(
+        lexical_rank=ranking.lexical_rank,
+        lexical_score=ranking.lexical_score,
+        dense_rank=ranking.dense_rank,
+        dense_similarity=ranking.dense_similarity,
+        rrf_score=ranking.rrf_score,
+        exact_phrase_match=ranking.exact_phrase_match,
+        token_coverage=ranking.token_coverage,
+        rerank_score=ranking.rerank_score,
+    )
+
+
+def _citation_response(citation: CitationValidation) -> CitationResponse:
+    return CitationResponse(
+        status=citation.status,
+        url=citation.url,
+        source_field=citation.source_field,
+        reasons=citation.reasons,
+    )
+
+
+def _traceable_citation_response(citation: CitationValidation) -> TraceableCitationResponse:
+    if citation.status != "traceable" or citation.url is None or citation.source_field is None:
+        raise ValueError("included evidence must have a complete traceable citation")
+    return TraceableCitationResponse(
+        status=citation.status,
+        url=citation.url,
+        source_field=citation.source_field,
+        reasons=citation.reasons,
+    )
+
+
+def _search_parameters_response(query: SearchQuery) -> SearchParametersResponse:
     bounds = query.bounds
     near = query.near
+    return SearchParametersResponse(
+        query=query.text,
+        limit=query.limit,
+        candidate_limit=query.candidate_limit,
+        source=query.source,
+        occurred_after=query.occurred_after,
+        occurred_before=query.occurred_before,
+        active_only=query.active_only,
+        bbox=(bounds.west, bounds.south, bounds.east, bounds.north) if bounds else None,
+        near=(near.longitude, near.latitude) if near else None,
+        radius_km=near.radius_km if near else None,
+        ranking_mode=query.ranking_mode,
+    )
+
+
+def _search_response(result: SearchResult, query: SearchQuery) -> SearchResponse:
     return SearchResponse(
         count=len(result.hits),
         candidates_considered=result.candidates_considered,
@@ -438,22 +633,8 @@ def _search_response(result: SearchResult, query: SearchQuery) -> SearchResponse
                 event=hit.message.event,
                 document_text=hit.document_text,
                 distance_km=hit.distance_km,
-                ranking=RankingResponse(
-                    lexical_rank=hit.ranking.lexical_rank,
-                    lexical_score=hit.ranking.lexical_score,
-                    dense_rank=hit.ranking.dense_rank,
-                    dense_similarity=hit.ranking.dense_similarity,
-                    rrf_score=hit.ranking.rrf_score,
-                    exact_phrase_match=hit.ranking.exact_phrase_match,
-                    token_coverage=hit.ranking.token_coverage,
-                    rerank_score=hit.ranking.rerank_score,
-                ),
-                citation=CitationResponse(
-                    status=hit.citation.status,
-                    url=hit.citation.url,
-                    source_field=hit.citation.source_field,
-                    reasons=hit.citation.reasons,
-                ),
+                ranking=_ranking_response(hit.ranking),
+                citation=_citation_response(hit.citation),
             )
             for hit in result.hits
         ),
@@ -461,19 +642,77 @@ def _search_response(result: SearchResult, query: SearchQuery) -> SearchResponse
         ranking_mode=result.ranking_mode,
         ranking_rule=result.ranking_rule,
         caveat=result.caveat,
-        parameters=SearchParametersResponse(
-            query=query.text,
-            limit=query.limit,
-            candidate_limit=query.candidate_limit,
-            source=query.source,
-            occurred_after=query.occurred_after,
-            occurred_before=query.occurred_before,
-            active_only=query.active_only,
-            bbox=(bounds.west, bounds.south, bounds.east, bounds.north) if bounds else None,
-            near=(near.longitude, near.latitude) if near else None,
-            radius_km=near.radius_km if near else None,
-            ranking_mode=query.ranking_mode,
+        parameters=_search_parameters_response(query),
+    )
+
+
+def _evidence_pack_response(pack: EvidencePack) -> EvidencePackResponse:
+    return EvidencePackResponse(
+        pack_id=pack.pack_id,
+        schema_version=pack.schema_version,
+        rule_version=pack.rule_version,
+        identity_algorithm=pack.identity_algorithm,
+        status=pack.status,
+        item_count=len(pack.items),
+        exclusion_count=len(pack.exclusions),
+        source_text_characters=pack.source_text_characters,
+        budget=EvidencePackBudgetResponse(
+            max_items=pack.budget.max_items,
+            max_characters_per_item=pack.budget.max_characters_per_item,
+            max_total_characters=pack.budget.max_total_characters,
         ),
+        retrieval=EvidencePackRetrievalResponse(
+            candidates_considered=pack.retrieval.candidates_considered,
+            returned_hits=pack.retrieval.returned_hits,
+            embedding_model=pack.retrieval.embedding_model,
+            ranking_mode=pack.retrieval.ranking_mode,
+            ranking_rule=pack.retrieval.ranking_rule,
+            caveat=pack.retrieval.caveat,
+            parameters=_search_parameters_response(pack.retrieval.query),
+        ),
+        items=tuple(
+            EvidencePackItemResponse(
+                evidence_id=item.evidence_id,
+                retrieval_rank=item.retrieval_rank,
+                stream_id=item.stream_id,
+                event_id=item.event_id,
+                event_type=item.event_type,
+                source=item.source,
+                occurred_at=item.occurred_at,
+                ingested_at=item.ingested_at,
+                event_schema_version=item.event_schema_version,
+                text=item.text,
+                document_sha256=item.document_sha256,
+                text_sha256=item.text_sha256,
+                document_characters=item.document_characters,
+                text_characters=item.text_characters,
+                truncated=item.truncated,
+                distance_km=item.distance_km,
+                ranking=_ranking_response(item.ranking),
+                citation=_traceable_citation_response(item.citation),
+            )
+            for item in pack.items
+        ),
+        exclusions=tuple(
+            EvidencePackExclusionResponse(
+                retrieval_rank=exclusion.retrieval_rank,
+                stream_id=exclusion.stream_id,
+                event_id=exclusion.event_id,
+                event_type=exclusion.event_type,
+                source=exclusion.source,
+                occurred_at=exclusion.occurred_at,
+                ingested_at=exclusion.ingested_at,
+                event_schema_version=exclusion.event_schema_version,
+                document_sha256=exclusion.document_sha256,
+                distance_km=exclusion.distance_km,
+                ranking=_ranking_response(exclusion.ranking),
+                citation=_citation_response(exclusion.citation),
+                reason=exclusion.reason,
+            )
+            for exclusion in pack.exclusions
+        ),
+        trust_boundary=pack.trust_boundary,
+        caveat=pack.caveat,
     )
 
 
@@ -675,25 +914,72 @@ def create_app(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="retrieval index unavailable",
             )
-        _validate_time_window(occurred_after, occurred_before)
-        try:
-            query = SearchQuery(
-                text=q,
-                limit=limit,
-                candidate_limit=candidate_limit,
-                source=source,
-                occurred_after=occurred_after,
-                occurred_before=occurred_before,
-                bounds=_bounds_from_query(bbox),
-                near=_near_from_query(near, radius_km),
-                active_only=active_only,
-                ranking_mode=ranking_mode,
-            )
-        except ValueError as error:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=str(error),
-            ) from error
+        query = _search_query_from_request(
+            text=q,
+            limit=limit,
+            candidate_limit=candidate_limit,
+            source=source,
+            occurred_after=occurred_after,
+            occurred_before=occurred_before,
+            bbox=bbox,
+            near=near,
+            radius_km=radius_km,
+            active_only=active_only,
+            ranking_mode=ranking_mode,
+        )
         return _search_response(await search_service.search(query), query)
+
+    @app.get(
+        "/v1/evidence-packs",
+        response_model=EvidencePackResponse,
+        tags=["retrieval", "agents"],
+    )
+    async def evidence_pack(
+        q: str = Query(min_length=2, max_length=500),
+        retrieval_limit: int = Query(default=20, ge=1, le=50),
+        candidate_limit: int = Query(default=100, ge=1, le=200),
+        max_items: int = Query(default=8, ge=1, le=50),
+        max_characters_per_item: int = Query(default=2_000, ge=1, le=8_000),
+        max_total_characters: int = Query(default=12_000, ge=1, le=64_000),
+        source: SourceName | None = None,
+        occurred_after: datetime | None = None,
+        occurred_before: datetime | None = None,
+        bbox: str | None = Query(
+            default=None,
+            description="Optional non-wrapping WGS84 west,south,east,north viewport",
+        ),
+        near: str | None = Query(
+            default=None,
+            description="Optional WGS84 longitude,latitude radius origin",
+        ),
+        radius_km: float = Query(default=250.0, gt=0, le=2_000),
+        active_only: bool = Query(default=True),
+        ranking_mode: RankingMode = "hybrid",
+    ) -> EvidencePackResponse:
+        if search_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="retrieval index unavailable",
+            )
+        query = _search_query_from_request(
+            text=q,
+            limit=retrieval_limit,
+            candidate_limit=candidate_limit,
+            source=source,
+            occurred_after=occurred_after,
+            occurred_before=occurred_before,
+            bbox=bbox,
+            near=near,
+            radius_km=radius_km,
+            active_only=active_only,
+            ranking_mode=ranking_mode,
+        )
+        budget = EvidencePackBudget(
+            max_items=max_items,
+            max_characters_per_item=max_characters_per_item,
+            max_total_characters=max_total_characters,
+        )
+        result = await search_service.search(query)
+        return _evidence_pack_response(build_evidence_pack(result, query, budget=budget))
 
     return app

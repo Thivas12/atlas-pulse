@@ -24,9 +24,10 @@ curl -fsS 'http://localhost:8000/v1/signals?source=nws&min_severity=3&bbox=-125,
 Open **Search** and enter a paraphrase such as “residents ordered to shelter from a dangerous
 storm.” Point out the independent FTS and vector ranks, final monotonic RRF score, evidence
 tie-break features, and traceable evidence link. Toggle viewport scope. State the boundary visible
-in the UI: these are
-ranked source events, not an LLM answer, and citation validation is structural rather than a truth
-claim.
+in the UI: these are ranked source events, not an LLM answer, and citation validation is structural
+rather than a truth claim. Choose **Prepare agent pack**. Show the content-addressed pack ID, hard
+item/source-text limits, included and excluded counts, and the untrusted-source-text rule. The pack
+is an auditable handoff, not an answer.
 
 ```bash
 curl -fsS --get 'http://localhost:8000/v1/search' \
@@ -36,6 +37,13 @@ curl -fsS --get 'http://localhost:8000/v1/search' \
   | jq '{count, candidates_considered, embedding_model, ranking_mode, ranking_rule, caveat,
          first: (.items[0] | {event_id: .event.event_id, source: .event.source,
                               ranking, citation})}'
+curl -fsS --get 'http://localhost:8000/v1/evidence-packs' \
+  --data-urlencode 'q=residents ordered to shelter from a dangerous storm' \
+  --data-urlencode 'candidate_limit=100' \
+  --data-urlencode 'retrieval_limit=20' \
+  | jq '{pack_id, status, answer_generated, item_count, exclusion_count,
+         source_text_characters, budget, retrieval: (.retrieval |
+           {embedding_model, ranking_mode, ranking_rule, parameters}), trust_boundary}'
 ```
 
 ## 33–45 seconds: prove measured correlation and claim analysis stay separate
@@ -109,11 +117,12 @@ gate exists until a named human reviews the captured evidence. Then show CI: str
 Ruff/mypy/pytest with real Valkey, PostGIS,
 and pgvector; TypeScript/Biome/Vitest; a production build; and a container/edge smoke test. Close
 with the architectural boundary: generated proposals and agents remain separately versioned
-layers rather than hidden claims. Show that semantic changes now have their own prediction-blind
-human benchmark rather than relying on synthetic examples or an LLM judge. Explain that public or
-promotion-oriented results require two exact first-pass reviews: AtlasPulse reports observed
-agreement and Cohen's kappa, sends only disagreements to a third system-blind adjudicator, and
-content-addresses the final gold pool with both review hashes.
+layers rather than hidden claims. The new evidence pack establishes bounded, citation-safe input
+for those future layers without bypassing evaluation. Show that semantic changes have their own
+prediction-blind human benchmark rather than relying on synthetic examples or an LLM judge.
+Explain that public or promotion-oriented results require two exact first-pass reviews: AtlasPulse
+reports observed agreement and Cohen's kappa, sends only disagreements to a third system-blind
+adjudicator, and content-addresses the final gold pool with both review hashes.
 
 ```bash
 uv run atlas-pulse-evaluate --help

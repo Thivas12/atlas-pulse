@@ -16,6 +16,12 @@ from atlas_pulse.evaluation.base import (
     PooledQuery,
     QueryRunMetrics,
 )
+from atlas_pulse.evaluation.campaign import (
+    CampaignCapture,
+    EvaluationCampaign,
+    build_campaign,
+    render_campaign_markdown,
+)
 from atlas_pulse.evaluation.capture import capture_pool
 from atlas_pulse.evaluation.comparison import (
     AggregateComparison,
@@ -23,7 +29,9 @@ from atlas_pulse.evaluation.comparison import (
     CutoffComparison,
     EvaluationComparison,
     ScalarDelta,
+    compare_aggregate_metrics,
     compare_pools,
+    pool_provenance,
     render_comparison_markdown,
 )
 from atlas_pulse.evaluation.judgments import (
@@ -43,11 +51,13 @@ from atlas_pulse.evaluation.report import render_markdown
 __all__ = [
     "AggregateComparison",
     "AggregateMetrics",
+    "CampaignCapture",
     "CandidatePool",
     "CapturedRun",
     "ComparedPool",
     "CutoffComparison",
     "CutoffMetrics",
+    "EvaluationCampaign",
     "EvaluationComparison",
     "EvaluationFilters",
     "EvaluationQuery",
@@ -62,13 +72,17 @@ __all__ = [
     "QueryRunMetrics",
     "ScalarDelta",
     "apply_judgments",
+    "build_campaign",
     "build_judgment_sheet",
     "canonical_sha256",
     "capture_pool",
+    "compare_aggregate_metrics",
     "compare_pools",
     "evaluate_gates",
     "export_judgments",
     "metrics_at_k",
+    "pool_provenance",
+    "render_campaign_markdown",
     "render_comparison_markdown",
     "render_markdown",
     "score_pool",

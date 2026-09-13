@@ -120,9 +120,11 @@ RRF, and hybrid rankings are scored with pooled Recall, MRR, graded nDCG, citati
 candidate coverage, latency, and per-source/intent slices. Point out that the first reviewed
 baseline exposed zero lexical coverage and a degrading weighted hybrid rule, so the next version
 repaired candidate recall and limited evidence features to RRF tie-breaking before considering a
-cross-encoder. Show the shared-pool comparison: unchanged evidence reuses only exact prior grades,
-and both versions are rescored against the union surfaced by either system. No relevance score or
-gate exists until a named human reviews the captured evidence. Then show CI: strict
+cross-encoder. Show the content-addressed campaign: unchanged evidence reuses only exact prior
+grades, and every reviewed capture is rescored against one global union across the complete
+series. The trajectory exposes mode, slice, coverage, and latency movement without inventing a
+model-release verdict. No relevance score or gate exists until a named human reviews the captured
+evidence. Then show CI: strict
 Ruff/mypy/pytest with real Valkey, PostGIS,
 and pgvector; TypeScript/Biome/Vitest; a production build; and a container/edge smoke test. Close
 with the architectural boundary: generated proposals and agents remain separately versioned

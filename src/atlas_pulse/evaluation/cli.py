@@ -1,4 +1,4 @@
-"""Command-line workflow for capture, review, scoring, comparison, and gates."""
+"""Command-line workflow for capture, review, scoring, comparison, campaigns, and gates."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from atlas_pulse.evaluation.base import (
     GateOutcome,
     GatePolicy,
 )
+from atlas_pulse.evaluation.campaign import build_campaign, render_campaign_markdown
 from atlas_pulse.evaluation.capture import capture_pool
 from atlas_pulse.evaluation.comparison import compare_pools, render_comparison_markdown
 from atlas_pulse.evaluation.judgments import apply_judgments, build_judgment_sheet
@@ -129,10 +130,20 @@ def _compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _campaign(args: argparse.Namespace) -> int:
+    _ensure_writable((args.output_json, args.output_markdown), force=args.force)
+    pools = tuple(_json_model(path, CandidatePool) for path in args.pool)
+    campaign = build_campaign(pools, cutoffs=tuple(args.cutoff))
+    _write(args.output_json, campaign.model_dump_json(indent=2) + "\n")
+    _write(args.output_markdown, render_campaign_markdown(campaign))
+    print(f"Wrote {campaign.campaign_id} from {campaign.capture_count} reviewed captures")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="atlas-pulse-evaluate",
-        description="Capture, review, score, and compare AtlasPulse retrieval pools.",
+        description="Capture, review, score, compare, and trend AtlasPulse retrieval pools.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -173,6 +184,22 @@ def _parser() -> argparse.ArgumentParser:
     compare.add_argument("--output-json", type=Path, required=True)
     compare.add_argument("--output-markdown", type=Path, required=True)
     compare.add_argument("--force", action="store_true")
+
+    campaign = subparsers.add_parser(
+        "campaign",
+        help="build a global-union trajectory from chronological reviewed pools",
+    )
+    campaign.add_argument(
+        "--pool",
+        type=Path,
+        action="append",
+        required=True,
+        help="reviewed pool in oldest-to-newest order; repeat for every capture",
+    )
+    campaign.add_argument("--cutoff", type=int, action="append", default=None)
+    campaign.add_argument("--output-json", type=Path, required=True)
+    campaign.add_argument("--output-markdown", type=Path, required=True)
+    campaign.add_argument("--force", action="store_true")
     return parser
 
 
@@ -189,7 +216,9 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             args.cutoff = [1, 3, 5, 10]
         if args.command == "score":
             return _score(args)
-        return _compare(args)
+        if args.command == "compare":
+            return _compare(args)
+        return _campaign(args)
     except (FileExistsError, OSError, RuntimeError, ValueError, ValidationError) as error:
         print(f"evaluation failed: {error}", file=sys.stderr)
         return 2

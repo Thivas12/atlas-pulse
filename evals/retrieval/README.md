@@ -93,6 +93,23 @@ model/rule identities, latency, and both original pool hashes. It rejects differ
 changed evidence under one document ID, and conflicting grades. The JSON is the complete audit
 artifact; Markdown is the decision view.
 
+After at least two reviewed captures exist, build a chronological campaign. Repeat `--pool` in
+oldest-to-newest order; every capture is rescored against one global judged union:
+
+```bash
+uv run atlas-pulse-evaluate campaign \
+  --pool artifacts/evaluation/reviewed-baseline-pool.json \
+  --pool artifacts/evaluation/reviewed-candidate-pool.json \
+  --pool artifacts/evaluation/reviewed-followup-pool.json \
+  --output-json artifacts/evaluation/campaign.json \
+  --output-markdown artifacts/evaluation/campaign.md
+```
+
+The campaign exposes metric and slice trajectories from capture 1, plus candidates added or
+dropped between adjacent captures. It rejects unreviewed, duplicate, out-of-order, incompatible,
+or conflicting pools. It is a human decision artifact and does not automatically approve a
+cross-encoder or any other model.
+
 Only after a reviewed baseline exists, create a `GatePolicy` JSON with explicit floors or latency
 ceilings and pass it with `--policy`. A failed rule exits `1`; malformed or incomplete evidence
 exits `2`. Outputs are never overwritten unless `--force` is supplied deliberately.

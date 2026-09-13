@@ -38,12 +38,14 @@ curl -fsS --get 'http://localhost:8000/v1/search' \
                               ranking, citation})}'
 ```
 
-## 33–45 seconds: prove explainable cross-source correlation
+## 33–45 seconds: prove measured correlation and claim analysis stay separate
 
 Select **Correlations**. Choose a cluster and trace its dashed map links. In the detail panel show
 the participating source nodes, direct evidence URLs, measured kilometres, time deltas, point or
-polygon basis, stable candidate ID, and `spatiotemporal-v1` rule. Read the visible boundary:
-co-occurrence does not establish causation, corroboration, or one shared incident.
+polygon basis, stable candidate ID, and `spatiotemporal-v1` rule. Then show the separate
+`structured-claims-v1` relationships, exact source fields, and abstentions. Read both visible
+boundaries: co-occurrence does not establish causation or one shared incident, while normalized
+claim agreement does not prove truth.
 
 The live distribution of public events is unpredictable. If the current viewport has no cluster,
 demonstrate the bounded API over a wider investigation window and then narrow it if the truncation
@@ -57,9 +59,13 @@ curl -fsS --get 'http://localhost:8000/v1/incidents' \
   --data-urlencode 'active_only=false' \
   --data-urlencode 'limit=3' \
   | jq '{count, total_incidents, incidents_truncated, candidate_edges_truncated,
-         rule_version, parameters,
+         rule_version, relationship_rule_version, parameters,
          first: (.items[0] | {incident_id, sources, node_count, edge_count,
-                              max_distance_km, caveat})}'
+                              max_distance_km,
+                              relationship_analysis: (.relationship_analysis |
+                                {corroboration_count, contradiction_count,
+                                 insufficient_evidence_count, rule_version}),
+                              caveat})}'
 ```
 
 ## 45–53 seconds: prove deterministic replay

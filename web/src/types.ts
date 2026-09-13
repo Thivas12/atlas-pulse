@@ -81,6 +81,49 @@ const evidenceEdgeSchema = z.object({
   rule_version: z.string().min(1),
 });
 
+const evidenceClaimSchema = z.object({
+  claim_id: z.string().min(1),
+  node_id: z.string().min(1),
+  predicate: z.enum(["hazard_domain", "evacuation_state", "road_access_state"]),
+  value: z.string().min(1),
+  scope: z.enum(["measured_edge_area", "named_place"]),
+  scope_value: z.string().min(1).nullable(),
+  evidence_field: z.string().min(1),
+  evidence_excerpt: z.string().min(1),
+  qualifier: z.string().min(1).nullable(),
+  rule_version: z.string().min(1),
+});
+
+const evidenceRelationshipSchema = z.object({
+  relationship_id: z.string().min(1),
+  edge_id: z.string().min(1),
+  from_node_id: z.string().min(1),
+  to_node_id: z.string().min(1),
+  label: z.enum(["corroborates", "contradicts", "insufficient_evidence"]),
+  predicate: z.enum(["hazard_domain", "evacuation_state", "road_access_state"]).nullable(),
+  normalized_value: z.string().min(1).nullable(),
+  from_claim_id: z.string().min(1).nullable(),
+  to_claim_id: z.string().min(1).nullable(),
+  basis: z.enum([
+    "exact_normalized_agreement",
+    "mutually_exclusive_structured_values",
+    "no_decisive_comparison",
+  ]),
+  rationale: z.string().min(1),
+  rule_version: z.string().min(1),
+});
+
+const relationshipAnalysisSchema = z.object({
+  claims: z.array(evidenceClaimSchema),
+  relationships: z.array(evidenceRelationshipSchema),
+  analyzed_edge_count: z.number().int().nonnegative(),
+  corroboration_count: z.number().int().nonnegative(),
+  contradiction_count: z.number().int().nonnegative(),
+  insufficient_evidence_count: z.number().int().nonnegative(),
+  rule_version: z.string().min(1),
+  caveat: z.string().min(1),
+});
+
 export const incidentCandidateSchema = z.object({
   incident_id: z.string().min(1),
   title: z.string().min(1),
@@ -94,6 +137,7 @@ export const incidentCandidateSchema = z.object({
   time_span_minutes: z.number().nonnegative(),
   nodes: z.array(evidenceNodeSchema).min(2),
   edges: z.array(evidenceEdgeSchema).min(1),
+  relationship_analysis: relationshipAnalysisSchema,
   rule_version: z.string().min(1),
   caveat: z.string().min(1),
 });
@@ -106,6 +150,8 @@ export const incidentsResponseSchema = z.object({
   candidate_edges_truncated: z.boolean(),
   rule_version: z.string().min(1),
   caveat: z.string().min(1),
+  relationship_rule_version: z.string().min(1),
+  relationship_caveat: z.string().min(1),
   parameters: z.object({
     radius_km: z.number().positive(),
     time_window_minutes: z.number().int().positive(),

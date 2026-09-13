@@ -7,7 +7,7 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — measured, evidence-first hybrid retrieval.** Independent workers
+> **Current milestone — versioned evidence relationships.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
@@ -19,8 +19,11 @@ component can run without a paid API key.
 > PostGIS filters to both channels, fuses ranks with RRF, applies evidence-only tie-breaks, validates
 > credential-safe citations, and exposes every score in the dashboard. A pooled, rank-blind human
 > judgment workflow compares lexical, dense, RRF, and hybrid modes with standard IR metrics,
-> source/intent slices, content-addressed reports, and explicit regression gates. Search still
-> returns evidence—not an LLM answer or a claim of causation, corroboration, or truth.
+> source/intent slices, content-addressed reports, and explicit regression gates. Every measured
+> incident edge now receives a separate `structured-claims-v1` annotation: source-backed claims,
+> exact field provenance, narrow corroboration/contradiction rules, and an explicit insufficient-
+> evidence result. These annotations never rewrite measured distance/time facts and do not claim
+> truth, causation, or a verified shared incident.
 
 ## Why this is portfolio-grade
 
@@ -35,6 +38,7 @@ component can run without a paid API key.
 | Durable current state | Immutable PostgreSQL revisions plus atomic current pointers and restart-safe checkpoint |
 | Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
 | Transparent correlation | Versioned cross-source rules, exact geography distance/time evidence, stable graph IDs, hard result caps, and explicit non-causal semantics |
+| Claim relationships | Stable source-field claims, conservative corroboration/contradiction rules, explicit abstention, immutable parent-edge references |
 | Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable evidence tie-breaks |
 | Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, shared-pool before/after deltas, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
@@ -61,11 +65,12 @@ flowchart TD
     Indexer --> Hybrid["PostgreSQL FTS + pgvector"]
     PostGIS --> Correlate["Bounded geography + time join"]
     Correlate --> Graph["Deterministic evidence graph"]
+    Graph --> Claims["Versioned claim relationships"]
     PostGIS --> API["FastAPI current-state API"]
     Hybrid --> Search["RRF + evidence tie-break"]
     Search --> Evaluate["Pooled human evaluation"]
     Search --> API
-    Graph --> API
+    Claims --> API
     Stream --> API
     API --> Web["Viewport-driven command center"]
     API --> Agents["Grounded RAG and agents — next milestones"]
@@ -131,9 +136,11 @@ curl -s --get 'http://localhost:8000/v1/search' \
 
 Switch between **Live** and **Replay**, then filter **All**, **Earthquakes**, **Weather**, or
 **Fires**, or **Conflict**. Open **Correlations** to inspect measured cross-source clusters and
-follow each node back to its public source evidence. Open **Search** and try a paraphrase rather
-than copying a source headline. Every result shows its lexical rank, dense rank, fused/final
-score, and citation status.
+follow each node back to its public source evidence. The incident panel separately shows
+corroborating, conflicting, and unresolved claim comparisons, including each normalized claim's
+source field and qualifying uncertainty. Open **Search** and try a paraphrase rather than copying
+a source headline. Every result shows its lexical rank, dense rank, fused/final score, and citation
+status.
 Live mode is served from current PostGIS state, omits expired alerts/detections, and refreshes the
 map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
 remain in the global feed without being falsely placed on the map. Replay starts
@@ -157,6 +164,11 @@ uv run atlas-pulse-evaluate capture \
 The complete review/import/score workflow and `0..3` rubric are in
 [`evals/retrieval/README.md`](evals/retrieval/README.md). AtlasPulse does not ship invented labels
 or quality floors; gates become valid only after a named human reviews a captured corpus.
+
+The separate [`structured-claims-v1` contract cases](evals/relationships/README.md) freeze exact
+corroboration, contradiction, and abstention behavior. They are synthetic regression cases, not a
+claim of live relationship accuracy; a reviewed live claim-pair benchmark is the next gate before
+adding local NLI or LLM proposals.
 
 ## Develop without rebuilding containers
 
@@ -234,7 +246,7 @@ ATLAS_TEST_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
 | `GET` | `/v1/events?limit=50` | Newest normalized events and their replay IDs |
 | `GET` | `/v1/events/replay?limit=100&after=<stream-id>` | Oldest-first page strictly after an optional cursor |
 | `GET` | `/v1/signals?limit=100&after=<stream-id>` | Newest-first, de-duplicated current signals with keyset pagination |
-| `GET` | `/v1/incidents?limit=50&radius_km=50` | Bounded deterministic cross-source evidence components |
+| `GET` | `/v1/incidents?limit=50&radius_km=50` | Measured evidence components plus versioned source-claim annotations |
 | `GET` | `/v1/search?q=dangerous+storm&limit=10` | Hybrid retrieval over current evidence with transparent ranks |
 
 `/v1/signals` accepts `source=usgs|nws|firms|gdelt`, `min_severity=0..4`, aware
@@ -332,6 +344,9 @@ deterministic for retained entries rather than an indefinite event archive.
 - Correlation reads only projected current state inside explicit time, distance, viewport, edge,
   and component bounds. Truncation is part of the response contract; widening a dense query can
   change component membership when the candidate-edge cap is reached.
+- Claim analysis runs only after correlation, retains the parent edge and exact source fields,
+  drops internally ambiguous operational claims, and abstains when normalized claims cannot be
+  compared. It never changes graph identity or blocks ingestion/projection.
 - The retrieval worker owns a separate checkpoint. Model download/load, embedding, or vector
   transaction failure cannot block the canonical projector; the failed batch restarts from its
   unchanged cursor.
@@ -360,7 +375,9 @@ metrics, and gate semantics, and
 [ADR 0011](docs/adr/0011-baseline-driven-retrieval-hardening.md) for the measured lexical-recall,
 RRF-monotonic hybrid, and candidate-coverage decisions, and
 [ADR 0012](docs/adr/0012-shared-pool-longitudinal-evaluation.md) for exact judgment reuse and
-shared-pool before/after measurement.
+shared-pool before/after measurement, and
+[ADR 0013](docs/adr/0013-versioned-source-claim-relationships.md) for claim provenance,
+comparison scope, abstention, and the model boundary.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -381,6 +398,7 @@ credential solely for transaction metering.
 | Dense retrieval | [FastEmbed](https://github.com/qdrant/fastembed) + [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) | Apache-2.0 tooling + MIT model; local CPU inference |
 | Sparse/vector retrieval | PostgreSQL full-text search + [pgvector](https://github.com/pgvector/pgvector) | Open source; self-hosted |
 | Retrieval evaluation | Pydantic, Python CSV, pytest, human judgments | Open source/local; no judge API |
+| Claim relationships | Versioned Python rules over source-backed fields | Open source/local; no model or API |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
 | Static serving | Caddy | Open source |
@@ -393,8 +411,8 @@ credential solely for transaction metering.
 
 1. Run the shared-pool longitudinal capture after deployment and use its slice deltas to decide
    whether a free local cross-encoder earns its added latency and complexity.
-2. Separately versioned semantic corroboration and contradiction detection, evaluated against the
-   deterministic evidence graph instead of rewriting its measured edges.
+2. Build a reviewed claim-pair benchmark and evaluate a free local NLI/LLM proposer against the
+   `structured-claims-v1` abstaining baseline before it can add a new annotation version.
 3. A hierarchy of specialist agents for evidence triage, impact
    assessment, forecasting, and human approval.
 4. Grounded-answer faithfulness/citation datasets, agent trajectory scoring, drift monitoring,

@@ -19,6 +19,7 @@ function safeEvidenceUrl(value: unknown): string | null {
 }
 
 export function IncidentDetail({ incident, onClose }: IncidentDetailProps) {
+  const analysis = incident.relationship_analysis;
   return (
     <aside className="event-detail incident-detail" aria-label="Selected incident candidate">
       <button className="detail-close" type="button" onClick={onClose} aria-label="Close details">
@@ -102,6 +103,54 @@ export function IncidentDetail({ incident, onClose }: IncidentDetailProps) {
           ))}
         </ul>
       </section>
+      <section className="graph-section" aria-labelledby="relationship-title">
+        <h3 id="relationship-title">Claim relationships</h3>
+        <div className="relationship-summary">
+          <span className="corroborates">{analysis.corroboration_count} corroborating</span>
+          <span className="contradicts">{analysis.contradiction_count} conflicting</span>
+          <span className="insufficient-evidence">
+            {analysis.insufficient_evidence_count} unresolved
+          </span>
+        </div>
+        <ul className="relationship-list">
+          {analysis.relationships.map((relationship) => (
+            <li key={relationship.relationship_id}>
+              <span className={`relationship-label ${relationship.label}`}>
+                {relationship.label.replace("_", " ")}
+              </span>
+              <strong>
+                {relationship.predicate?.replaceAll("_", " ") ?? "No decisive claim pair"}
+                {relationship.normalized_value ? ` · ${relationship.normalized_value}` : ""}
+              </strong>
+              <small>{relationship.rationale}</small>
+            </li>
+          ))}
+        </ul>
+      </section>
+      <section className="graph-section" aria-labelledby="claims-title">
+        <h3 id="claims-title">Normalized source claims</h3>
+        {analysis.claims.length === 0 ? (
+          <p className="empty-claims">No supported claim extractor matched these nodes.</p>
+        ) : (
+          <ul className="claim-list">
+            {analysis.claims.map((claim) => (
+              <li key={claim.claim_id}>
+                <strong>
+                  {claim.predicate.replaceAll("_", " ")} · {claim.value}
+                </strong>
+                <small>
+                  {claim.node_id} · {claim.evidence_field}
+                </small>
+                <blockquote>{claim.evidence_excerpt}</blockquote>
+                {claim.qualifier && <small>{claim.qualifier}</small>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <p className="detail-summary relationship-caveat">
+        {analysis.rule_version} · {analysis.caveat}
+      </p>
       <p className="detail-summary graph-caveat">{incident.caveat}</p>
     </aside>
   );

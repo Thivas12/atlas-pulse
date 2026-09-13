@@ -839,32 +839,44 @@ input:focus-visible {
 }
 
 .graph-nodes,
-.graph-edges {
+.graph-edges,
+.relationship-list,
+.claim-list {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .graph-nodes li,
-.graph-edges li {
+.graph-edges li,
+.relationship-list li,
+.claim-list li {
   padding: 9px 0;
   border-top: 1px solid rgba(24, 48, 61, 0.58);
 }
 
 .graph-nodes li:first-child,
-.graph-edges li:first-child {
+.graph-edges li:first-child,
+.relationship-list li:first-child,
+.claim-list li:first-child {
   border-top: 0;
 }
 
 .graph-nodes strong,
 .graph-nodes small,
 .graph-edges strong,
-.graph-edges small {
+.graph-edges small,
+.relationship-list strong,
+.relationship-list small,
+.claim-list strong,
+.claim-list small {
   display: block;
 }
 
 .graph-nodes strong,
-.graph-edges strong {
+.graph-edges strong,
+.relationship-list strong,
+.claim-list strong {
   margin-top: 6px;
   color: #bfd0d7;
   font-size: 10px;
@@ -872,7 +884,10 @@ input:focus-visible {
 }
 
 .graph-nodes small,
-.graph-edges small {
+.graph-edges small,
+.relationship-list small,
+.claim-list small,
+.empty-claims {
   margin-top: 4px;
   color: #587080;
   font:
@@ -888,6 +903,65 @@ input:focus-visible {
     8px "DM Mono",
     monospace;
   text-decoration: none;
+}
+
+.relationship-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.relationship-summary span,
+.relationship-label {
+  padding: 3px 6px;
+  border: 1px solid rgba(116, 139, 151, 0.25);
+  font:
+    7px "DM Mono",
+    monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.relationship-summary .corroborates,
+.relationship-label.corroborates {
+  color: #73d8a4;
+  border-color: rgba(115, 216, 164, 0.3);
+  background: rgba(115, 216, 164, 0.07);
+}
+
+.relationship-summary .contradicts,
+.relationship-label.contradicts {
+  color: #ff837b;
+  border-color: rgba(255, 131, 123, 0.3);
+  background: rgba(255, 131, 123, 0.07);
+}
+
+.relationship-summary .insufficient-evidence,
+.relationship-label.insufficient_evidence {
+  color: #8399a5;
+}
+
+.relationship-label {
+  display: inline-block;
+}
+
+.claim-list blockquote {
+  margin: 6px 0 0;
+  padding-left: 8px;
+  color: #879da8;
+  border-left: 2px solid rgba(189, 124, 255, 0.25);
+  font:
+    8px / 1.5 "DM Mono",
+    monospace;
+}
+
+.relationship-row-summary {
+  color: #8d73a4;
+}
+
+.relationship-caveat {
+  color: #8da1aa;
+  border-top-color: rgba(115, 216, 164, 0.16);
 }
 
 .graph-caveat {

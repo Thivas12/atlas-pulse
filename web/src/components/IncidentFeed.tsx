@@ -57,6 +57,11 @@ export function IncidentFeed({
                   {incident.max_distance_km.toFixed(1)} km ·{" "}
                   {formatTimestamp(incident.latest_signal_at)} UTC
                 </small>
+                <small className="relationship-row-summary">
+                  {incident.relationship_analysis.corroboration_count} corroborating ·{" "}
+                  {incident.relationship_analysis.contradiction_count} conflicting ·{" "}
+                  {incident.relationship_analysis.insufficient_evidence_count} unresolved
+                </small>
               </span>
               <span className="row-arrow" aria-hidden="true">
                 ↗

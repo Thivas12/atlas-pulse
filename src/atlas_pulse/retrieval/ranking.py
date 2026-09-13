@@ -1,4 +1,4 @@
-"""Deterministic rank fusion, lightweight reranking, and evidence attachment."""
+"""Deterministic rank fusion, evidence tie-breaking, and citation attachment."""
 
 import re
 from dataclasses import dataclass
@@ -12,9 +12,9 @@ from atlas_pulse.retrieval.base import (
 )
 from atlas_pulse.retrieval.document import validate_event_citation
 
-RANKING_RULE = "rrf60-transparent-rerank-v1"
+RANKING_RULE = "rrf60-evidence-tiebreak-v2"
 RANKING_RULES: dict[RankingMode, str] = {
-    "lexical": "postgres-english-fts-v1",
+    "lexical": "postgres-english-fts-any-v2",
     "dense": "bge-cosine-hnsw-v1",
     "rrf": "rrf60-v1",
     "hybrid": RANKING_RULE,
@@ -81,7 +81,10 @@ def rank_candidates(
         token_coverage = (
             len(query_tokens & document_tokens) / len(query_tokens) if query_tokens else 0.0
         )
-        rerank_score = 0.85 * rrf_score + 0.10 * token_coverage + 0.05 * int(exact_phrase)
+        # The reviewed v1 baseline showed that an uncalibrated weighted sum could overturn a
+        # stronger RRF ordering. Keep the final score monotonic with RRF; evidence features are
+        # deterministic tie-breakers until a learned reranker earns promotion in evaluation.
+        rerank_score = rrf_score
         hits.append(
             SearchHit(
                 message=merged.candidate.message,
@@ -129,8 +132,9 @@ def rank_candidates(
     else:
         hits.sort(
             key=lambda hit: (
-                -hit.ranking.rerank_score,
                 -hit.ranking.rrf_score,
+                -int(hit.ranking.exact_phrase_match),
+                -hit.ranking.token_coverage,
                 hit.message.event.source,
                 hit.message.event.event_id,
             )

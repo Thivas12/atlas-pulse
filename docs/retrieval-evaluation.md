@@ -11,15 +11,18 @@ dual-channel candidate contract:
 
 | Mode | Ranking rule | Purpose |
 | --- | --- | --- |
-| `lexical` | `postgres-english-fts-v1` | PostgreSQL English full-text rank only |
+| `lexical` | `postgres-english-fts-any-v2` | Bounded any-term PostgreSQL English full-text rank |
 | `dense` | `bge-cosine-hnsw-v1` | Local BGE cosine rank only |
 | `rrf` | `rrf60-v1` | Reciprocal Rank Fusion with `k=60` |
-| `hybrid` | `rrf60-transparent-rerank-v1` | RRF plus exact-phrase and token-coverage features |
+| `hybrid` | `rrf60-evidence-tiebreak-v2` | RRF with exact-phrase/token coverage only for ties |
 
 All modes preserve identical source, time, expiry, bounding-box, radius, candidate-cap, model,
 and citation boundaries. Lexical and dense ablations select only candidates returned by their
 channel. RRF and hybrid use their union. Raw FTS and cosine scores are never treated as if they
-shared a calibrated scale.
+shared a calibrated scale. The reviewed v1 baseline showed that the original all-term lexical
+query returned no candidates and that additive hand-selected reranking weights reduced quality.
+[ADR 0011](adr/0011-baseline-driven-retrieval-hardening.md) records the measured decision to
+recover lexical candidates before considering a cross-encoder.
 
 ## Evidence workflow
 
@@ -57,6 +60,7 @@ Metrics are macro-averaged across queries for every mode and slice:
 | Hit rate@k | Fraction of queries with at least one relevant result |
 | Judged rate@k | Fraction of the first `k` positions carrying a judgment |
 | Citation traceability@k | Fraction of the first `k` positions with a structurally traceable source URL |
+| Candidate coverage | Fraction of queries for which a mode returned at least one candidate |
 | Latency | Observed client-side p50 and interpolated p95 for the captured requests |
 
 Reports retain per-query rows for error analysis and aggregate the declared slices, so an overall
@@ -66,6 +70,15 @@ incomplete judgments fail closed. Rules can target the overall mode or a declare
 machine-readable outcomes are embedded in the report. Gate violations exit `1`;
 evidence/workflow errors exit `2`. No threshold is checked in before a human-reviewed baseline
 exists.
+
+Reports list the exact empty query IDs for every mode. The capture command also warns when all
+modes are empty for a query. This distinguishes “nothing was retrieved” from “retrieved evidence
+was judged irrelevant”; it does not by itself prove whether ingestion, indexing, expiry, filters,
+or ranking caused the gap. `candidate_coverage` can be gated overall or within a declared source
+slice and, unlike cutoff metrics, does not take a cutoff.
+
+Reports containing candidate coverage use evaluation report schema `1.1.0`; query sets,
+candidate pools, and gate policies remain at schema `1.0.0`.
 
 ## Boundaries that remain explicit
 
@@ -78,6 +91,8 @@ exists.
 - Citation traceability validates safe URL structure and event attachment, not factual truth.
 - One reviewer supports development decisions. Public comparative claims should use independent
   duplicate judgments and adjudication.
+- Candidate coverage proves only that a mode returned something; it does not prove an eligible
+  corpus existed or that an empty result had no relevant evidence upstream.
 - Metrics evaluate retrieval, not answer faithfulness, claim entailment, agent decisions, or
   real-world impact. Those require separate versioned datasets before generation is adopted.
 

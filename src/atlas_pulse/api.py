@@ -147,7 +147,7 @@ class CitationResponse(BaseModel):
 
 
 class RankingResponse(BaseModel):
-    """Inspectable hybrid retrieval and reranking contributions."""
+    """Inspectable hybrid retrieval and evidence tie-break contributions."""
 
     lexical_rank: int | None
     lexical_score: float | None

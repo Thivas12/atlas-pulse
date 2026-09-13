@@ -11,8 +11,9 @@ from atlas_pulse.projections.base import SourceName
 from atlas_pulse.retrieval import CitationStatus, GeoRadius, RankingMode, SearchQuery
 
 SchemaVersion = Literal["1.0.0"]
+ReportSchemaVersion = Literal["1.1.0"]
 JudgmentStatus = Literal["unjudged", "reviewed"]
-MetricName = Literal[
+CutoffMetricName = Literal[
     "precision",
     "pooled_recall",
     "reciprocal_rank",
@@ -21,6 +22,7 @@ MetricName = Literal[
     "judged_rate",
     "citation_traceability",
 ]
+GateMetricName = CutoffMetricName | Literal["candidate_coverage", "latency_p95_ms"]
 RelevanceGrade = Annotated[int, Field(ge=0, le=3)]
 
 
@@ -281,6 +283,7 @@ class QueryRunMetrics(StrictModel):
     mode: RankingMode
     ranking_rule: str
     latency_ms: float = Field(ge=0, allow_inf_nan=False)
+    result_count: int = Field(ge=0, le=50)
     cutoffs: dict[int, CutoffMetrics]
 
 
@@ -288,9 +291,22 @@ class AggregateMetrics(StrictModel):
     """Macro averages and observed latency for one mode or slice."""
 
     query_count: int = Field(ge=1)
+    candidate_coverage: float = Field(ge=0, le=1)
+    empty_query_ids: tuple[str, ...] = ()
     latency_p50_ms: float = Field(ge=0, allow_inf_nan=False)
     latency_p95_ms: float = Field(ge=0, allow_inf_nan=False)
     cutoffs: dict[int, CutoffMetrics]
+
+    @model_validator(mode="after")
+    def validate_candidate_coverage(self) -> "AggregateMetrics":
+        if tuple(sorted(set(self.empty_query_ids))) != self.empty_query_ids:
+            raise ValueError("empty query IDs must be unique and sorted")
+        if len(self.empty_query_ids) > self.query_count:
+            raise ValueError("empty query count cannot exceed query_count")
+        expected = (self.query_count - len(self.empty_query_ids)) / self.query_count
+        if abs(self.candidate_coverage - expected) > 1e-12:
+            raise ValueError("candidate_coverage must match empty_query_ids")
+        return self
 
 
 class GateOutcome(StrictModel):
@@ -299,7 +315,7 @@ class GateOutcome(StrictModel):
     rule_id: str
     mode: RankingMode
     slice_name: str | None
-    metric: MetricName | Literal["latency_p95_ms"]
+    metric: GateMetricName
     cutoff: int | None
     passed: bool
     observed: float
@@ -307,9 +323,9 @@ class GateOutcome(StrictModel):
 
 
 class EvaluationReport(StrictModel):
-    """Machine-readable, content-addressed result of scoring a reviewed pool."""
+    """Machine-readable result tied to a content-addressed reviewed pool."""
 
-    schema_version: SchemaVersion = "1.0.0"
+    schema_version: ReportSchemaVersion = "1.1.0"
     report_id: str
     pool_id: str
     pool_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -330,7 +346,7 @@ class GateRule(StrictModel):
     rule_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,79}$")
     mode: RankingMode
     slice_name: str | None = Field(default=None, min_length=1, max_length=100)
-    metric: MetricName | Literal["latency_p95_ms"]
+    metric: GateMetricName
     cutoff: int | None = Field(default=None, ge=1, le=50)
     minimum: float | None = Field(default=None, allow_inf_nan=False)
     maximum: float | None = Field(default=None, allow_inf_nan=False)
@@ -349,9 +365,10 @@ class GateRule(StrictModel):
     def validate_threshold(self) -> "GateRule":
         if (self.minimum is None) == (self.maximum is None):
             raise ValueError("a gate rule requires exactly one of minimum or maximum")
-        if self.metric == "latency_p95_ms" and self.cutoff is not None:
-            raise ValueError("latency gates must not define a cutoff")
-        if self.metric != "latency_p95_ms" and self.cutoff is None:
+        aggregate_metrics = {"candidate_coverage", "latency_p95_ms"}
+        if self.metric in aggregate_metrics and self.cutoff is not None:
+            raise ValueError("aggregate gates must not define a cutoff")
+        if self.metric not in aggregate_metrics and self.cutoff is None:
             raise ValueError("retrieval metric gates require a cutoff")
         threshold = self.minimum if self.minimum is not None else self.maximum
         assert threshold is not None

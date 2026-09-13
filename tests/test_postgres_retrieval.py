@@ -19,6 +19,7 @@ from atlas_pulse.retrieval.postgres import (
     _event_from_database,
     _number,
     _optional_number,
+    _relaxed_websearch_query,
     _vector_literal,
     retrieval_document_values,
 )
@@ -176,6 +177,17 @@ def test_database_boundary_conversion_rejects_invalid_shapes() -> None:
     assert _optional_number(12, field="distance") == 12
 
 
+def test_relaxed_lexical_query_is_bounded_deduplicated_and_syntax_safe() -> None:
+    assert (
+        _relaxed_websearch_query("earthquake near homes, roads OR a populated area")
+        == "earthquake OR near OR homes OR roads OR a OR populated OR area"
+    )
+    assert _relaxed_websearch_query('"danger" -roads NOT danger') == "danger OR roads"
+    terms = _relaxed_websearch_query(" ".join(f"term{index}" for index in range(40))).split(" OR ")
+    assert len(terms) == 32
+    assert terms[-1] == "term31"
+
+
 async def test_checkpoint_reads_the_named_retrieval_projection() -> None:
     engine = FakeEngine(results=[FakeResult(scalar="123-4")])
     store = store_with(engine)
@@ -284,6 +296,9 @@ async def test_candidates_apply_all_filters_in_one_repeatable_read_snapshot() ->
         assert "ST_DWithin" in statement
         assert "ST_Distance" in statement
     assert "websearch_to_tsquery" in lexical_sql
+    assert "CROSS JOIN lexical_query" in lexical_sql
+    assert "numnode(lexical_query.value) > 0" in lexical_sql
+    assert "text_search @@ lexical_query.value" in lexical_sql
     assert "embedding <=>" in dense_sql
     assert "embedding_model = :embedding_model" not in lexical_sql
     assert "embedding_model = :embedding_model" in dense_sql
@@ -299,7 +314,7 @@ async def test_candidates_apply_all_filters_in_one_repeatable_read_snapshot() ->
         "near_longitude": -97,
         "near_latitude": 35,
         "radius_metres": 100_000,
-        "query_text": "dangerous storm",
+        "lexical_query": "dangerous OR storm",
         "query_embedding": "[0.6,0.8,0]",
         "embedding_model": "test/model",
     }

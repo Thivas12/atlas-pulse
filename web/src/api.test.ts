@@ -131,7 +131,7 @@ describe("AtlasPulse API client", () => {
       ],
       embedding_model: "BAAI/bge-small-en-v1.5",
       ranking_mode: "hybrid" as const,
-      ranking_rule: "rrf60-transparent-rerank-v1",
+      ranking_rule: "rrf60-evidence-tiebreak-v2",
       caveat: "Ranked evidence only; no generated answer.",
       parameters: {
         query: "dangerous storm",

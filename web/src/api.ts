@@ -1,5 +1,7 @@
 import type { ZodType } from "zod";
 import {
+  type AgentRunPreflightResponse,
+  agentRunPreflightResponseSchema,
   type EventsResponse,
   type EvidencePack,
   eventsResponseSchema,
@@ -115,4 +117,29 @@ export function fetchEvidencePack(
     search.set("bbox", [west, south, east, north].join(","));
   }
   return fetchValidated(`/api/v1/evidence-packs?${search}`, evidencePackResponseSchema, signal);
+}
+
+export function fetchAgentRunPreflight(
+  query: HybridSearchQuery,
+  signal?: AbortSignal,
+): Promise<AgentRunPreflightResponse> {
+  const search = new URLSearchParams({
+    q: query.query,
+    retrieval_limit: "20",
+    candidate_limit: "100",
+    max_items: "8",
+    max_characters_per_item: "2000",
+    max_total_characters: "12000",
+    active_only: "true",
+  });
+  if (query.source) search.set("source", query.source);
+  if (query.bounds) {
+    const { west, south, east, north } = query.bounds;
+    search.set("bbox", [west, south, east, north].join(","));
+  }
+  return fetchValidated(
+    `/api/v1/agent-runs/preflight?${search}`,
+    agentRunPreflightResponseSchema,
+    signal,
+  );
 }

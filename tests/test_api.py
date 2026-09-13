@@ -1,5 +1,6 @@
 """HTTP API behavior tests."""
 
+import copy
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -8,7 +9,14 @@ import httpx
 import pytest
 from agent_rag_core import Event, GeoPoint
 
-from atlas_pulse.api import create_app
+from atlas_pulse.agent_runs import (
+    AGENT_AUTHORIZATION_POLICY_VERSION,
+    AGENT_RUN_CAVEAT,
+    AGENT_RUN_IDENTITY_ALGORITHM,
+    AGENT_RUN_RULE_VERSION,
+    AGENT_RUN_SCHEMA_VERSION,
+)
+from atlas_pulse.api import AgentRunPreflightResponse, create_app
 from atlas_pulse.correlation import CORRELATION_CAVEAT, CorrelationBatch, CorrelationPair
 from atlas_pulse.evidence_packs import (
     EVIDENCE_PACK_CAVEAT,
@@ -547,10 +555,15 @@ async def test_search_requires_an_index_and_readiness_reports_index_failure() ->
     async with httpx.AsyncClient(transport=unavailable_transport, base_url="http://test") as client:
         unavailable = await client.get("/v1/search", params={"q": "earthquake"})
         unavailable_pack = await client.get("/v1/evidence-packs", params={"q": "earthquake"})
+        unavailable_preflight = await client.get(
+            "/v1/agent-runs/preflight", params={"q": "earthquake"}
+        )
     assert unavailable.status_code == 503
     assert unavailable.json() == {"detail": "retrieval index unavailable"}
     assert unavailable_pack.status_code == 503
     assert unavailable_pack.json() == {"detail": "retrieval index unavailable"}
+    assert unavailable_preflight.status_code == 503
+    assert unavailable_preflight.json() == {"detail": "retrieval index unavailable"}
 
     unready_transport = httpx.ASGITransport(
         app=create_app(InMemoryEventBus(), StubSignalStore(), StubSearchService(ready=False))
@@ -687,6 +700,117 @@ async def test_evidence_pack_returns_bounded_content_addressed_agent_handoff() -
     assert search.query.limit == 5
 
 
+async def test_agent_run_preflight_chains_pack_and_manifest_without_executing() -> None:
+    event = Event(
+        event_id="alert-1",
+        event_type="weather.alert",
+        source="nws",
+        occurred_at=datetime(2026, 9, 12, 12, tzinfo=UTC),
+        ingested_at=datetime(2026, 9, 12, 12, 1, tzinfo=UTC),
+        payload={
+            "title": "Severe thunderstorm warning",
+            "source_url": "https://api.weather.gov/alerts/alert-1",
+        },
+    )
+    candidate = ChannelCandidate(
+        message=StreamMessage(stream_id="200-1", event=event),
+        document_text="Title: Severe thunderstorm warning",
+        rank=1,
+        score=0.91,
+    )
+    hits = fuse_and_rerank(
+        CandidateBatch(lexical=(candidate,), dense=(candidate,)),
+        query_text="severe thunderstorm",
+        limit=5,
+    )
+    search = StubSearchService(
+        result=SearchResult(
+            hits=hits,
+            candidates_considered=3,
+            embedding_model="BAAI/bge-small-en-v1.5",
+            ranking_mode="hybrid",
+            ranking_rule=RANKING_RULE,
+            caveat=RETRIEVAL_CAVEAT,
+        )
+    )
+    transport = httpx.ASGITransport(app=create_app(InMemoryEventBus(), StubSignalStore(), search))
+    params: dict[str, str | int] = {
+        "q": "severe thunderstorm",
+        "retrieval_limit": 5,
+        "candidate_limit": 25,
+        "max_items": 2,
+        "max_characters_per_item": 20,
+        "max_total_characters": 40,
+    }
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/agent-runs/preflight", params=params)
+
+    assert response.status_code == 200
+    body = response.json()
+    pack = body["evidence_pack"]
+    manifest = body["manifest"]
+    assert pack["status"] == "traceable_evidence_available"
+    assert manifest["schema_version"] == AGENT_RUN_SCHEMA_VERSION
+    assert manifest["rule_version"] == AGENT_RUN_RULE_VERSION
+    assert manifest["identity_algorithm"] == AGENT_RUN_IDENTITY_ALGORITHM
+    assert manifest["manifest_id"].startswith("manifest-")
+    assert len(manifest["manifest_id"]) == 73
+    identity = {key: value for key, value in manifest.items() if key != "manifest_id"}
+    expected_hash = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    assert manifest["manifest_id"] == f"manifest-{expected_hash}"
+    assert manifest["status"] == "blocked"
+    assert manifest["evidence"]["pack_id"] == pack["pack_id"]
+    assert manifest["evidence"]["evidence_ids"] == [pack["items"][0]["evidence_id"]]
+    assert manifest["policy"]["policy_version"] == AGENT_AUTHORIZATION_POLICY_VERSION
+    assert manifest["authorization"]["passed_check_count"] == 3
+    assert manifest["authorization"]["blocked_check_count"] == 5
+    assert manifest["authorization"]["blocking_reasons"] == [
+        "model_adapter_not_selected",
+        "live_relationship_benchmark_incomplete",
+        "grounded_answer_evaluation_missing",
+        "human_release_not_granted",
+        "execution_disabled",
+    ]
+    assert manifest["execution"] == {
+        "status": "not_started",
+        "agent_model_invoked": False,
+        "agent_network_accessed": False,
+        "agent_tools_invoked": False,
+        "answer_generated": False,
+        "agent_side_effects_performed": False,
+    }
+    assert manifest["caveat"] == AGENT_RUN_CAVEAT
+    assert search.query is not None
+    assert search.query.limit == 5
+
+    invalid_count = copy.deepcopy(body)
+    invalid_count["manifest"]["authorization"]["passed_check_count"] = 99
+    with pytest.raises(ValueError, match="passed_check_count does not match checks"):
+        AgentRunPreflightResponse.model_validate(invalid_count)
+
+    duplicate_check = copy.deepcopy(body)
+    duplicate_check["manifest"]["authorization"]["checks"][-1] = duplicate_check["manifest"][
+        "authorization"
+    ]["checks"][0]
+    with pytest.raises(ValueError, match="each v1 check exactly once"):
+        AgentRunPreflightResponse.model_validate(duplicate_check)
+
+    invalid_reason = copy.deepcopy(body)
+    invalid_reason["manifest"]["authorization"]["checks"][0]["blocking_reason"] = (
+        "execution_disabled"
+    )
+    with pytest.raises(ValueError, match="passed checks cannot have a blocking reason"):
+        AgentRunPreflightResponse.model_validate(invalid_reason)
+
+    mismatched_pack = copy.deepcopy(body)
+    mismatched_pack["manifest"]["evidence"]["pack_id"] = f"pack-{'f' * 64}"
+    with pytest.raises(ValueError, match="manifest is not bound to the returned pack"):
+        AgentRunPreflightResponse.model_validate(mismatched_pack)
+
+
 @pytest.mark.parametrize(
     "params",
     [
@@ -705,7 +829,9 @@ async def test_evidence_pack_rejects_invalid_budgets_and_filters(
     )
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/v1/evidence-packs", params=params)
+        preflight = await client.get("/v1/agent-runs/preflight", params=params)
     assert response.status_code == 422
+    assert preflight.status_code == 422
 
 
 @pytest.mark.parametrize(

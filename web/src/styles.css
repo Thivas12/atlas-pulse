@@ -1242,6 +1242,148 @@ input:focus-visible {
   color: #8a7ba2;
 }
 
+.agent-run-control {
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px solid rgba(189, 124, 255, 0.16);
+}
+
+.agent-run-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.agent-run-heading span,
+.agent-run-heading strong {
+  display: block;
+}
+
+.agent-run-heading span {
+  color: #8a6ca9;
+  font:
+    7px "DM Mono",
+    monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-run-heading strong {
+  margin-top: 3px;
+  color: #d2c1e6;
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.agent-run-heading button {
+  flex: 0 0 auto;
+  padding: 7px 9px;
+  color: #e4d4f7;
+  border: 1px solid rgba(189, 124, 255, 0.26);
+  border-radius: 5px;
+  background: rgba(145, 76, 201, 0.13);
+  cursor: pointer;
+  font:
+    7px "DM Mono",
+    monospace;
+  text-transform: uppercase;
+}
+
+.agent-run-heading button:disabled {
+  color: #655675;
+  cursor: not-allowed;
+}
+
+.agent-run-control > p,
+.agent-run-summary p,
+.agent-run-summary small {
+  margin: 7px 0 0;
+  color: #6d718a;
+  font:
+    7px / 1.45 "DM Mono",
+    monospace;
+}
+
+.agent-run-control > p.error {
+  color: #ffc4cb;
+}
+
+.agent-run-state {
+  margin-top: 8px;
+  display: block;
+  color: var(--danger);
+  font:
+    7px "DM Mono",
+    monospace;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.agent-run-summary code {
+  margin-top: 5px;
+  display: block;
+  overflow-wrap: anywhere;
+  color: #a78bc2;
+  font-size: 7px;
+}
+
+.agent-run-summary .blocking-reasons {
+  color: #b28dc9;
+}
+
+.agent-run-summary details {
+  margin-top: 8px;
+  color: #88739f;
+  font:
+    7px / 1.45 "DM Mono",
+    monospace;
+}
+
+.agent-run-summary summary {
+  cursor: pointer;
+  text-transform: uppercase;
+}
+
+.agent-run-summary ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-run-summary li {
+  padding: 5px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  border-top: 1px solid rgba(189, 124, 255, 0.09);
+}
+
+.agent-check-name {
+  color: #a999b7;
+}
+
+.agent-check-status {
+  color: var(--danger);
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.passed .agent-check-status {
+  color: var(--pulse);
+}
+
+.agent-check-detail {
+  margin: 0;
+  grid-column: 1 / -1;
+  color: #5e6174;
+}
+
+.agent-run-execution-note {
+  display: block;
+  color: #8a7ba2;
+}
+
 .retrieval-results {
   flex: 1 1 auto;
   min-height: 0;

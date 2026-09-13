@@ -27,7 +27,10 @@ tie-break features, and traceable evidence link. Toggle viewport scope. State th
 in the UI: these are ranked source events, not an LLM answer, and citation validation is structural
 rather than a truth claim. Choose **Prepare agent pack**. Show the content-addressed pack ID, hard
 item/source-text limits, included and excluded counts, and the untrusted-source-text rule. The pack
-is an auditable handoff, not an answer.
+is an auditable handoff, not an answer. Choose **Check run policy**. Show the second content ID,
+the default-deny result, passed and blocked gate counts, and the expandable checks. Point out that
+the proposed agent model, agent network/tools, answer generation, and side effects all remain off;
+ordinary evidence retrieval still uses the local BGE embedding model.
 
 ```bash
 curl -fsS --get 'http://localhost:8000/v1/search' \
@@ -44,6 +47,12 @@ curl -fsS --get 'http://localhost:8000/v1/evidence-packs' \
   | jq '{pack_id, status, answer_generated, item_count, exclusion_count,
          source_text_characters, budget, retrieval: (.retrieval |
            {embedding_model, ranking_mode, ranking_rule, parameters}), trust_boundary}'
+curl -fsS --get 'http://localhost:8000/v1/agent-runs/preflight' \
+  --data-urlencode 'q=residents ordered to shelter from a dangerous storm' \
+  --data-urlencode 'candidate_limit=100' \
+  --data-urlencode 'retrieval_limit=20' \
+  | jq '{pack_id: .evidence_pack.pack_id,
+         manifest: (.manifest | {manifest_id, status, authorization, execution})}'
 ```
 
 ## 33–45 seconds: prove measured correlation and claim analysis stay separate
@@ -122,7 +131,9 @@ for those future layers without bypassing evaluation. Show that semantic changes
 prediction-blind human benchmark rather than relying on synthetic examples or an LLM judge.
 Explain that public or promotion-oriented results require two exact first-pass reviews: AtlasPulse
 reports observed agreement and Cohen's kappa, sends only disagreements to a third system-blind
-adjudicator, and content-addresses the final gold pool with both review hashes.
+adjudicator, and content-addresses the final gold pool with both review hashes. Close on the new
+default-deny preflight: it makes every missing release condition visible now without pretending
+that an agent ran or that a content hash is equivalent to human approval.
 
 ```bash
 uv run atlas-pulse-evaluate --help

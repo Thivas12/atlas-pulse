@@ -161,6 +161,25 @@ jobs:
           assert response["item_count"] == 0
           assert response["exclusion_count"] == 0
           assert response["retrieval"]["embedding_model"] == "BAAI/bge-small-en-v1.5"'
+          curl --fail --silent --show-error \
+            'http://localhost:3000/api/v1/agent-runs/preflight?q=earthquake' | python3 -c '
+          import json, sys
+          response = json.load(sys.stdin)
+          pack = response["evidence_pack"]
+          manifest = response["manifest"]
+          assert pack["status"] == "no_traceable_evidence"
+          assert manifest["manifest_id"].startswith("manifest-")
+          assert manifest["status"] == "blocked"
+          assert manifest["evidence"]["pack_id"] == pack["pack_id"]
+          assert manifest["authorization"]["blocking_reasons"][0] == "no_traceable_evidence"
+          assert manifest["execution"] == {
+              "status": "not_started",
+              "agent_model_invoked": False,
+              "agent_network_accessed": False,
+              "agent_tools_invoked": False,
+              "answer_generated": False,
+              "agent_side_effects_performed": False,
+          }'
 
       - name: Stop containers
         if: always()

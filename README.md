@@ -7,7 +7,7 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — content-addressed agent evidence handoffs.** Independent workers
+> **Current milestone — governed, content-addressed agent preflight.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
@@ -32,7 +32,10 @@ component can run without a paid API key.
 > generated answer or agent action is introduced, `/v1/evidence-packs` now converts deployed search
 > results into deterministic, content-addressed JSON. It preserves retrieval order and provenance,
 > admits only structurally traceable citations, applies hard item and source-text character budgets,
-> records every exclusion, and marks all included text as untrusted data.
+> records every exclusion, and marks all included text as untrusted data. A second no-execution
+> boundary now binds that exact pack into an immutable run manifest, evaluates eight explicit
+> default-deny authorization checks, reports every unmet release gate, and proves that no proposed
+> agent, generative model, agent network/tool access, answer, or side effect occurred.
 
 ## Why this is portfolio-grade
 
@@ -53,6 +56,7 @@ component can run without a paid API key.
 | Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, shared-pool before/after deltas, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
 | Agent handoff | Content-addressed evidence packs, exact retrieval provenance, hard source-text budgets, explicit exclusions, and an untrusted-data policy |
+| Agent governance | Pack-bound immutable run manifests, default-deny policy snapshots, explicit human/evaluation gates, and zero-execution proof |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI |
@@ -62,33 +66,88 @@ component can run without a paid API key.
 
 ```mermaid
 flowchart TD
-    USGS["USGS earthquakes"] --> Adapters["Independent source adapters"]
-    NWS["NWS active alerts"] --> Adapters
-    FIRMS["NASA FIRMS VIIRS"] --> Adapters
-    GDELT["GDELT Event exports"] --> Adapters
-    Adapters --> Raw["Immutable raw snapshots"]
-    Adapters --> Validate["Strict source validation"]
-    Validate --> Contract["Shared Event contract"]
-    Contract --> Stream["Valkey Streams + atomic dedupe"]
-    Stream --> Projector["Restart-safe projector"]
-    Projector --> PostGIS["PostGIS revisions + current state"]
-    Stream --> Indexer["Independent retrieval indexer"]
-    Indexer --> Hybrid["PostgreSQL FTS + pgvector"]
-    PostGIS --> Correlate["Bounded geography + time join"]
-    Correlate --> Graph["Deterministic evidence graph"]
-    Graph --> Claims["Versioned claim relationships"]
-    Claims --> RelEvaluate["Blinded dual review + adjudication"]
-    PostGIS --> API["FastAPI current-state API"]
-    Hybrid --> Search["RRF + evidence tie-break"]
-    Search --> Evaluate["Pooled human evaluation"]
-    Search --> Packs["Bounded evidence-pack builder"]
-    Search --> API
-    Packs --> API
-    Claims --> API
-    Stream --> API
-    API --> Web["Viewport-driven command center"]
-    Packs --> Agents["Versioned agents — future milestone"]
+    subgraph SENSE["01 · SENSE / PUBLIC SIGNALS"]
+        direction LR
+        USGS["USGS · seismic"]:::source
+        NWS["NOAA · weather"]:::source
+        FIRMS["NASA · thermal"]:::source
+        GDELT["GDELT · conflict"]:::source
+        ADAPTERS["Failure-isolated adapters"]:::ingest
+        USGS --> ADAPTERS
+        NWS --> ADAPTERS
+        FIRMS --> ADAPTERS
+        GDELT --> ADAPTERS
+    end
+
+    subgraph TRUST["02 · TRUST / REPLAYABLE CORE"]
+        direction LR
+        RAW["SHA-256 raw vault"]:::trust --> VALIDATE["Strict validation"]:::trust
+        VALIDATE --> EVENT["Shared Event contract"]:::trust
+        EVENT --> STREAM["Valkey atomic stream"]:::trust
+    end
+
+    subgraph INTEL["03 · FUSE / EVIDENCE INTELLIGENCE"]
+        direction LR
+        PROJECTOR["Restart-safe projector"]:::state --> POSTGIS["PostGIS current state"]:::state
+        POSTGIS --> GRAPH["Measured evidence graph"]:::intel
+        GRAPH --> CLAIMS["Structured claim relations"]:::intel
+        INDEXER["Independent indexer"]:::state --> SEARCHDB["FTS + pgvector"]:::state
+        SEARCHDB --> SEARCH["Hybrid evidence search"]:::intel
+        SEARCH --> PACK["Bounded evidence pack"]:::intel
+    end
+
+    subgraph GOVERN["04 · GOVERN / RELEASE CONTROL"]
+        direction LR
+        RETRIEVAL_REVIEW["Rank-blind retrieval review"]:::review
+        RELATION_REVIEW["Dual semantic review"]:::review
+        PREFLIGHT["Default-deny preflight"]:::gate
+        MANIFEST["Immutable run manifest"]:::gate
+        HUMAN["Explicit human release"]:::human
+    end
+
+    subgraph SERVE["05 · SERVE / OPERATOR SURFACE"]
+        direction LR
+        API["FastAPI evidence surface"]:::surface --> WEB["Atlas command center"]:::surface
+        AGENTS["Specialist agents · future"]:::future
+    end
+
+    ADAPTERS --> RAW
+    STREAM --> PROJECTOR
+    STREAM --> INDEXER
+    SEARCH --> RETRIEVAL_REVIEW --> PREFLIGHT
+    CLAIMS --> RELATION_REVIEW --> PREFLIGHT
+    PACK --> PREFLIGHT --> MANIFEST
+    STREAM --> API
+    POSTGIS --> API
+    GRAPH --> API
+    CLAIMS --> API
+    SEARCH --> API
+    PACK --> API
+    MANIFEST --> API
+    MANIFEST -.-> HUMAN
+    WEB -.-> HUMAN
+    HUMAN -.-> AGENTS
+
+    classDef source fill:#082f49,stroke:#38bdf8,color:#e0f2fe,stroke-width:1px
+    classDef ingest fill:#083344,stroke:#22d3ee,color:#cffafe,stroke-width:1.5px
+    classDef trust fill:#0f2f2b,stroke:#2dd4bf,color:#ccfbf1,stroke-width:1px
+    classDef state fill:#102a24,stroke:#34d399,color:#d1fae5,stroke-width:1px
+    classDef intel fill:#211a3a,stroke:#a78bfa,color:#ede9fe,stroke-width:1px
+    classDef review fill:#2d2414,stroke:#fbbf24,color:#fef3c7,stroke-width:1px
+    classDef gate fill:#3a1d24,stroke:#fb7185,color:#ffe4e6,stroke-width:1.5px
+    classDef human fill:#352a12,stroke:#facc15,color:#fef9c3,stroke-width:1.5px
+    classDef surface fill:#172554,stroke:#60a5fa,color:#dbeafe,stroke-width:1px
+    classDef future fill:#171b24,stroke:#94a3b8,color:#cbd5e1,stroke-width:1px,stroke-dasharray:5 4
+    style SENSE fill:#061521,stroke:#164e63,color:#bae6fd
+    style TRUST fill:#071c1b,stroke:#115e59,color:#99f6e4
+    style INTEL fill:#121126,stroke:#4c1d95,color:#ddd6fe
+    style GOVERN fill:#20151a,stroke:#881337,color:#fecdd3
+    style SERVE fill:#0d1730,stroke:#1e3a8a,color:#bfdbfe
+    linkStyle default stroke:#64748b,stroke-width:1.4px
 ```
+
+Solid paths are operational today. The dashed agent-release path is deliberately closed until the
+evaluation, model, execution, and human-release gates all pass.
 
 Each source is at-least-once and failure-isolated: a slow or unavailable source cannot stop the
 other pollers. Identical semantic content is idempotent for the configured seven-day dedupe
@@ -149,6 +208,9 @@ curl -s --get 'http://localhost:8000/v1/search' \
 curl -s --get 'http://localhost:8000/v1/evidence-packs' \
   --data-urlencode 'q=residents ordered to shelter from a dangerous storm' \
   --data-urlencode 'bbox=-125,24,-66,50'
+curl -s --get 'http://localhost:8000/v1/agent-runs/preflight' \
+  --data-urlencode 'q=residents ordered to shelter from a dangerous storm' \
+  --data-urlencode 'bbox=-125,24,-66,50'
 ```
 
 Switch between **Live** and **Replay**, then filter **All**, **Earthquakes**, **Weather**, or
@@ -160,7 +222,12 @@ a source headline. Every result shows its lexical rank, dense rank, fused/final 
 status. Choose **Prepare agent pack** to create a bounded handoff and inspect its full content ID,
 included/excluded counts, exact source-text character use, availability state, and prompt-injection
 trust boundary. The pack contains evidence only and keeps `answer_generated` false. The complete
-contract and consumer rules are in [`docs/evidence-packs.md`](docs/evidence-packs.md).
+contract and consumer rules are in [`docs/evidence-packs.md`](docs/evidence-packs.md). Then choose
+**Check run policy**. The dashboard displays the content-addressed manifest, every passed and
+blocked authorization check, and the exact no-execution state. It does not start the proposed
+generative agent or grant approval. Ordinary local retrieval still uses the documented BGE
+embedding model. See
+[`docs/agent-run-preflight.md`](docs/agent-run-preflight.md).
 Live mode is served from current PostGIS state, omits expired alerts/detections, and refreshes the
 map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
 remain in the global feed without being falsely placed on the map. Replay starts
@@ -282,6 +349,8 @@ ATLAS_TEST_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
 | `GET` | `/v1/signals?limit=100&after=<stream-id>` | Newest-first, de-duplicated current signals with keyset pagination |
 | `GET` | `/v1/incidents?limit=50&radius_km=50` | Measured evidence components plus versioned source-claim annotations |
 | `GET` | `/v1/search?q=dangerous+storm&limit=10` | Hybrid retrieval over current evidence with transparent ranks |
+| `GET` | `/v1/evidence-packs?q=dangerous+storm` | Bounded, citation-safe, content-addressed retrieval handoff |
+| `GET` | `/v1/agent-runs/preflight?q=dangerous+storm` | Pack-bound default-deny manifest with zero execution |
 
 `/v1/signals` accepts `source=usgs|nws|firms|gdelt`, `min_severity=0..4`, aware
 `occurred_after`/`occurred_before` timestamps, `active_only`, and a non-wrapping WGS84
@@ -322,6 +391,13 @@ embedded credentials or credential-like query parameters and attached it to the 
 event identity. It does not mean AtlasPulse fetched, endorsed, or independently verified the
 claim. `missing` and `rejected` fail closed. Search returns source events, never generated prose.
 See the [evaluation boundary](docs/retrieval-evaluation.md).
+
+`/v1/evidence-packs` preserves deployed retrieval order while admitting only traceable source-text
+prefixes under explicit item and character budgets. `/v1/agent-runs/preflight` returns a fresh pack
+beside a second content-addressed manifest. That manifest binds the pack, requested read-only
+capabilities, default-deny policy, all eight authorization checks, and an explicit `not_started`
+execution state. Under `agent-authorization-v1`, the result is always `blocked`; it is not an
+approval token or a hidden agent invocation.
 
 Every event contains a stable source ID, an aware occurrence time, ingestion time, semantic
 type, optional WGS84 focus point, source name, schema version, and JSON-safe payload. USGS depth
@@ -390,6 +466,10 @@ deterministic for retained entries rather than an indefinite event archive.
 - Dense and lexical scores are never added directly. Deterministic RRF combines ranks, and the
   response exposes evidence tie-breakers and hard candidate caps. A reviewed baseline must justify
   any future learned reranker.
+- Agent preflight evaluates every policy gate even when evidence is unavailable, binds the exact
+  pack identity into its manifest, and can only return `blocked` under the v1 policy. It never
+  starts the proposed agent, invokes a generative agent model, grants agent network/tool access,
+  generates an answer, or performs an agent side effect.
 
 See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision,
 [ADR 0002](docs/adr/0002-snapshot-before-validation.md) for the evidence boundary, and
@@ -415,7 +495,11 @@ comparison scope, abstention, and the model boundary, and
 [ADR 0014](docs/adr/0014-human-reviewed-claim-pair-benchmark.md) for live edge sampling,
 prediction blinding, strict human labels, and semantic promotion metrics, and
 [ADR 0015](docs/adr/0015-independent-review-adjudication.md) for exact independent reviews,
-agreement measurement, disagreement-only adjudication, and final gold provenance.
+agreement measurement, disagreement-only adjudication, and final gold provenance, and
+[ADR 0016](docs/adr/0016-content-addressed-agent-evidence-packs.md) for deterministic bounded
+agent context, and
+[ADR 0017](docs/adr/0017-default-deny-agent-run-preflight.md) for pack-bound authorization,
+immutable manifests, and the zero-execution gate.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -438,6 +522,7 @@ credential solely for transaction metering.
 | Retrieval evaluation | Pydantic, Python CSV, pytest, human judgments | Open source/local; no judge API |
 | Claim relationships | Versioned Python rules over source-backed fields | Open source/local; no model or API |
 | Relationship evaluation | Pydantic, Python CSV, pytest, human labels | Open source/local; no judge API |
+| Agent governance | Versioned Python policy checks + canonical JSON identities | Open source/local; no model or agent framework |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
 | Static serving | Caddy | Open source |
@@ -453,10 +538,12 @@ credential solely for transaction metering.
 2. Run the live claim-pair benchmark through two independent reviews and adjudication, then
    evaluate a free local NLI/LLM proposer against `structured-claims-v1` before it can add a new
    annotation version.
-3. A hierarchy of specialist agents for evidence triage, impact assessment, forecasting, and
-   human approval.
-4. Grounded-answer faithfulness/citation datasets, agent trajectory scoring, drift monitoring,
-   and a fully free deployment path.
+3. Select a free local model adapter, add tokenizer-specific budgets, and build grounded-answer
+   faithfulness/citation evaluation; keep the preflight blocked until those results justify a new
+   policy version.
+4. Add explicit approval identity, expiry/revocation, and an append-only signed run ledger before
+   enabling evidence triage, impact assessment, or forecasting agents.
+5. Add agent trajectory scoring, drift monitoring, and a fully free deployment path.
 
 ## Data and attribution
 

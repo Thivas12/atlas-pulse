@@ -7,7 +7,7 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — versioned evidence relationships.** Independent workers
+> **Current milestone — reviewed evidence relationships.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
@@ -23,7 +23,9 @@ component can run without a paid API key.
 > incident edge now receives a separate `structured-claims-v1` annotation: source-backed claims,
 > exact field provenance, narrow corroboration/contradiction rules, and an explicit insufficient-
 > evidence result. These annotations never rewrite measured distance/time facts and do not claim
-> truth, causation, or a verified shared incident.
+> truth, causation, or a verified shared incident. A separate live evaluation now samples measured
+> edges by source pair, blinds every deployed prediction from reviewers, imports protected human
+> labels, and reports per-label precision/recall/F1 with abstention and predicate/source slices.
 
 ## Why this is portfolio-grade
 
@@ -39,6 +41,7 @@ component can run without a paid API key.
 | Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
 | Transparent correlation | Versioned cross-source rules, exact geography distance/time evidence, stable graph IDs, hard result caps, and explicit non-causal semantics |
 | Claim relationships | Stable source-field claims, conservative corroboration/contradiction rules, explicit abstention, immutable parent-edge references |
+| Relationship evaluation | Versioned live edge sampling, prediction-blind labels, exact evidence reuse, confusion matrices, predicate/source-pair slices, abstention metrics |
 | Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable evidence tie-breaks |
 | Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, shared-pool before/after deltas, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
@@ -66,6 +69,7 @@ flowchart TD
     PostGIS --> Correlate["Bounded geography + time join"]
     Correlate --> Graph["Deterministic evidence graph"]
     Graph --> Claims["Versioned claim relationships"]
+    Claims --> RelEvaluate["Blinded claim-pair evaluation"]
     PostGIS --> API["FastAPI current-state API"]
     Hybrid --> Search["RRF + evidence tie-break"]
     Search --> Evaluate["Pooled human evaluation"]
@@ -167,8 +171,21 @@ or quality floors; gates become valid only after a named human reviews a capture
 
 The separate [`structured-claims-v1` contract cases](evals/relationships/README.md) freeze exact
 corroboration, contradiction, and abstention behavior. They are synthetic regression cases, not a
-claim of live relationship accuracy; a reviewed live claim-pair benchmark is the next gate before
-adding local NLI or LLM proposals.
+claim of live relationship accuracy. Capture and score the checked-in live benchmark before adding
+local NLI or LLM proposals:
+
+```bash
+mkdir -p artifacts/relationship-evaluation
+uv run atlas-pulse-evaluate-relationships capture \
+  --definition evals/relationships/live-claim-pairs-v1.json \
+  --base-url http://localhost:8000 \
+  --output artifacts/relationship-evaluation/pool.json \
+  --judgments-output artifacts/relationship-evaluation/judgments.csv
+```
+
+The complete prediction-blind rubric, strict import, exact reuse, and scoring workflow is in
+[`evals/relationships/README.md`](evals/relationships/README.md). No live accuracy claim or
+promotion threshold exists until a named human reviews the captured pool.
 
 ## Develop without rebuilding containers
 
@@ -377,7 +394,9 @@ RRF-monotonic hybrid, and candidate-coverage decisions, and
 [ADR 0012](docs/adr/0012-shared-pool-longitudinal-evaluation.md) for exact judgment reuse and
 shared-pool before/after measurement, and
 [ADR 0013](docs/adr/0013-versioned-source-claim-relationships.md) for claim provenance,
-comparison scope, abstention, and the model boundary.
+comparison scope, abstention, and the model boundary, and
+[ADR 0014](docs/adr/0014-human-reviewed-claim-pair-benchmark.md) for live edge sampling,
+prediction blinding, strict human labels, and semantic promotion metrics.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -399,6 +418,7 @@ credential solely for transaction metering.
 | Sparse/vector retrieval | PostgreSQL full-text search + [pgvector](https://github.com/pgvector/pgvector) | Open source; self-hosted |
 | Retrieval evaluation | Pydantic, Python CSV, pytest, human judgments | Open source/local; no judge API |
 | Claim relationships | Versioned Python rules over source-backed fields | Open source/local; no model or API |
+| Relationship evaluation | Pydantic, Python CSV, pytest, human labels | Open source/local; no judge API |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
 | Static serving | Caddy | Open source |
@@ -411,8 +431,8 @@ credential solely for transaction metering.
 
 1. Run the shared-pool longitudinal capture after deployment and use its slice deltas to decide
    whether a free local cross-encoder earns its added latency and complexity.
-2. Build a reviewed claim-pair benchmark and evaluate a free local NLI/LLM proposer against the
-   `structured-claims-v1` abstaining baseline before it can add a new annotation version.
+2. Run and independently review the live claim-pair benchmark, then evaluate a free local NLI/LLM
+   proposer against `structured-claims-v1` before it can add a new annotation version.
 3. A hierarchy of specialist agents for evidence triage, impact
    assessment, forecasting, and human approval.
 4. Grounded-answer faithfulness/citation datasets, agent trajectory scoring, drift monitoring,

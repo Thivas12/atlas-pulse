@@ -108,11 +108,15 @@ and both versions are rescored against the union surfaced by either system. No r
 gate exists until a named human reviews the captured evidence. Then show CI: strict
 Ruff/mypy/pytest with real Valkey, PostGIS,
 and pgvector; TypeScript/Biome/Vitest; a production build; and a container/edge smoke test. Close
-with the architectural boundary: generation, contradiction detection, and agents remain
-separately versioned layers rather than hidden claims.
+with the architectural boundary: generated proposals and agents remain separately versioned
+layers rather than hidden claims. Show that semantic changes now have their own prediction-blind
+human benchmark rather than relying on synthetic examples or an LLM judge.
 
 ```bash
 uv run atlas-pulse-evaluate --help
+uv run atlas-pulse-evaluate-relationships --help
 jq '{query_set_id, pool_depth, modes, query_count: (.queries | length)}' \
   evals/retrieval/live-disruptions-v1.json
+jq '{benchmark_id, predicates, max_edges_per_source_pair, parameters}' \
+  evals/relationships/live-claim-pairs-v1.json
 ```

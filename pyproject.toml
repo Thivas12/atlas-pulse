@@ -34,6 +34,7 @@ atlas-pulse-ingest = "atlas_pulse.worker:main"
 atlas-pulse-project = "atlas_pulse.projector:main"
 atlas-pulse-index = "atlas_pulse.indexer:main"
 atlas-pulse-evaluate = "atlas_pulse.evaluation.cli:main"
+atlas-pulse-evaluate-relationships = "atlas_pulse.relationship_evaluation.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]

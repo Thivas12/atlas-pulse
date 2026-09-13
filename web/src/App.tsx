@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
+  fetchAgentRunPreflight,
   fetchCurrentSignals,
   fetchEvidencePack,
   fetchHybridSearch,
@@ -421,6 +422,20 @@ export default function App() {
     enabled: false,
     staleTime: Number.POSITIVE_INFINITY,
   });
+  const agentRunPreflightQuery = useQuery({
+    queryKey: ["agent-run-preflight", searchText, sourceFilter, searchViewport ? viewport : null],
+    queryFn: ({ signal }) =>
+      fetchAgentRunPreflight(
+        {
+          query: searchText,
+          source: sourceFilter === "all" ? undefined : sourceFilter,
+          bounds: searchViewport ? (viewport ?? undefined) : undefined,
+        },
+        signal,
+      ),
+    enabled: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
 
   const liveItems = liveQuery.data?.items ?? [];
   const replayItems = useMemo(
@@ -770,11 +785,14 @@ export default function App() {
               useViewport={searchViewport}
               viewportAvailable={viewport !== null}
               response={searchQuery.data}
-              evidencePack={evidencePackQuery.data}
+              evidencePack={agentRunPreflightQuery.data?.evidence_pack ?? evidencePackQuery.data}
+              agentRunManifest={agentRunPreflightQuery.data?.manifest}
               loading={searchQuery.isFetching}
               error={searchQuery.error}
               evidencePackLoading={evidencePackQuery.isFetching}
               evidencePackError={evidencePackQuery.error}
+              agentRunPreflightLoading={agentRunPreflightQuery.isFetching}
+              agentRunPreflightError={agentRunPreflightQuery.error}
               selectedStreamId={selectedStreamId}
               onDraftChange={setSearchDraft}
               onUseViewportChange={setSearchViewport}
@@ -788,6 +806,7 @@ export default function App() {
                 setSelectedIncidentId(null);
               }}
               onBuildEvidencePack={() => void evidencePackQuery.refetch()}
+              onBuildAgentRunPreflight={() => void agentRunPreflightQuery.refetch()}
               onSelect={selectEvent}
             />
           )}
@@ -795,10 +814,8 @@ export default function App() {
       </section>
 
       <footer>
-        <span>ATLASPULSE / AGENT EVIDENCE PACK SLICE / v0.7.0</span>
-        <span>
-          Bounded traceable context · untrusted source text · no generated claim or action
-        </span>
+        <span>ATLASPULSE / GOVERNED AGENT PREFLIGHT / v0.7.0</span>
+        <span>Content-addressed evidence · default-deny policy · zero execution</span>
       </footer>
     </main>
   );

@@ -360,6 +360,184 @@ export const evidencePackResponseSchema = z
     });
   });
 
+const authorizationBlockReasonSchema = z.enum([
+  "no_traceable_evidence",
+  "model_adapter_not_selected",
+  "live_relationship_benchmark_incomplete",
+  "grounded_answer_evaluation_missing",
+  "human_release_not_granted",
+  "execution_disabled",
+]);
+
+const authorizationCheckIdSchema = z.enum([
+  "evidence_pack_integrity",
+  "traceable_evidence",
+  "capability_scope",
+  "model_adapter",
+  "live_relationship_benchmark",
+  "grounded_answer_evaluation",
+  "human_release",
+  "execution_release",
+]);
+
+export const agentRunManifestSchema = z
+  .object({
+    manifest_id: z.string().regex(/^manifest-[0-9a-f]{64}$/),
+    schema_version: z.literal("1.0.0"),
+    rule_version: z.literal("agent-run-manifest-v1"),
+    identity_algorithm: z.literal("sha256-canonical-json-v1"),
+    status: z.literal("blocked"),
+    request: z.object({
+      purpose: z.literal("evidence_triage"),
+      mode: z.literal("read_only"),
+      requested_output: z.literal("grounded_evidence_brief"),
+      capabilities: z.object({
+        read_evidence: z.literal(true),
+        generate_text: z.literal(true),
+        network_access: z.literal(false),
+        tool_access: z.literal(false),
+        external_side_effects: z.literal(false),
+      }),
+    }),
+    evidence: z.object({
+      pack_id: z.string().regex(/^pack-[0-9a-f]{64}$/),
+      pack_rule_version: z.literal("retrieval-evidence-pack-v1"),
+      pack_status: z.enum(["traceable_evidence_available", "no_traceable_evidence"]),
+      item_count: z.number().int().nonnegative(),
+      exclusion_count: z.number().int().nonnegative(),
+      source_text_characters: z.number().int().nonnegative(),
+      evidence_ids: z.array(z.string().regex(/^evidence-[0-9a-f]{64}$/)),
+    }),
+    policy: z.object({
+      policy_version: z.literal("agent-authorization-v1"),
+      default_decision: z.literal("deny"),
+      execution_enabled: z.literal(false),
+      human_release_required: z.literal(true),
+      evaluated_model_required: z.literal(true),
+      relationship_benchmark_required: z.literal(true),
+      grounded_answer_evaluation_required: z.literal(true),
+      network_access_allowed: z.literal(false),
+      tool_access_allowed: z.literal(false),
+      external_side_effects_allowed: z.literal(false),
+    }),
+    authorization: z.object({
+      decision: z.literal("blocked"),
+      passed_check_count: z.number().int().nonnegative(),
+      blocked_check_count: z.number().int().positive(),
+      blocking_reasons: z.array(authorizationBlockReasonSchema).min(1),
+      checks: z
+        .array(
+          z.object({
+            check_id: authorizationCheckIdSchema,
+            status: z.enum(["passed", "blocked"]),
+            observed: z.string().min(1),
+            required: z.string().min(1),
+            blocking_reason: authorizationBlockReasonSchema.nullable(),
+          }),
+        )
+        .length(8),
+    }),
+    execution: z.object({
+      status: z.literal("not_started"),
+      agent_model_invoked: z.literal(false),
+      agent_network_accessed: z.literal(false),
+      agent_tools_invoked: z.literal(false),
+      answer_generated: z.literal(false),
+      agent_side_effects_performed: z.literal(false),
+    }),
+    caveat: z.string().min(1),
+  })
+  .superRefine((manifest, context) => {
+    const invariant = (valid: boolean, message: string, path: (string | number)[]) => {
+      if (!valid) context.addIssue({ code: "custom", message, path });
+    };
+    const passedChecks = manifest.authorization.checks.filter((check) => check.status === "passed");
+    const blockedChecks = manifest.authorization.checks.filter(
+      (check) => check.status === "blocked",
+    );
+    const expectedReasons = blockedChecks.flatMap((check) =>
+      check.blocking_reason === null ? [] : [check.blocking_reason],
+    );
+    invariant(
+      new Set(manifest.authorization.checks.map((check) => check.check_id)).size === 8,
+      "authorization check IDs must be unique",
+      ["authorization", "checks"],
+    );
+    invariant(
+      manifest.authorization.passed_check_count === passedChecks.length,
+      "passed_check_count does not match checks",
+      ["authorization", "passed_check_count"],
+    );
+    invariant(
+      manifest.authorization.blocked_check_count === blockedChecks.length,
+      "blocked_check_count does not match checks",
+      ["authorization", "blocked_check_count"],
+    );
+    invariant(
+      JSON.stringify(manifest.authorization.blocking_reasons) === JSON.stringify(expectedReasons),
+      "blocking_reasons do not match blocked checks",
+      ["authorization", "blocking_reasons"],
+    );
+    invariant(
+      manifest.evidence.item_count === manifest.evidence.evidence_ids.length,
+      "evidence item_count does not match evidence IDs",
+      ["evidence", "item_count"],
+    );
+    manifest.authorization.checks.forEach((check, index) => {
+      invariant(
+        check.status === "blocked"
+          ? check.blocking_reason !== null
+          : check.blocking_reason === null,
+        "check status does not match blocking reason",
+        ["authorization", "checks", index, "blocking_reason"],
+      );
+    });
+  });
+
+export const agentRunPreflightResponseSchema = z
+  .object({
+    evidence_pack: evidencePackResponseSchema,
+    manifest: agentRunManifestSchema,
+  })
+  .superRefine((preflight, context) => {
+    const evidence = preflight.manifest.evidence;
+    const pack = preflight.evidence_pack;
+    const invariant = (valid: boolean, message: string, path: (string | number)[]) => {
+      if (!valid) context.addIssue({ code: "custom", message, path });
+    };
+    invariant(evidence.pack_id === pack.pack_id, "manifest is not bound to the returned pack", [
+      "manifest",
+      "evidence",
+      "pack_id",
+    ]);
+    invariant(evidence.pack_status === pack.status, "pack status binding does not match", [
+      "manifest",
+      "evidence",
+      "pack_status",
+    ]);
+    invariant(evidence.item_count === pack.item_count, "pack item binding does not match", [
+      "manifest",
+      "evidence",
+      "item_count",
+    ]);
+    invariant(
+      evidence.exclusion_count === pack.exclusion_count,
+      "pack exclusion binding does not match",
+      ["manifest", "evidence", "exclusion_count"],
+    );
+    invariant(
+      evidence.source_text_characters === pack.source_text_characters,
+      "pack character binding does not match",
+      ["manifest", "evidence", "source_text_characters"],
+    );
+    invariant(
+      JSON.stringify(evidence.evidence_ids) ===
+        JSON.stringify(pack.items.map((item) => item.evidence_id)),
+      "manifest evidence IDs do not match the returned pack",
+      ["manifest", "evidence", "evidence_ids"],
+    );
+  });
+
 export interface ViewportBounds {
   west: number;
   south: number;
@@ -378,3 +556,5 @@ export type IncidentsResponse = z.infer<typeof incidentsResponseSchema>;
 export type SearchHit = z.infer<typeof searchHitSchema>;
 export type SearchResponse = z.infer<typeof searchResponseSchema>;
 export type EvidencePack = z.infer<typeof evidencePackResponseSchema>;
+export type AgentRunManifest = z.infer<typeof agentRunManifestSchema>;
+export type AgentRunPreflightResponse = z.infer<typeof agentRunPreflightResponseSchema>;

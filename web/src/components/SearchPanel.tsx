@@ -1,5 +1,5 @@
 import { formatTimestamp, placeOf, titleOf } from "../event-utils";
-import type { EvidencePack, SearchHit, SearchResponse } from "../types";
+import type { AgentRunManifest, EvidencePack, SearchHit, SearchResponse } from "../types";
 
 interface SearchPanelProps {
   query: string;
@@ -8,15 +8,19 @@ interface SearchPanelProps {
   viewportAvailable: boolean;
   response?: SearchResponse;
   evidencePack?: EvidencePack;
+  agentRunManifest?: AgentRunManifest;
   loading: boolean;
   error: Error | null;
   evidencePackLoading: boolean;
   evidencePackError: Error | null;
+  agentRunPreflightLoading: boolean;
+  agentRunPreflightError: Error | null;
   selectedStreamId: string | null;
   onDraftChange: (value: string) => void;
   onUseViewportChange: (value: boolean) => void;
   onSubmit: () => void;
   onBuildEvidencePack: () => void;
+  onBuildAgentRunPreflight: () => void;
   onSelect: (streamId: string) => void;
 }
 
@@ -28,6 +32,10 @@ function channelRank(hit: SearchHit): string {
   return channels.join(" · ");
 }
 
+function policyLabel(value: string): string {
+  return value.replaceAll("_", " ");
+}
+
 export function SearchPanel({
   query,
   draft,
@@ -35,15 +43,19 @@ export function SearchPanel({
   viewportAvailable,
   response,
   evidencePack,
+  agentRunManifest,
   loading,
   error,
   evidencePackLoading,
   evidencePackError,
+  agentRunPreflightLoading,
+  agentRunPreflightError,
   selectedStreamId,
   onDraftChange,
   onUseViewportChange,
   onSubmit,
   onBuildEvidencePack,
+  onBuildAgentRunPreflight,
   onSelect,
 }: SearchPanelProps) {
   const items = response?.items ?? [];
@@ -132,6 +144,60 @@ export function SearchPanel({
                 characters · {evidencePack.exclusion_count} excluded
               </p>
               <small>{evidencePack.trust_boundary}</small>
+            </div>
+          )}
+          {evidencePack && (
+            <div className="agent-run-control">
+              <div className="agent-run-heading">
+                <div>
+                  <span>Execution gate</span>
+                  <strong>Governed evidence-triage preflight</strong>
+                </div>
+                <button
+                  type="button"
+                  disabled={agentRunPreflightLoading}
+                  onClick={onBuildAgentRunPreflight}
+                >
+                  {agentRunPreflightLoading ? "Checking…" : "Check run policy"}
+                </button>
+              </div>
+              {agentRunPreflightError && <p className="error">{agentRunPreflightError.message}</p>}
+              {!agentRunManifest && !agentRunPreflightError && (
+                <p>
+                  Fresh pack + manifest pair · default deny · agent model, network, and tools stay
+                  off
+                </p>
+              )}
+              {agentRunManifest && (
+                <div className="agent-run-summary">
+                  <span className="agent-run-state blocked">Blocked · no execution</span>
+                  <code>{agentRunManifest.manifest_id}</code>
+                  <p>
+                    {agentRunManifest.authorization.passed_check_count} checks passed ·{" "}
+                    {agentRunManifest.authorization.blocked_check_count} blocking gates
+                  </p>
+                  <p className="blocking-reasons">
+                    {agentRunManifest.authorization.blocking_reasons.map(policyLabel).join(" · ")}
+                  </p>
+                  <details>
+                    <summary>Review authorization checks</summary>
+                    <ul>
+                      {agentRunManifest.authorization.checks.map((check) => (
+                        <li className={check.status} key={check.check_id}>
+                          <span className="agent-check-name">{policyLabel(check.check_id)}</span>
+                          <strong className="agent-check-status">{check.status}</strong>
+                          <small className="agent-check-detail">
+                            {policyLabel(check.observed)} → {policyLabel(check.required)}
+                          </small>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                  <small className="agent-run-execution-note">
+                    Agent model not invoked · no agent network, tools, answer, or side effect
+                  </small>
+                </div>
+              )}
             </div>
           )}
         </div>

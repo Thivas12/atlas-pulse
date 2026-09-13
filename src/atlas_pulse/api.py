@@ -3,13 +3,26 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Self
 
 from agent_rag_core import Event
 from fastapi import FastAPI, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from atlas_pulse import __version__
+from atlas_pulse.agent_runs import (
+    AGENT_AUTHORIZATION_POLICY_VERSION,
+    AGENT_RUN_CAVEAT,
+    AGENT_RUN_IDENTITY_ALGORITHM,
+    AGENT_RUN_RULE_VERSION,
+    AGENT_RUN_SCHEMA_VERSION,
+    AgentRunManifest,
+    AgentRunStatus,
+    AuthorizationBlockReason,
+    AuthorizationCheckId,
+    AuthorizationCheckStatus,
+    build_agent_run_manifest,
+)
 from atlas_pulse.correlation import (
     CORRELATION_CAVEAT,
     CORRELATION_RULE_VERSION,
@@ -358,9 +371,9 @@ class EvidencePackResponse(BaseModel):
     rule_version: str = EVIDENCE_PACK_RULE_VERSION
     identity_algorithm: str = EVIDENCE_PACK_IDENTITY_ALGORITHM
     status: EvidencePackStatus
-    item_count: int
-    exclusion_count: int
-    source_text_characters: int
+    item_count: int = Field(ge=0)
+    exclusion_count: int = Field(ge=0)
+    source_text_characters: int = Field(ge=0)
     budget: EvidencePackBudgetResponse
     retrieval: EvidencePackRetrievalResponse
     items: tuple[EvidencePackItemResponse, ...]
@@ -368,6 +381,173 @@ class EvidencePackResponse(BaseModel):
     answer_generated: Literal[False] = False
     trust_boundary: str = EVIDENCE_PACK_TRUST_BOUNDARY
     caveat: str = EVIDENCE_PACK_CAVEAT
+
+
+class AgentRunCapabilitiesResponse(BaseModel):
+    """Capabilities requested by the locked first specialist profile."""
+
+    read_evidence: Literal[True]
+    generate_text: Literal[True]
+    network_access: Literal[False]
+    tool_access: Literal[False]
+    external_side_effects: Literal[False]
+
+
+class AgentRunRequestResponse(BaseModel):
+    """Proposed read-only run intent; no execution occurs during preflight."""
+
+    purpose: Literal["evidence_triage"]
+    mode: Literal["read_only"]
+    requested_output: Literal["grounded_evidence_brief"]
+    capabilities: AgentRunCapabilitiesResponse
+
+
+class AgentRunEvidenceResponse(BaseModel):
+    """Exact evidence-pack dependency bound into the manifest identity."""
+
+    pack_id: str = Field(pattern=r"^pack-[0-9a-f]{64}$")
+    pack_rule_version: str
+    pack_status: EvidencePackStatus
+    item_count: int = Field(ge=0)
+    exclusion_count: int = Field(ge=0)
+    source_text_characters: int = Field(ge=0)
+    evidence_ids: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def validate_evidence_binding(self) -> Self:
+        if self.item_count != len(self.evidence_ids):
+            raise ValueError("evidence item_count does not match evidence IDs")
+        if (self.item_count > 0) != (self.pack_status == "traceable_evidence_available"):
+            raise ValueError("pack_status does not match evidence availability")
+        if any(
+            len(evidence_id) != 73
+            or not evidence_id.startswith("evidence-")
+            or any(character not in "0123456789abcdef" for character in evidence_id[9:])
+            for evidence_id in self.evidence_ids
+        ):
+            raise ValueError("evidence IDs must use the evidence-<sha256> identity")
+        return self
+
+
+class AgentAuthorizationPolicyResponse(BaseModel):
+    """Default-deny policy snapshot evaluated by preflight."""
+
+    policy_version: str = AGENT_AUTHORIZATION_POLICY_VERSION
+    default_decision: Literal["deny"]
+    execution_enabled: Literal[False]
+    human_release_required: Literal[True]
+    evaluated_model_required: Literal[True]
+    relationship_benchmark_required: Literal[True]
+    grounded_answer_evaluation_required: Literal[True]
+    network_access_allowed: Literal[False]
+    tool_access_allowed: Literal[False]
+    external_side_effects_allowed: Literal[False]
+
+
+class AuthorizationCheckResponse(BaseModel):
+    """One machine-readable comparison contributing to authorization."""
+
+    check_id: AuthorizationCheckId
+    status: AuthorizationCheckStatus
+    observed: str
+    required: str
+    blocking_reason: AuthorizationBlockReason | None
+
+
+class AgentAuthorizationResponse(BaseModel):
+    """Complete fail-closed authorization result."""
+
+    decision: AgentRunStatus
+    passed_check_count: int = Field(ge=0)
+    blocked_check_count: int = Field(ge=1)
+    blocking_reasons: tuple[AuthorizationBlockReason, ...] = Field(min_length=1)
+    checks: tuple[AuthorizationCheckResponse, ...]
+
+    @model_validator(mode="after")
+    def validate_authorization_checks(self) -> Self:
+        expected_check_ids = {
+            "evidence_pack_integrity",
+            "traceable_evidence",
+            "capability_scope",
+            "model_adapter",
+            "live_relationship_benchmark",
+            "grounded_answer_evaluation",
+            "human_release",
+            "execution_release",
+        }
+        observed_check_ids = {check.check_id for check in self.checks}
+        if observed_check_ids != expected_check_ids or len(self.checks) != len(expected_check_ids):
+            raise ValueError("authorization checks must contain each v1 check exactly once")
+        passed = tuple(check for check in self.checks if check.status == "passed")
+        blocked = tuple(check for check in self.checks if check.status == "blocked")
+        if self.passed_check_count != len(passed):
+            raise ValueError("passed_check_count does not match checks")
+        if self.blocked_check_count != len(blocked):
+            raise ValueError("blocked_check_count does not match checks")
+        if any(check.blocking_reason is not None for check in passed):
+            raise ValueError("passed checks cannot have a blocking reason")
+        if any(check.blocking_reason is None for check in blocked):
+            raise ValueError("blocked checks require a blocking reason")
+        expected_reasons = tuple(
+            check.blocking_reason for check in blocked if check.blocking_reason is not None
+        )
+        if self.blocking_reasons != expected_reasons:
+            raise ValueError("blocking_reasons do not match blocked checks")
+        return self
+
+
+class AgentExecutionStateResponse(BaseModel):
+    """Explicit proof that preflight did not execute anything."""
+
+    status: Literal["not_started"]
+    agent_model_invoked: Literal[False]
+    agent_network_accessed: Literal[False]
+    agent_tools_invoked: Literal[False]
+    answer_generated: Literal[False]
+    agent_side_effects_performed: Literal[False]
+
+
+class AgentRunManifestResponse(BaseModel):
+    """Content-addressed proposed-run manifest under the locked v1 policy."""
+
+    manifest_id: str = Field(pattern=r"^manifest-[0-9a-f]{64}$")
+    schema_version: str = AGENT_RUN_SCHEMA_VERSION
+    rule_version: str = AGENT_RUN_RULE_VERSION
+    identity_algorithm: str = AGENT_RUN_IDENTITY_ALGORITHM
+    status: AgentRunStatus
+    request: AgentRunRequestResponse
+    evidence: AgentRunEvidenceResponse
+    policy: AgentAuthorizationPolicyResponse
+    authorization: AgentAuthorizationResponse
+    execution: AgentExecutionStateResponse
+    caveat: str = AGENT_RUN_CAVEAT
+
+
+class AgentRunPreflightResponse(BaseModel):
+    """One verifiable evidence pack chained to its no-execution manifest."""
+
+    evidence_pack: EvidencePackResponse
+    manifest: AgentRunManifestResponse
+
+    @model_validator(mode="after")
+    def validate_pack_binding(self) -> Self:
+        pack = self.evidence_pack
+        evidence = self.manifest.evidence
+        if evidence.pack_id != pack.pack_id:
+            raise ValueError("manifest is not bound to the returned pack")
+        if evidence.pack_rule_version != pack.rule_version:
+            raise ValueError("pack rule binding does not match")
+        if evidence.pack_status != pack.status:
+            raise ValueError("pack status binding does not match")
+        if evidence.item_count != pack.item_count:
+            raise ValueError("pack item binding does not match")
+        if evidence.exclusion_count != pack.exclusion_count:
+            raise ValueError("pack exclusion binding does not match")
+        if evidence.source_text_characters != pack.source_text_characters:
+            raise ValueError("pack character binding does not match")
+        if evidence.evidence_ids != tuple(item.evidence_id for item in pack.items):
+            raise ValueError("manifest evidence IDs do not match the returned pack")
+        return self
 
 
 def _claim_response(claim: EvidenceClaim) -> EvidenceClaimResponse:
@@ -716,6 +896,78 @@ def _evidence_pack_response(pack: EvidencePack) -> EvidencePackResponse:
     )
 
 
+def _agent_run_manifest_response(manifest: AgentRunManifest) -> AgentRunManifestResponse:
+    capabilities = manifest.request.capabilities
+    policy = manifest.policy
+    authorization = manifest.authorization
+    execution = manifest.execution
+    return AgentRunManifestResponse(
+        manifest_id=manifest.manifest_id,
+        schema_version=manifest.schema_version,
+        rule_version=manifest.rule_version,
+        identity_algorithm=manifest.identity_algorithm,
+        status=manifest.status,
+        request=AgentRunRequestResponse(
+            purpose=manifest.request.purpose,
+            mode=manifest.request.mode,
+            requested_output=manifest.request.requested_output,
+            capabilities=AgentRunCapabilitiesResponse(
+                read_evidence=capabilities.read_evidence,
+                generate_text=capabilities.generate_text,
+                network_access=capabilities.network_access,
+                tool_access=capabilities.tool_access,
+                external_side_effects=capabilities.external_side_effects,
+            ),
+        ),
+        evidence=AgentRunEvidenceResponse(
+            pack_id=manifest.evidence.pack_id,
+            pack_rule_version=manifest.evidence.pack_rule_version,
+            pack_status=manifest.evidence.pack_status,
+            item_count=manifest.evidence.item_count,
+            exclusion_count=manifest.evidence.exclusion_count,
+            source_text_characters=manifest.evidence.source_text_characters,
+            evidence_ids=manifest.evidence.evidence_ids,
+        ),
+        policy=AgentAuthorizationPolicyResponse(
+            policy_version=policy.policy_version,
+            default_decision=policy.default_decision,
+            execution_enabled=policy.execution_enabled,
+            human_release_required=policy.human_release_required,
+            evaluated_model_required=policy.evaluated_model_required,
+            relationship_benchmark_required=policy.relationship_benchmark_required,
+            grounded_answer_evaluation_required=policy.grounded_answer_evaluation_required,
+            network_access_allowed=policy.network_access_allowed,
+            tool_access_allowed=policy.tool_access_allowed,
+            external_side_effects_allowed=policy.external_side_effects_allowed,
+        ),
+        authorization=AgentAuthorizationResponse(
+            decision=authorization.decision,
+            passed_check_count=authorization.passed_check_count,
+            blocked_check_count=authorization.blocked_check_count,
+            blocking_reasons=authorization.blocking_reasons,
+            checks=tuple(
+                AuthorizationCheckResponse(
+                    check_id=check.check_id,
+                    status=check.status,
+                    observed=check.observed,
+                    required=check.required,
+                    blocking_reason=check.blocking_reason,
+                )
+                for check in authorization.checks
+            ),
+        ),
+        execution=AgentExecutionStateResponse(
+            status=execution.status,
+            agent_model_invoked=execution.agent_model_invoked,
+            agent_network_accessed=execution.agent_network_accessed,
+            agent_tools_invoked=execution.agent_tools_invoked,
+            answer_generated=execution.answer_generated,
+            agent_side_effects_performed=execution.agent_side_effects_performed,
+        ),
+        caveat=manifest.caveat,
+    )
+
+
 def create_app(
     event_bus: EventBus,
     signal_store: SignalStore | None = None,
@@ -981,5 +1233,63 @@ def create_app(
         )
         result = await search_service.search(query)
         return _evidence_pack_response(build_evidence_pack(result, query, budget=budget))
+
+    @app.get(
+        "/v1/agent-runs/preflight",
+        response_model=AgentRunPreflightResponse,
+        tags=["agents"],
+    )
+    async def agent_run_preflight(
+        q: str = Query(min_length=2, max_length=500),
+        retrieval_limit: int = Query(default=20, ge=1, le=50),
+        candidate_limit: int = Query(default=100, ge=1, le=200),
+        max_items: int = Query(default=8, ge=1, le=50),
+        max_characters_per_item: int = Query(default=2_000, ge=1, le=8_000),
+        max_total_characters: int = Query(default=12_000, ge=1, le=64_000),
+        source: SourceName | None = None,
+        occurred_after: datetime | None = None,
+        occurred_before: datetime | None = None,
+        bbox: str | None = Query(
+            default=None,
+            description="Optional non-wrapping WGS84 west,south,east,north viewport",
+        ),
+        near: str | None = Query(
+            default=None,
+            description="Optional WGS84 longitude,latitude radius origin",
+        ),
+        radius_km: float = Query(default=250.0, gt=0, le=2_000),
+        active_only: bool = Query(default=True),
+        ranking_mode: RankingMode = "hybrid",
+    ) -> AgentRunPreflightResponse:
+        if search_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="retrieval index unavailable",
+            )
+        query = _search_query_from_request(
+            text=q,
+            limit=retrieval_limit,
+            candidate_limit=candidate_limit,
+            source=source,
+            occurred_after=occurred_after,
+            occurred_before=occurred_before,
+            bbox=bbox,
+            near=near,
+            radius_km=radius_km,
+            active_only=active_only,
+            ranking_mode=ranking_mode,
+        )
+        budget = EvidencePackBudget(
+            max_items=max_items,
+            max_characters_per_item=max_characters_per_item,
+            max_total_characters=max_total_characters,
+        )
+        result = await search_service.search(query)
+        pack = build_evidence_pack(result, query, budget=budget)
+        manifest = build_agent_run_manifest(pack)
+        return AgentRunPreflightResponse(
+            evidence_pack=_evidence_pack_response(pack),
+            manifest=_agent_run_manifest_response(manifest),
+        )
 
     return app

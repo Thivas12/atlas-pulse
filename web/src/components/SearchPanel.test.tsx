@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { makeEnvelope } from "../test/fixtures";
-import type { EvidencePack, SearchResponse } from "../types";
+import type { AgentRunManifest, EvidencePack, SearchResponse } from "../types";
 import { SearchPanel } from "./SearchPanel";
 
 function response(): SearchResponse {
@@ -114,6 +114,129 @@ function evidencePack(): EvidencePack {
   };
 }
 
+function agentRunManifest(): AgentRunManifest {
+  const pack = evidencePack();
+  return {
+    manifest_id: `manifest-${"d".repeat(64)}`,
+    schema_version: "1.0.0",
+    rule_version: "agent-run-manifest-v1",
+    identity_algorithm: "sha256-canonical-json-v1",
+    status: "blocked",
+    request: {
+      purpose: "evidence_triage",
+      mode: "read_only",
+      requested_output: "grounded_evidence_brief",
+      capabilities: {
+        read_evidence: true,
+        generate_text: true,
+        network_access: false,
+        tool_access: false,
+        external_side_effects: false,
+      },
+    },
+    evidence: {
+      pack_id: pack.pack_id,
+      pack_rule_version: pack.rule_version,
+      pack_status: pack.status,
+      item_count: pack.item_count,
+      exclusion_count: pack.exclusion_count,
+      source_text_characters: pack.source_text_characters,
+      evidence_ids: pack.items.map((item) => item.evidence_id),
+    },
+    policy: {
+      policy_version: "agent-authorization-v1",
+      default_decision: "deny",
+      execution_enabled: false,
+      human_release_required: true,
+      evaluated_model_required: true,
+      relationship_benchmark_required: true,
+      grounded_answer_evaluation_required: true,
+      network_access_allowed: false,
+      tool_access_allowed: false,
+      external_side_effects_allowed: false,
+    },
+    authorization: {
+      decision: "blocked",
+      passed_check_count: 3,
+      blocked_check_count: 5,
+      blocking_reasons: [
+        "model_adapter_not_selected",
+        "live_relationship_benchmark_incomplete",
+        "grounded_answer_evaluation_missing",
+        "human_release_not_granted",
+        "execution_disabled",
+      ],
+      checks: [
+        {
+          check_id: "evidence_pack_integrity",
+          status: "passed",
+          observed: "content_addressed_bounded_pack",
+          required: "content_addressed_bounded_pack",
+          blocking_reason: null,
+        },
+        {
+          check_id: "traceable_evidence",
+          status: "passed",
+          observed: "traceable_evidence_available",
+          required: "traceable_evidence_available",
+          blocking_reason: null,
+        },
+        {
+          check_id: "capability_scope",
+          status: "passed",
+          observed: "read_only_no_network_no_tools_no_side_effects",
+          required: "read_only_no_network_no_tools_no_side_effects",
+          blocking_reason: null,
+        },
+        {
+          check_id: "model_adapter",
+          status: "blocked",
+          observed: "not_selected",
+          required: "evaluated_model_adapter",
+          blocking_reason: "model_adapter_not_selected",
+        },
+        {
+          check_id: "live_relationship_benchmark",
+          status: "blocked",
+          observed: "awaiting_independent_adjudication",
+          required: "adjudicated_pass",
+          blocking_reason: "live_relationship_benchmark_incomplete",
+        },
+        {
+          check_id: "grounded_answer_evaluation",
+          status: "blocked",
+          observed: "not_available",
+          required: "evaluated_pass",
+          blocking_reason: "grounded_answer_evaluation_missing",
+        },
+        {
+          check_id: "human_release",
+          status: "blocked",
+          observed: "not_granted",
+          required: "explicit_human_approval",
+          blocking_reason: "human_release_not_granted",
+        },
+        {
+          check_id: "execution_release",
+          status: "blocked",
+          observed: "disabled",
+          required: "enabled",
+          blocking_reason: "execution_disabled",
+        },
+      ],
+    },
+    execution: {
+      status: "not_started",
+      agent_model_invoked: false,
+      agent_network_accessed: false,
+      agent_tools_invoked: false,
+      answer_generated: false,
+      agent_side_effects_performed: false,
+    },
+    caveat: "Preflight records policy only and performs no execution.",
+  };
+}
+
 const requiredProps = {
   query: "",
   draft: "",
@@ -123,11 +246,14 @@ const requiredProps = {
   error: null,
   evidencePackLoading: false,
   evidencePackError: null,
+  agentRunPreflightLoading: false,
+  agentRunPreflightError: null,
   selectedStreamId: null,
   onDraftChange: vi.fn(),
   onUseViewportChange: vi.fn(),
   onSubmit: vi.fn(),
   onBuildEvidencePack: vi.fn(),
+  onBuildAgentRunPreflight: vi.fn(),
   onSelect: vi.fn(),
 };
 
@@ -224,6 +350,44 @@ describe("SearchPanel", () => {
     expect(screen.getByText(/untrusted quoted source data/)).toBeInTheDocument();
   });
 
+  it("preflights a governed run and exposes every blocking gate without execution", async () => {
+    const user = userEvent.setup();
+    const onBuildAgentRunPreflight = vi.fn();
+    const { rerender } = render(
+      <SearchPanel
+        {...requiredProps}
+        query="violent storm"
+        draft="violent storm"
+        response={response()}
+        evidencePack={evidencePack()}
+        onBuildAgentRunPreflight={onBuildAgentRunPreflight}
+      />,
+    );
+
+    expect(screen.getByText(/default deny/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Check run policy" }));
+    expect(onBuildAgentRunPreflight).toHaveBeenCalledOnce();
+
+    rerender(
+      <SearchPanel
+        {...requiredProps}
+        query="violent storm"
+        draft="violent storm"
+        response={response()}
+        evidencePack={evidencePack()}
+        agentRunManifest={agentRunManifest()}
+      />,
+    );
+    expect(screen.getByText("Blocked · no execution")).toBeInTheDocument();
+    expect(screen.getByText(`manifest-${"d".repeat(64)}`)).toBeInTheDocument();
+    expect(screen.getByText(/3 checks passed · 5 blocking gates/)).toBeInTheDocument();
+    expect(screen.getByText(/model adapter not selected/)).toBeInTheDocument();
+    expect(screen.getByText(/Agent model not invoked/)).toBeInTheDocument();
+
+    await user.click(screen.getByText("Review authorization checks"));
+    expect(screen.getByText("execution release")).toBeInTheDocument();
+  });
+
   it("shows evidence-pack loading, errors, and the explicit no-evidence state", () => {
     const emptyPack: EvidencePack = {
       ...evidencePack(),
@@ -264,6 +428,32 @@ describe("SearchPanel", () => {
       />,
     );
     expect(screen.getByText("No traceable evidence")).toBeInTheDocument();
+  });
+
+  it("shows agent preflight loading and errors after a pack exists", () => {
+    const { rerender } = render(
+      <SearchPanel
+        {...requiredProps}
+        query="storm"
+        draft="storm"
+        response={response()}
+        evidencePack={evidencePack()}
+        agentRunPreflightLoading
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Checking…" })).toBeDisabled();
+
+    rerender(
+      <SearchPanel
+        {...requiredProps}
+        query="storm"
+        draft="storm"
+        response={response()}
+        evidencePack={evidencePack()}
+        agentRunPreflightError={new Error("preflight unavailable")}
+      />,
+    );
+    expect(screen.getByText("preflight unavailable")).toBeInTheDocument();
   });
 
   it("shows loading, errors, and an empty bounded result", () => {

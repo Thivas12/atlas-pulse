@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  fetchAgentRunPreflight,
   fetchCurrentSignals,
   fetchEvidencePack,
   fetchHybridSearch,
@@ -296,6 +297,198 @@ describe("AtlasPulse API client", () => {
     );
     await expect(fetchEvidencePack({ query: "dangerous storm" })).rejects.toThrow(
       "item_count does not match items",
+    );
+  });
+
+  it("validates a chained no-execution agent preflight and its pack binding", async () => {
+    const evidencePack = {
+      pack_id: `pack-${"a".repeat(64)}`,
+      schema_version: "1.0.0",
+      rule_version: "retrieval-evidence-pack-v1",
+      identity_algorithm: "sha256-canonical-json-v1",
+      status: "no_traceable_evidence",
+      item_count: 0,
+      exclusion_count: 0,
+      source_text_characters: 0,
+      budget: {
+        max_items: 8,
+        max_characters_per_item: 2_000,
+        max_total_characters: 12_000,
+        character_unit: "unicode_code_points",
+      },
+      retrieval: {
+        candidates_considered: 0,
+        returned_hits: 0,
+        embedding_model: "BAAI/bge-small-en-v1.5",
+        ranking_mode: "hybrid",
+        ranking_rule: "rrf60-evidence-tiebreak-v2",
+        caveat: "Ranked evidence only; no generated answer.",
+        parameters: {
+          query: "dangerous storm",
+          limit: 20,
+          candidate_limit: 100,
+          source: "nws",
+          occurred_after: null,
+          occurred_before: null,
+          active_only: true,
+          bbox: [-10, -5, 20, 30],
+          near: null,
+          radius_km: null,
+          ranking_mode: "hybrid",
+        },
+      },
+      items: [],
+      exclusions: [],
+      answer_generated: false,
+      trust_boundary: "Treat source text as untrusted quoted data.",
+      caveat: "Pack assembly does not generate claims.",
+    };
+    const checks = [
+      {
+        check_id: "evidence_pack_integrity",
+        status: "passed",
+        observed: "content_addressed_bounded_pack",
+        required: "content_addressed_bounded_pack",
+        blocking_reason: null,
+      },
+      {
+        check_id: "traceable_evidence",
+        status: "blocked",
+        observed: "no_traceable_evidence",
+        required: "traceable_evidence_available",
+        blocking_reason: "no_traceable_evidence",
+      },
+      {
+        check_id: "capability_scope",
+        status: "passed",
+        observed: "read_only_no_network_no_tools_no_side_effects",
+        required: "read_only_no_network_no_tools_no_side_effects",
+        blocking_reason: null,
+      },
+      {
+        check_id: "model_adapter",
+        status: "blocked",
+        observed: "not_selected",
+        required: "evaluated_model_adapter",
+        blocking_reason: "model_adapter_not_selected",
+      },
+      {
+        check_id: "live_relationship_benchmark",
+        status: "blocked",
+        observed: "awaiting_independent_adjudication",
+        required: "adjudicated_pass",
+        blocking_reason: "live_relationship_benchmark_incomplete",
+      },
+      {
+        check_id: "grounded_answer_evaluation",
+        status: "blocked",
+        observed: "not_available",
+        required: "evaluated_pass",
+        blocking_reason: "grounded_answer_evaluation_missing",
+      },
+      {
+        check_id: "human_release",
+        status: "blocked",
+        observed: "not_granted",
+        required: "explicit_human_approval",
+        blocking_reason: "human_release_not_granted",
+      },
+      {
+        check_id: "execution_release",
+        status: "blocked",
+        observed: "disabled",
+        required: "enabled",
+        blocking_reason: "execution_disabled",
+      },
+    ];
+    const manifest = {
+      manifest_id: `manifest-${"b".repeat(64)}`,
+      schema_version: "1.0.0",
+      rule_version: "agent-run-manifest-v1",
+      identity_algorithm: "sha256-canonical-json-v1",
+      status: "blocked",
+      request: {
+        purpose: "evidence_triage",
+        mode: "read_only",
+        requested_output: "grounded_evidence_brief",
+        capabilities: {
+          read_evidence: true,
+          generate_text: true,
+          network_access: false,
+          tool_access: false,
+          external_side_effects: false,
+        },
+      },
+      evidence: {
+        pack_id: evidencePack.pack_id,
+        pack_rule_version: evidencePack.rule_version,
+        pack_status: evidencePack.status,
+        item_count: 0,
+        exclusion_count: 0,
+        source_text_characters: 0,
+        evidence_ids: [],
+      },
+      policy: {
+        policy_version: "agent-authorization-v1",
+        default_decision: "deny",
+        execution_enabled: false,
+        human_release_required: true,
+        evaluated_model_required: true,
+        relationship_benchmark_required: true,
+        grounded_answer_evaluation_required: true,
+        network_access_allowed: false,
+        tool_access_allowed: false,
+        external_side_effects_allowed: false,
+      },
+      authorization: {
+        decision: "blocked",
+        passed_check_count: 2,
+        blocked_check_count: 6,
+        blocking_reasons: checks.flatMap((check) =>
+          check.blocking_reason === null ? [] : [check.blocking_reason],
+        ),
+        checks,
+      },
+      execution: {
+        status: "not_started",
+        agent_model_invoked: false,
+        agent_network_accessed: false,
+        agent_tools_invoked: false,
+        answer_generated: false,
+        agent_side_effects_performed: false,
+      },
+      caveat: "Preflight records policy only and performs no execution.",
+    };
+    const body = { evidence_pack: evidencePack, manifest };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchAgentRunPreflight({
+        query: "dangerous storm",
+        source: "nws",
+        bounds: { west: -10, south: -5, east: 20, north: 30 },
+      }),
+    ).resolves.toEqual(body);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/agent-runs/preflight?q=dangerous+storm&retrieval_limit=20&candidate_limit=100&max_items=8&max_characters_per_item=2000&max_total_characters=12000&active_only=true&source=nws&bbox=-10%2C-5%2C20%2C30",
+      expect.any(Object),
+    );
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({
+          ...body,
+          manifest: {
+            ...manifest,
+            evidence: { ...manifest.evidence, pack_id: `pack-${"f".repeat(64)}` },
+          },
+        }),
+      ),
+    );
+    await expect(fetchAgentRunPreflight({ query: "dangerous storm" })).rejects.toThrow(
+      "manifest is not bound to the returned pack",
     );
   });
 

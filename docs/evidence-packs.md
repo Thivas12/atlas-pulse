@@ -55,5 +55,9 @@ run must be replayed or audited.
 7. Never send credentials or privileged tool instructions through evidence text. AtlasPulse already
    rejects embedded credentials and private targets, but downstream authorization remains separate.
 
+AtlasPulse now exposes that separate boundary through
+[`/v1/agent-runs/preflight`](agent-run-preflight.md). It binds one exact pack into a default-deny
+run manifest but deliberately performs no model or agent execution.
+
 The design rationale and rejected alternatives are recorded in
 [`ADR 0016`](adr/0016-content-addressed-agent-evidence-packs.md).

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Literal
 
+from atlas_pulse.identity import canonical_json_sha256
 from atlas_pulse.retrieval import (
     CitationValidation,
     RankingExplanation,
@@ -155,23 +154,6 @@ def _datetime_json(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-def _canonical_sha256(value: object) -> str:
-    def encode_extra(extra: object) -> str:
-        if isinstance(extra, datetime):
-            return _datetime_json(extra)
-        raise TypeError(f"cannot canonicalize {type(extra).__name__}")
-
-    payload = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-        default=encode_extra,
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
 def _evidence_id(
     *,
     stream_id: str,
@@ -181,7 +163,7 @@ def _evidence_id(
     text_sha256: str,
     citation: CitationValidation,
 ) -> str:
-    digest = _canonical_sha256(
+    digest = canonical_json_sha256(
         {
             "schema_version": EVIDENCE_PACK_SCHEMA_VERSION,
             "identity_algorithm": EVIDENCE_PACK_IDENTITY_ALGORITHM,
@@ -205,7 +187,7 @@ def _pack_identity(
     exclusions: tuple[EvidencePackExclusion, ...],
     source_text_characters: int,
 ) -> str:
-    digest = _canonical_sha256(
+    digest = canonical_json_sha256(
         {
             "schema_version": EVIDENCE_PACK_SCHEMA_VERSION,
             "rule_version": EVIDENCE_PACK_RULE_VERSION,

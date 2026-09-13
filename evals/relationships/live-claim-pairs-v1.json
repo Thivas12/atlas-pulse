@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0.0",
+  "benchmark_id": "live-claim-pairs.v1",
+  "title": "Live cross-source claim-pair benchmark",
+  "description": "A bounded, source-pair-stratified sample of real AtlasPulse evidence edges. Reviewers label each supported predicate from source text without seeing the deployed structured-claims-v1 decision.",
+  "rubric_version": "claim-pair-rubric-v1",
+  "expected_correlation_rule_version": "spatiotemporal-v1",
+  "expected_relationship_rule_version": "structured-claims-v1",
+  "predicates": [
+    "hazard_domain",
+    "evacuation_state",
+    "road_access_state"
+  ],
+  "max_edges_per_source_pair": 10,
+  "parameters": {
+    "radius_km": 50.0,
+    "time_window_minutes": 360,
+    "lookback_hours": 72,
+    "candidate_edge_limit": 2000,
+    "incident_limit": 100,
+    "active_only": false
+  }
+}

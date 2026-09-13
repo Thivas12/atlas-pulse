@@ -96,14 +96,53 @@ count. The ordinary scorer consumes this pool and surfaces the provenance in bot
 Markdown. Software can verify artifact identity and distinct names; it cannot prove that the
 humans worked independently.
 
+## Gold-blind candidate sandbox
+
+Candidate evaluation is a separate, non-promoting stage. It accepts only a final schema `1.1.0`
+pool with independent adjudication provenance. `candidate-task` then emits a content-addressed
+JSON task containing the exact reviewer-visible evidence while excluding:
+
+- every human gold label and rationale;
+- reviewer and adjudicator identities;
+- the captured deployed prediction, claims, bases, and rationales.
+
+The companion CSV contains only the task/case identity, predicate, source pair, and blank
+`predicted_label` and `latency_ms` cells. An external offline runner reads the JSON, writes exactly
+one of the three rubric labels and one finite non-negative observed latency for every case, and
+never needs access to the gold pool.
+
+Import requires a strict candidate definition. A reproducible identity includes the model's exact
+40- or 64-hex source revision, the local model artifact SHA-256, adapter version, input-template
+SHA-256, runtime and version, and all scalar inference parameters. A repository name plus a
+floating `main` or `latest` revision is intentionally invalid.
+
+`candidate-score` verifies the task against the complete capture, protects every CSV identity
+field, rejects missing/duplicate/unknown cases, content-addresses the prediction batch, and then
+scores the captured deployed rule and candidate over the same adjudicated gold. Its JSON and
+Markdown retain:
+
+- paired baseline/candidate metrics and candidate-minus-baseline deltas;
+- per-label results plus predicate and source-pair slices;
+- both gold-label confusion matrices and a baseline-to-candidate transition matrix;
+- exact improvements, regressions, unchanged errors, and changed-but-still-wrong cases;
+- descriptive candidate mean, p50, p95, maximum, and total latency.
+
+Every report is `blocked` from promotion. No thresholds are checked in yet, deployed-rule
+per-case latency is not measured on the same basis, and an accountable human still must approve a
+new relationship rule version after regression verification. The sandbox never executes a model,
+rewrites the gold pool, or changes production annotations.
+
 ## Promotion boundary
 
 No quality floor is checked in before a representative pool completes independent review and
-adjudication. A future local NLI or LLM proposer must run over the same evidence cases and preserve
-model, prompt, threshold, and runtime identities. It may earn a new annotation version only if the
-adjudicated comparison shows useful recall gains without unacceptable false decisiveness, latency,
-or source/predicate regressions. It may never rewrite the measured graph.
+adjudication. A local NLI or LLM proposer must run through the gold-blind sandbox with immutable
+model, artifact, template, adapter, parameter, and runtime identities. It may earn a new
+annotation version only after an explicit policy shows useful recall gains without unacceptable
+false decisiveness, latency, or source/predicate regressions and a human approves the change. It
+may never rewrite the measured graph.
 
 See [ADR 0014](adr/0014-human-reviewed-claim-pair-benchmark.md) for the benchmark decision,
-[ADR 0015](adr/0015-independent-review-adjudication.md) for gold-label finalization, and
+[ADR 0015](adr/0015-independent-review-adjudication.md) for gold-label finalization,
+[ADR 0019](adr/0019-gold-blind-relationship-candidate-sandbox.md) for candidate isolation and the
+non-promotion boundary, and
 [`evals/relationships/README.md`](../evals/relationships/README.md) for commands and the rubric.

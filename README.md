@@ -7,7 +7,7 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — longitudinal evidence quality and governed agent preflight.** Independent workers
+> **Current milestone — longitudinal evidence quality and governed model/agent release.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
@@ -31,8 +31,12 @@ component can run without a paid API key.
 > labels, and reports per-label precision/recall/F1 with abstention and predicate/source slices.
 > Two exact first-pass reviews can now be compared with observed agreement and Cohen's kappa;
 > only disagreements enter a separately protected, system-blind adjudication sheet, and the final
-> gold pool retains both review hashes plus the third-person decision provenance. Before any
-> generated answer or agent action is introduced, `/v1/evidence-packs` now converts deployed search
+> gold pool retains both review hashes plus the third-person decision provenance. That pool can
+> now produce a content-addressed, gold-blind candidate task and protected prediction sheet.
+> Strict model/artifact/template/runtime identities bind each imported batch; paired reports expose
+> gains, regressions, abstention shifts, slices, and descriptive latency while remaining explicitly
+> blocked from production promotion. Before any generated answer or agent action is introduced,
+> `/v1/evidence-packs` now converts deployed search
 > results into deterministic, content-addressed JSON. It preserves retrieval order and provenance,
 > admits only structurally traceable citations, applies hard item and source-text character budgets,
 > records every exclusion, and marks all included text as untrusted data. A second no-execution
@@ -54,7 +58,7 @@ component can run without a paid API key.
 | Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
 | Transparent correlation | Versioned cross-source rules, exact geography distance/time evidence, stable graph IDs, hard result caps, and explicit non-causal semantics |
 | Claim relationships | Stable source-field claims, conservative corroboration/contradiction rules, explicit abstention, immutable parent-edge references |
-| Relationship evaluation | Versioned live edge sampling, dual prediction-blind reviews, Cohen's kappa, disagreement-only adjudication, exact provenance, abstention and slice metrics |
+| Relationship evaluation | Dual prediction-blind reviews, adjudicated gold, content-addressed model tasks/batches, paired regressions, abstention/slice metrics, and a closed promotion boundary |
 | Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable evidence tie-breaks |
 | Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, global-union campaign trajectories, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
@@ -100,9 +104,10 @@ flowchart TD
     end
 
     subgraph GOVERN["04 · GOVERN / RELEASE CONTROL"]
-        direction LR
+        direction TB
         RETRIEVAL_REVIEW["Longitudinal retrieval campaign"]:::review
         RELATION_REVIEW["Dual semantic review"]:::review
+        CANDIDATE["Gold-blind model sandbox"]:::sandbox
         PREFLIGHT["Default-deny preflight"]:::gate
         MANIFEST["Immutable run manifest"]:::gate
         HUMAN["Explicit human release"]:::human
@@ -118,7 +123,7 @@ flowchart TD
     STREAM --> PROJECTOR
     STREAM --> INDEXER
     SEARCH --> RETRIEVAL_REVIEW --> PREFLIGHT
-    CLAIMS --> RELATION_REVIEW --> PREFLIGHT
+    CLAIMS --> RELATION_REVIEW --> CANDIDATE --> PREFLIGHT
     PACK --> PREFLIGHT --> MANIFEST
     STREAM --> API
     POSTGIS --> API
@@ -137,6 +142,7 @@ flowchart TD
     classDef state fill:#102a24,stroke:#34d399,color:#d1fae5,stroke-width:1px
     classDef intel fill:#211a3a,stroke:#a78bfa,color:#ede9fe,stroke-width:1px
     classDef review fill:#2d2414,stroke:#fbbf24,color:#fef3c7,stroke-width:1px
+    classDef sandbox fill:#2a1838,stroke:#c084fc,color:#f3e8ff,stroke-width:1.5px
     classDef gate fill:#3a1d24,stroke:#fb7185,color:#ffe4e6,stroke-width:1.5px
     classDef human fill:#352a12,stroke:#facc15,color:#fef9c3,stroke-width:1.5px
     classDef surface fill:#172554,stroke:#60a5fa,color:#dbeafe,stroke-width:1px
@@ -272,10 +278,13 @@ uv run atlas-pulse-evaluate-relationships capture \
   --judgments-output artifacts/relationship-evaluation/judgments.csv
 ```
 
-The complete prediction-blind rubric, strict dual review, adjudication, exact reuse, and scoring
-workflow is in [`evals/relationships/README.md`](evals/relationships/README.md). No live accuracy
-claim or promotion threshold exists until a representative pool completes independent review and
-adjudication.
+The complete prediction-blind rubric, strict dual review, adjudication, exact reuse, deployed-rule
+score, and gold-blind candidate workflow is in
+[`evals/relationships/README.md`](evals/relationships/README.md). After adjudication, the CLI can
+export model-visible evidence without gold or deployed labels, then import an externally executed
+candidate's complete predictions into a content-addressed paired comparison. Every candidate
+report remains blocked from promotion until representative evidence, an explicit quality/latency
+policy, regression verification, and human approval exist.
 
 ## Develop without rebuilding containers
 
@@ -472,6 +481,10 @@ deterministic for retained entries rather than an indefinite event archive.
 - Dense and lexical scores are never added directly. Deterministic RRF combines ranks, and the
   response exposes evidence tie-breakers and hard candidate caps. A reviewed baseline must justify
   any future learned reranker.
+- Relationship candidate tasks require independently adjudicated gold but expose only exact
+  reviewer-visible evidence. Prediction imports bind every row to that task and an immutable
+  model/artifact/template/runtime identity; comparisons remain non-promoting and never change the
+  production relationship rule.
 - Agent preflight evaluates every policy gate even when evidence is unavailable, binds the exact
   pack identity into its manifest, and can only return `blocked` under the v1 policy. It never
   starts the proposed agent, invokes a generative agent model, grants agent network/tool access,
@@ -507,7 +520,9 @@ agent context, and
 [ADR 0017](docs/adr/0017-default-deny-agent-run-preflight.md) for pack-bound authorization,
 immutable manifests, and the zero-execution gate, and
 [ADR 0018](docs/adr/0018-content-addressed-retrieval-campaigns.md) for chronological reviewed
-campaigns, global-union scoring, and baseline-relative trajectories.
+campaigns, global-union scoring, and baseline-relative trajectories, and
+[ADR 0019](docs/adr/0019-gold-blind-relationship-candidate-sandbox.md) for gold-blind candidate
+tasks, immutable model identities, paired comparisons, and the closed promotion boundary.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -529,7 +544,7 @@ credential solely for transaction metering.
 | Sparse/vector retrieval | PostgreSQL full-text search + [pgvector](https://github.com/pgvector/pgvector) | Open source; self-hosted |
 | Retrieval evaluation | Pydantic, Python CSV, pytest, human judgments | Open source/local; no judge API |
 | Claim relationships | Versioned Python rules over source-backed fields | Open source/local; no model or API |
-| Relationship evaluation | Pydantic, Python CSV, pytest, human labels | Open source/local; no judge API |
+| Relationship evaluation | Pydantic, Python CSV, pytest, human gold, external local candidate outputs | Open source/local; no judge API or bundled model |
 | Agent governance | Versioned Python policy checks + canonical JSON identities | Open source/local; no model or agent framework |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
@@ -544,12 +559,12 @@ credential solely for transaction metering.
 1. Populate the first multi-capture campaign after deployment and use its globally pooled slice
    trajectories to decide whether a free local cross-encoder earns its added latency and
    complexity.
-2. Run the live claim-pair benchmark through two independent reviews and adjudication, then
-   evaluate a free local NLI/LLM proposer against `structured-claims-v1` before it can add a new
-   annotation version.
-3. Select a free local model adapter, add tokenizer-specific budgets, and build grounded-answer
-   faithfulness/citation evaluation; keep the preflight blocked until those results justify a new
-   policy version.
+2. Run the live claim-pair benchmark through two independent reviews and adjudication, select a
+   revision-pinned free local NLI candidate, and populate the new gold-blind paired report before
+   proposing any annotation version.
+3. Select a separate free local grounded-answer model adapter, add tokenizer-specific budgets, and
+   build faithfulness/citation evaluation; keep the preflight blocked until those results justify
+   a new policy version.
 4. Add explicit approval identity, expiry/revocation, and an append-only signed run ledger before
    enabling evidence triage, impact assessment, or forecasting agents.
 5. Add agent trajectory scoring, drift monitoring, and a fully free deployment path.

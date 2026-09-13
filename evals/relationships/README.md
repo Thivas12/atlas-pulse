@@ -147,3 +147,66 @@ flags stay visible and must accompany any result. Do not set promotion threshold
 representative pool has completed the independent-review and adjudication workflow. See
 [`docs/adr/0015-independent-review-adjudication.md`](../../docs/adr/0015-independent-review-adjudication.md)
 for the provenance and blinding decision.
+
+## 5. Evaluate an external local candidate without exposing gold
+
+Create a model-facing task only after adjudication:
+
+```bash
+uv run atlas-pulse-evaluate-relationships candidate-task \
+  --pool artifacts/relationship-evaluation/gold-pool.json \
+  --output artifacts/relationship-evaluation/candidate-task.json \
+  --predictions-output artifacts/relationship-evaluation/candidate-predictions.csv
+```
+
+`candidate-task.json` contains the predicate, exact two source documents, content hashes, and
+measured edge context required for inference. It contains no gold label, human rationale,
+reviewer identity, deployed label, extracted claim, rule basis, or system rationale. The CSV is a
+protected output template. An external offline runner must fill `predicted_label` and
+`latency_ms` for every row without changing the task, case, predicate, or source-pair columns.
+
+Record the exact candidate system in a separate JSON file:
+
+```jsonc
+{
+  "schema_version": "1.0.0",
+  "candidate_id": "your-local-candidate-v1",
+  "model_id": "publisher/model-name",
+  "model_revision": "<exact 40-or-64-character lowercase hexadecimal revision>",
+  "model_artifact_sha256": "<sha256 of the exact local model artifact>",
+  "adapter_version": "relationship-candidate-adapter-v1",
+  "input_template_sha256": "<sha256 of the exact input template>",
+  "runtime": "onnxruntime",
+  "runtime_version": "<exact installed version>",
+  "parameters": {
+    "max_length": 512,
+    "abstention_threshold": 0.7,
+    "offline": true
+  }
+}
+```
+
+The revision cannot be a floating branch such as `main` or `latest`. Hash the bytes actually run,
+including any quantized or converted model, and version the adapter/template that maps each
+predicate and evidence pair into model input.
+
+Import and compare the predictions:
+
+```bash
+uv run atlas-pulse-evaluate-relationships candidate-score \
+  --pool artifacts/relationship-evaluation/gold-pool.json \
+  --task artifacts/relationship-evaluation/candidate-task.json \
+  --predictions artifacts/relationship-evaluation/candidate-predictions.csv \
+  --candidate-definition artifacts/relationship-evaluation/candidate-system.json \
+  --output-batch artifacts/relationship-evaluation/candidate-batch.json \
+  --output-json artifacts/relationship-evaluation/candidate-report.json \
+  --output-markdown artifacts/relationship-evaluation/candidate-report.md
+```
+
+The comparison reports baseline and candidate classification/abstention metrics, all predicate and
+source-pair slices, both confusion matrices, baseline-to-candidate transitions, exact paired gains
+and regressions, and descriptive candidate latency. It always reports promotion as `blocked`:
+there is no checked-in quality policy, the rule has no equivalent isolated per-case timing, and a
+new version still needs regression verification plus explicit human approval. Running this command
+does not execute a model or modify the gold pool or production annotations. See
+[`docs/adr/0019-gold-blind-relationship-candidate-sandbox.md`](../../docs/adr/0019-gold-blind-relationship-candidate-sandbox.md).

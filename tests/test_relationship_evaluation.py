@@ -19,25 +19,38 @@ from atlas_pulse.projections import CorrelationQuery, SignalPage, SignalQuery
 from atlas_pulse.projections.base import SourceName
 from atlas_pulse.relationship_evaluation import (
     ADJUDICATION_COLUMNS,
+    CANDIDATE_PREDICTION_COLUMNS,
     JUDGMENT_COLUMNS,
+    CandidateEvaluationTask,
+    CandidatePredictionBatch,
+    CandidateSystemDefinition,
     CapturedClaim,
     EventEvidence,
     RelationshipBenchmarkDefinition,
+    RelationshipCandidateComparisonReport,
     RelationshipCaptureParameters,
     RelationshipCase,
     RelationshipPool,
     SystemPrediction,
+    apply_candidate_predictions,
     apply_relationship_adjudication,
     apply_relationship_judgments,
+    build_candidate_evaluation_task,
+    build_candidate_prediction_sheet,
     build_relationship_adjudication_sheet,
     build_relationship_judgment_sheet,
+    calculate_relationship_scores,
+    candidate_prediction_batch_sha256,
+    candidate_task_sha256,
     capture_relationship_pool,
     compare_independent_reviews,
     relationship_capture_sha256,
     relationship_case_id,
     render_adjudication_markdown,
+    render_candidate_comparison_markdown,
     render_relationship_markdown,
     render_review_agreement_markdown,
+    score_relationship_candidate,
     score_relationship_pool,
 )
 from atlas_pulse.relationship_evaluation.cli import run_cli
@@ -969,3 +982,306 @@ def test_cli_agreement_adjudication_and_final_score(
     )
     assert "must not replace input artifacts" in capsys.readouterr().err
     assert first_path.read_text(encoding="utf-8") == original_first
+
+
+def _candidate_gold_pool() -> RelationshipPool:
+    pool = asyncio.run(_captured_pool())
+    first = _reviewed_pool(pool, reviewer="Alice Reviewer")
+    second = _reviewed_pool(pool, reviewer="Bob Reviewer", introduce_error=True)
+    final_pool, _ = apply_relationship_adjudication(
+        first,
+        second,
+        _completed_adjudication_sheet(
+            first,
+            second,
+            label="insufficient_evidence",
+            rationale="The thermal record alone does not establish the warning's claim scope.",
+        ),
+        adjudicator="Casey Adjudicator",
+        adjudicated_at=datetime(2026, 9, 13, 14, tzinfo=UTC),
+    )
+    return final_pool
+
+
+def _candidate_system() -> CandidateSystemDefinition:
+    return CandidateSystemDefinition(
+        candidate_id="local-nli-sandbox-v1",
+        model_id="example/revision-pinned-local-nli",
+        model_revision="a" * 40,
+        model_artifact_sha256="b" * 64,
+        adapter_version="relationship-nli-adapter-v1",
+        input_template_sha256="c" * 64,
+        runtime="onnxruntime",
+        runtime_version="1.23.0",
+        parameters={"max_length": 512, "abstention_threshold": 0.72, "offline": True},
+    )
+
+
+def _write_candidate_rows(rows: list[dict[str, str]]) -> str:
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        output,
+        fieldnames=CANDIDATE_PREDICTION_COLUMNS,
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+def _completed_candidate_sheet(task: CandidateEvaluationTask) -> str:
+    rows = list(csv.DictReader(io.StringIO(build_candidate_prediction_sheet(task).content)))
+    improvement = next(
+        row
+        for row in rows
+        if row["source_pair"] == "firms+nws" and row["predicate"] == "hazard_domain"
+    )
+    regression = next(row for row in rows if row["case_id"] != improvement["case_id"])
+    for index, row in enumerate(rows):
+        row["predicted_label"] = "insufficient_evidence"
+        row["latency_ms"] = str(10 + index)
+    regression["predicted_label"] = "contradicts"
+    return _write_candidate_rows(rows)
+
+
+def test_candidate_task_is_deterministic_gold_blind_and_adjudication_gated() -> None:
+    pool = _candidate_gold_pool()
+    task = build_candidate_evaluation_task(pool)
+
+    assert task == build_candidate_evaluation_task(pool)
+    assert task.task_sha256 == candidate_task_sha256(task)
+    assert task.task_id == f"candidate-task-{task.task_sha256[:20]}"
+    assert task.case_count == len(pool.cases)
+    assert [case.case_id for case in task.cases] == sorted(case.case_id for case in pool.cases)
+    serialized = task.model_dump_json()
+    assert "gold_label" not in serialized
+    assert "system_prediction" not in serialized
+    assert "rationale" not in serialized
+    assert "Alice Reviewer" not in serialized
+    assert "Bob Reviewer" not in serialized
+    assert "Casey Adjudicator" not in serialized
+
+    sheet = build_candidate_prediction_sheet(task)
+    rows = list(csv.DictReader(io.StringIO(sheet.content)))
+    assert sheet.pending_count == task.case_count
+    assert tuple(rows[0]) == CANDIDATE_PREDICTION_COLUMNS
+    assert all(row["predicted_label"] == "" and row["latency_ms"] == "" for row in rows)
+
+    unadjudicated = _reviewed_pool(
+        asyncio.run(_captured_pool()),
+        reviewer="One Reviewer",
+    )
+    with pytest.raises(ValueError, match="independently adjudicated"):
+        build_candidate_evaluation_task(unadjudicated)
+
+    changed = task.model_dump(mode="python")
+    changed["task_sha256"] = "0" * 64
+    with pytest.raises(ValidationError, match="task_sha256"):
+        CandidateEvaluationTask.model_validate(changed)
+
+
+def test_candidate_predictions_and_paired_score_retain_tradeoffs_without_mutation() -> None:
+    pool = _candidate_gold_pool()
+    original_pool = pool.model_dump_json()
+    task = build_candidate_evaluation_task(pool)
+    generated_at = datetime(2026, 9, 13, 15, tzinfo=UTC)
+    batch = apply_candidate_predictions(
+        task,
+        _completed_candidate_sheet(task),
+        system=_candidate_system(),
+        generated_at=generated_at,
+    )
+
+    assert batch.generated_at == generated_at
+    assert batch.batch_sha256 == candidate_prediction_batch_sha256(batch)
+    assert batch.batch_id == f"candidate-batch-{batch.batch_sha256[:20]}"
+    report = score_relationship_candidate(
+        pool,
+        task,
+        batch,
+        generated_at=datetime(2026, 9, 13, 16, tzinfo=UTC),
+    )
+
+    assert report.promotion_status == "blocked"
+    assert len(report.promotion_blockers) == 3
+    assert report.overall.baseline.accuracy == pytest.approx(5 / 6)
+    assert report.overall.candidate.accuracy == pytest.approx(5 / 6)
+    assert report.overall.delta.accuracy == 0
+    assert report.paired_outcomes.improvements == 1
+    assert report.paired_outcomes.regressions == 1
+    assert report.paired_outcomes.unchanged_correct == 4
+    assert report.paired_outcomes.changed_incorrect == 0
+    assert report.paired_outcomes.label_disagreements == 2
+    assert report.prediction_transition_matrix["corroborates"]["insufficient_evidence"] == 1
+    assert report.prediction_transition_matrix["insufficient_evidence"]["contradicts"] == 1
+    assert report.candidate_latency.mean_ms == pytest.approx(12.5)
+    assert report.candidate_latency.p50_ms == pytest.approx(12.5)
+    assert report.candidate_latency.p95_ms == pytest.approx(14.75)
+    assert report.adjudication == pool.adjudication
+    assert pool.model_dump_json() == original_pool
+
+    markdown = render_candidate_comparison_markdown(report)
+    assert "Promotion status: BLOCKED" in markdown
+    assert "1 | 1 | 4" in markdown
+    assert "immutable revision" in markdown
+    assert "Prediction transitions" in markdown
+    assert "Promotion blockers" in markdown
+
+
+def test_candidate_import_fails_closed_on_identity_completeness_and_latency() -> None:
+    task = build_candidate_evaluation_task(_candidate_gold_pool())
+    rows = list(csv.DictReader(io.StringIO(_completed_candidate_sheet(task))))
+    system = _candidate_system()
+
+    tampered = [dict(row) for row in rows]
+    tampered[0]["task_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="changed protected fields"):
+        apply_candidate_predictions(task, _write_candidate_rows(tampered), system=system)
+
+    invalid_label = [dict(row) for row in rows]
+    invalid_label[0]["predicted_label"] = "maybe"
+    with pytest.raises(ValueError, match="requires one of"):
+        apply_candidate_predictions(task, _write_candidate_rows(invalid_label), system=system)
+
+    invalid_latency = [dict(row) for row in rows]
+    invalid_latency[0]["latency_ms"] = "nan"
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        apply_candidate_predictions(task, _write_candidate_rows(invalid_latency), system=system)
+
+    with pytest.raises(ValueError, match="missing 1 case"):
+        apply_candidate_predictions(task, _write_candidate_rows(rows[:-1]), system=system)
+    with pytest.raises(ValueError, match="duplicates"):
+        apply_candidate_predictions(task, _write_candidate_rows([*rows, rows[0]]), system=system)
+
+    with pytest.raises(ValidationError, match="model_revision"):
+        CandidateSystemDefinition.model_validate(
+            {**system.model_dump(mode="python"), "model_revision": "main"}
+        )
+    with pytest.raises(ValidationError, match="must be finite"):
+        CandidateSystemDefinition.model_validate(
+            {**system.model_dump(mode="python"), "parameters": {"threshold": float("nan")}}
+        )
+
+
+def test_candidate_score_rejects_task_drift_and_incomplete_prediction_maps() -> None:
+    pool = _candidate_gold_pool()
+    task = build_candidate_evaluation_task(pool)
+    batch = apply_candidate_predictions(
+        task,
+        _completed_candidate_sheet(task),
+        system=_candidate_system(),
+    )
+    drifted_data = pool.model_dump(mode="python")
+    drifted_data["capture_latency_ms"] += 1
+    drifted_pool = RelationshipPool.model_validate(drifted_data)
+    drifted_task = build_candidate_evaluation_task(drifted_pool)
+    with pytest.raises(ValueError, match="does not match the exact adjudicated pool"):
+        score_relationship_candidate(pool, drifted_task, batch)
+
+    predictions = {case.case_id: case.system_prediction.label for case in pool.cases}
+    predictions.pop(next(iter(predictions)))
+    with pytest.raises(ValueError, match="missing 1 case"):
+        calculate_relationship_scores(pool.cases, predictions)
+    complete = {case.case_id: case.system_prediction.label for case in pool.cases}
+    complete["pair-00000000000000000000"] = "insufficient_evidence"
+    with pytest.raises(ValueError, match="unknown case"):
+        calculate_relationship_scores(pool.cases, complete)
+
+    changed = batch.model_dump(mode="python")
+    changed["batch_sha256"] = "0" * 64
+    with pytest.raises(ValidationError, match="batch_sha256"):
+        CandidatePredictionBatch.model_validate(changed)
+
+
+def test_cli_candidate_task_score_and_input_protection(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pool = _candidate_gold_pool()
+    pool_path = tmp_path / "gold-pool.json"
+    pool_path.write_text(pool.model_dump_json(indent=2), encoding="utf-8")
+    task_path = tmp_path / "candidate-task.json"
+    predictions_path = tmp_path / "candidate-predictions.csv"
+
+    assert (
+        run_cli(
+            [
+                "candidate-task",
+                "--pool",
+                str(pool_path),
+                "--output",
+                str(task_path),
+                "--predictions-output",
+                str(predictions_path),
+            ]
+        )
+        == 0
+    )
+    assert "gold-blind" in capsys.readouterr().out
+    task = CandidateEvaluationTask.model_validate_json(task_path.read_text(encoding="utf-8"))
+    predictions_path.write_text(_completed_candidate_sheet(task), encoding="utf-8")
+    definition_path = tmp_path / "candidate-definition.json"
+    definition_path.write_text(_candidate_system().model_dump_json(indent=2), encoding="utf-8")
+    batch_path = tmp_path / "candidate-batch.json"
+    report_path = tmp_path / "candidate-report.json"
+    markdown_path = tmp_path / "candidate-report.md"
+
+    assert (
+        run_cli(
+            [
+                "candidate-score",
+                "--pool",
+                str(pool_path),
+                "--task",
+                str(task_path),
+                "--predictions",
+                str(predictions_path),
+                "--candidate-definition",
+                str(definition_path),
+                "--output-batch",
+                str(batch_path),
+                "--output-json",
+                str(report_path),
+                "--output-markdown",
+                str(markdown_path),
+            ]
+        )
+        == 0
+    )
+    assert "blocked comparison" in capsys.readouterr().out
+    assert (
+        CandidatePredictionBatch.model_validate_json(batch_path.read_text(encoding="utf-8")).system
+        == _candidate_system()
+    )
+    comparison = RelationshipCandidateComparisonReport.model_validate_json(
+        report_path.read_text(encoding="utf-8")
+    )
+    assert comparison.promotion_status == "blocked"
+    assert "Promotion status: BLOCKED" in markdown_path.read_text(encoding="utf-8")
+
+    original_pool = pool_path.read_text(encoding="utf-8")
+    assert (
+        run_cli(
+            [
+                "candidate-score",
+                "--pool",
+                str(pool_path),
+                "--task",
+                str(task_path),
+                "--predictions",
+                str(predictions_path),
+                "--candidate-definition",
+                str(definition_path),
+                "--output-batch",
+                str(pool_path),
+                "--output-json",
+                str(report_path),
+                "--output-markdown",
+                str(markdown_path),
+                "--force",
+            ]
+        )
+        == 2
+    )
+    assert "must not replace input artifacts" in capsys.readouterr().err
+    assert pool_path.read_text(encoding="utf-8") == original_pool

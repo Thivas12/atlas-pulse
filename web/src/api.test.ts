@@ -79,6 +79,9 @@ describe("AtlasPulse API client", () => {
       rule_version: "spatiotemporal-v1",
       caveat:
         "Edges prove bounded spatial and temporal co-occurrence only; they do not establish causation, corroboration, or a shared real-world incident.",
+      relationship_rule_version: "structured-claims-v1",
+      relationship_caveat:
+        "Annotations compare normalized source claims attached to measured edges. Corroboration is agreement at the named predicate and scope, not proof of truth or a shared incident; contradiction is a review flag, not adjudication. Insufficient evidence is not disagreement.",
       parameters: {
         radius_km: 50,
         time_window_minutes: 360,

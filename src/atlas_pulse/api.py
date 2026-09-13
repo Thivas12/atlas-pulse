@@ -18,6 +18,14 @@ from atlas_pulse.correlation import (
 )
 from atlas_pulse.projections import CorrelationQuery, GeoBounds, SignalQuery, SignalStore
 from atlas_pulse.projections.base import SourceName
+from atlas_pulse.relationships import (
+    RELATIONSHIP_CAVEAT,
+    RELATIONSHIP_RULE_VERSION,
+    EvidenceClaim,
+    EvidenceRelationship,
+    RelationshipAnalysis,
+    analyze_incident,
+)
 from atlas_pulse.retrieval import GeoRadius, RankingMode, SearchQuery, SearchResult, SearchService
 from atlas_pulse.streams.base import EventBus
 
@@ -93,6 +101,55 @@ class EvidenceEdgeResponse(BaseModel):
     rule_version: str
 
 
+class EvidenceClaimResponse(BaseModel):
+    """One normalized claim with exact field-level source provenance."""
+
+    claim_id: str
+    node_id: str
+    predicate: Literal["hazard_domain", "evacuation_state", "road_access_state"]
+    value: str
+    scope: Literal["measured_edge_area", "named_place"]
+    scope_value: str | None
+    evidence_field: str
+    evidence_excerpt: str
+    qualifier: str | None
+    rule_version: str
+
+
+class EvidenceRelationshipResponse(BaseModel):
+    """One versioned comparison between claims attached to a measured edge."""
+
+    relationship_id: str
+    edge_id: str
+    from_node_id: str
+    to_node_id: str
+    label: Literal["corroborates", "contradicts", "insufficient_evidence"]
+    predicate: Literal["hazard_domain", "evacuation_state", "road_access_state"] | None
+    normalized_value: str | None
+    from_claim_id: str | None
+    to_claim_id: str | None
+    basis: Literal[
+        "exact_normalized_agreement",
+        "mutually_exclusive_structured_values",
+        "no_decisive_comparison",
+    ]
+    rationale: str
+    rule_version: str
+
+
+class RelationshipAnalysisResponse(BaseModel):
+    """Conservative claim annotations that remain separate from graph measurements."""
+
+    claims: tuple[EvidenceClaimResponse, ...]
+    relationships: tuple[EvidenceRelationshipResponse, ...]
+    analyzed_edge_count: int
+    corroboration_count: int
+    contradiction_count: int
+    insufficient_evidence_count: int
+    rule_version: str
+    caveat: str
+
+
 class IncidentCandidateResponse(BaseModel):
     """A reproducible graph component that remains explicitly unverified."""
 
@@ -108,6 +165,7 @@ class IncidentCandidateResponse(BaseModel):
     time_span_minutes: float
     nodes: tuple[EvidenceNodeResponse, ...]
     edges: tuple[EvidenceEdgeResponse, ...]
+    relationship_analysis: RelationshipAnalysisResponse
     rule_version: str
     caveat: str
 
@@ -134,6 +192,8 @@ class IncidentsResponse(BaseModel):
     candidate_edges_truncated: bool
     rule_version: str = CORRELATION_RULE_VERSION
     caveat: str = CORRELATION_CAVEAT
+    relationship_rule_version: str = RELATIONSHIP_RULE_VERSION
+    relationship_caveat: str = RELATIONSHIP_CAVEAT
     parameters: CorrelationParametersResponse
 
 
@@ -199,6 +259,55 @@ class SearchResponse(BaseModel):
     parameters: SearchParametersResponse
 
 
+def _claim_response(claim: EvidenceClaim) -> EvidenceClaimResponse:
+    return EvidenceClaimResponse(
+        claim_id=claim.claim_id,
+        node_id=claim.node_id,
+        predicate=claim.predicate,
+        value=claim.value,
+        scope=claim.scope,
+        scope_value=claim.scope_value,
+        evidence_field=claim.evidence_field,
+        evidence_excerpt=claim.evidence_excerpt,
+        qualifier=claim.qualifier,
+        rule_version=claim.rule_version,
+    )
+
+
+def _relationship_response(
+    relationship: EvidenceRelationship,
+) -> EvidenceRelationshipResponse:
+    return EvidenceRelationshipResponse(
+        relationship_id=relationship.relationship_id,
+        edge_id=relationship.edge_id,
+        from_node_id=relationship.from_node_id,
+        to_node_id=relationship.to_node_id,
+        label=relationship.label,
+        predicate=relationship.predicate,
+        normalized_value=relationship.normalized_value,
+        from_claim_id=relationship.from_claim_id,
+        to_claim_id=relationship.to_claim_id,
+        basis=relationship.basis,
+        rationale=relationship.rationale,
+        rule_version=relationship.rule_version,
+    )
+
+
+def _analysis_response(analysis: RelationshipAnalysis) -> RelationshipAnalysisResponse:
+    return RelationshipAnalysisResponse(
+        claims=tuple(_claim_response(claim) for claim in analysis.claims),
+        relationships=tuple(
+            _relationship_response(relationship) for relationship in analysis.relationships
+        ),
+        analyzed_edge_count=analysis.analyzed_edge_count,
+        corroboration_count=analysis.corroboration_count,
+        contradiction_count=analysis.contradiction_count,
+        insufficient_evidence_count=analysis.insufficient_evidence_count,
+        rule_version=analysis.rule_version,
+        caveat=analysis.caveat,
+    )
+
+
 def _incident_response(incident: IncidentCandidate) -> IncidentCandidateResponse:
     center = (
         IncidentCenterResponse(
@@ -242,6 +351,7 @@ def _incident_response(incident: IncidentCandidate) -> IncidentCandidateResponse
             )
             for edge in incident.edges
         ),
+        relationship_analysis=_analysis_response(analyze_incident(incident)),
         rule_version=incident.rule_version,
         caveat=incident.caveat,
     )

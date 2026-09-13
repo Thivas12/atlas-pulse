@@ -5,7 +5,7 @@ import { makeIncident } from "../test/fixtures";
 import { IncidentDetail } from "./IncidentDetail";
 
 describe("IncidentDetail", () => {
-  it("shows source nodes, measured edges, and the non-causal boundary", async () => {
+  it("shows measured edges, claim provenance, and both safety boundaries", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     render(<IncidentDetail incident={makeIncident()} onClose={onClose} />);
@@ -14,6 +14,14 @@ describe("IncidentDetail", () => {
     expect(within(detail).getByText("2 nodes / 1 edge")).toBeInTheDocument();
     expect(within(detail).getByText("7.75 km")).toBeInTheDocument();
     expect(within(detail).getByText("7.75 km · 5.0 min")).toBeInTheDocument();
+    expect(within(detail).getByText("Claim relationships")).toBeInTheDocument();
+    expect(within(detail).getByText("0 corroborating")).toBeInTheDocument();
+    expect(within(detail).getByText("0 conflicting")).toBeInTheDocument();
+    expect(within(detail).getByText("1 unresolved")).toBeInTheDocument();
+    expect(within(detail).getByText("No decisive claim pair")).toBeInTheDocument();
+    expect(within(detail).getByText("hazard domain · fire_related")).toBeInTheDocument();
+    expect(within(detail).getByText(/firms:fire-test/)).toHaveTextContent("event_type");
+    expect(within(detail).getByText(/not proof of truth/)).toBeInTheDocument();
     expect(within(detail).getByText(/do not establish causation/)).toBeInTheDocument();
     expect(within(detail).getAllByRole("link", { name: /Open source evidence/ })).toHaveLength(2);
     await user.click(within(detail).getByRole("button", { name: "Close details" }));

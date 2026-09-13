@@ -389,11 +389,28 @@ async def test_incidents_returns_a_typed_auditable_evidence_graph() -> None:
     assert body["total_incidents"] == 1
     assert body["rule_version"] == "spatiotemporal-v1"
     assert body["caveat"] == CORRELATION_CAVEAT
+    assert body["relationship_rule_version"] == "structured-claims-v1"
+    assert "not proof of truth" in body["relationship_caveat"]
     assert body["items"][0]["sources"] == ["firms", "gdelt"]
     assert body["items"][0]["node_count"] == 2
     assert body["items"][0]["edge_count"] == 1
     assert body["items"][0]["edges"][0]["distance_km"] == 4.125
     assert body["items"][0]["edges"][0]["relation"] == "spatiotemporal_cooccurrence"
+    analysis = body["items"][0]["relationship_analysis"]
+    assert analysis["rule_version"] == "structured-claims-v1"
+    assert analysis["analyzed_edge_count"] == 1
+    assert analysis["corroboration_count"] == 0
+    assert analysis["contradiction_count"] == 0
+    assert analysis["insufficient_evidence_count"] == 1
+    assert analysis["relationships"][0]["label"] == "insufficient_evidence"
+    assert {claim["value"] for claim in analysis["claims"]} == {
+        "fire_related",
+        "material_conflict",
+    }
+    assert {claim["node_id"] for claim in analysis["claims"]} == {
+        "firms:fire-1",
+        "gdelt:conflict-1",
+    }
     assert body["parameters"] == {
         "radius_km": 25,
         "time_window_minutes": 90,

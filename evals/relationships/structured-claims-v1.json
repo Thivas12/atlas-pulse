@@ -1,0 +1,177 @@
+{
+  "schema_version": "1.0.0",
+  "dataset_id": "structured-claims-contract.v1",
+  "rule_version": "structured-claims-v1",
+  "description": "Synthetic source-shaped golden cases for deterministic relationship contract behavior; not a live accuracy benchmark.",
+  "cases": [
+    {
+      "case_id": "nws-firms-fire-domain-agreement",
+      "left": {
+        "source": "firms",
+        "event_id": "thermal-1",
+        "event_type": "fire.thermal_anomaly",
+        "payload": {
+          "place": "Test County",
+          "title": "High-confidence thermal anomaly"
+        }
+      },
+      "right": {
+        "source": "nws",
+        "event_id": "fire-warning-1",
+        "event_type": "weather.alert",
+        "payload": {
+          "place": "Test County",
+          "alert_type": "Fire Warning",
+          "category": "Fire"
+        }
+      },
+      "expected": [
+        {
+          "label": "corroborates",
+          "predicate": "hazard_domain",
+          "normalized_value": "fire_related"
+        }
+      ]
+    },
+    {
+      "case_id": "usgs-nws-tsunami-domain-agreement",
+      "left": {
+        "source": "usgs",
+        "event_id": "quake-1",
+        "event_type": "seismic.earthquake",
+        "payload": {
+          "place": "Coastal County",
+          "tsunami": true
+        }
+      },
+      "right": {
+        "source": "nws",
+        "event_id": "tsunami-warning-1",
+        "event_type": "weather.alert",
+        "payload": {
+          "place": "Coastal County",
+          "alert_type": "Tsunami Warning",
+          "category": "Geo"
+        }
+      },
+      "expected": [
+        {
+          "label": "corroborates",
+          "predicate": "hazard_domain",
+          "normalized_value": "tsunami_related"
+        }
+      ]
+    },
+    {
+      "case_id": "fire-and-conflict-are-not-opposites",
+      "left": {
+        "source": "firms",
+        "event_id": "thermal-2",
+        "event_type": "fire.thermal_anomaly",
+        "payload": {
+          "place": "Test County"
+        }
+      },
+      "right": {
+        "source": "gdelt",
+        "event_id": "conflict-1",
+        "event_type": "geopolitical.gdelt_event",
+        "payload": {
+          "place": "Test County",
+          "category": "Fight"
+        }
+      },
+      "expected": [
+        {
+          "label": "insufficient_evidence",
+          "predicate": null,
+          "normalized_value": null
+        }
+      ]
+    },
+    {
+      "case_id": "same-place-evacuation-conflict",
+      "left": {
+        "source": "nws",
+        "event_id": "evacuation-alert-1",
+        "event_type": "weather.alert",
+        "payload": {
+          "place": "Test County",
+          "instruction": "An evacuation order is in effect. Evacuate immediately."
+        }
+      },
+      "right": {
+        "source": "official_update",
+        "event_id": "evacuation-update-1",
+        "event_type": "safety.update",
+        "payload": {
+          "place": "TEST COUNTY",
+          "headline": "Evacuation order has been lifted"
+        }
+      },
+      "expected": [
+        {
+          "label": "contradicts",
+          "predicate": "evacuation_state",
+          "normalized_value": null
+        }
+      ]
+    },
+    {
+      "case_id": "different-place-evacuation-is-not-comparable",
+      "left": {
+        "source": "nws",
+        "event_id": "evacuation-alert-2",
+        "event_type": "weather.alert",
+        "payload": {
+          "place": "North County",
+          "instruction": "Evacuate immediately."
+        }
+      },
+      "right": {
+        "source": "official_update",
+        "event_id": "evacuation-update-2",
+        "event_type": "safety.update",
+        "payload": {
+          "place": "South County",
+          "headline": "Evacuation order has been lifted"
+        }
+      },
+      "expected": [
+        {
+          "label": "insufficient_evidence",
+          "predicate": null,
+          "normalized_value": null
+        }
+      ]
+    },
+    {
+      "case_id": "same-place-road-access-conflict",
+      "left": {
+        "source": "nws",
+        "event_id": "road-alert-1",
+        "event_type": "weather.alert",
+        "payload": {
+          "place": "Test Pass",
+          "description": "The road remains closed."
+        }
+      },
+      "right": {
+        "source": "transport_authority",
+        "event_id": "road-update-1",
+        "event_type": "transport.update",
+        "payload": {
+          "place": "Test Pass",
+          "title": "Road has reopened"
+        }
+      },
+      "expected": [
+        {
+          "label": "contradicts",
+          "predicate": "road_access_state",
+          "normalized_value": null
+        }
+      ]
+    }
+  ]
+}

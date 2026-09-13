@@ -36,6 +36,7 @@ describe("IncidentFeed", () => {
     expect(screen.getByText("firms")).toBeInTheDocument();
     expect(screen.getByText("gdelt")).toBeInTheDocument();
     expect(row).toHaveTextContent("1 edge · max 7.8 km");
+    expect(row).toHaveTextContent("0 corroborating · 0 conflicting · 1 unresolved");
     await user.click(row);
     expect(onSelect).toHaveBeenCalledWith("incident-test123");
   });

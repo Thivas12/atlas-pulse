@@ -2,6 +2,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
   fetchCurrentSignals,
+  fetchEvidencePack,
   fetchHybridSearch,
   fetchIncidentCandidates,
   fetchReplay,
@@ -406,6 +407,20 @@ export default function App() {
     enabled: mode === "live" && panelMode === "search" && searchText.length >= 2,
     refetchInterval: 30_000,
   });
+  const evidencePackQuery = useQuery({
+    queryKey: ["evidence-pack", searchText, sourceFilter, searchViewport ? viewport : null],
+    queryFn: ({ signal }) =>
+      fetchEvidencePack(
+        {
+          query: searchText,
+          source: sourceFilter === "all" ? undefined : sourceFilter,
+          bounds: searchViewport ? (viewport ?? undefined) : undefined,
+        },
+        signal,
+      ),
+    enabled: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
 
   const liveItems = liveQuery.data?.items ?? [];
   const replayItems = useMemo(
@@ -755,8 +770,11 @@ export default function App() {
               useViewport={searchViewport}
               viewportAvailable={viewport !== null}
               response={searchQuery.data}
+              evidencePack={evidencePackQuery.data}
               loading={searchQuery.isFetching}
               error={searchQuery.error}
+              evidencePackLoading={evidencePackQuery.isFetching}
+              evidencePackError={evidencePackQuery.error}
               selectedStreamId={selectedStreamId}
               onDraftChange={setSearchDraft}
               onUseViewportChange={setSearchViewport}
@@ -769,6 +787,7 @@ export default function App() {
                 }
                 setSelectedIncidentId(null);
               }}
+              onBuildEvidencePack={() => void evidencePackQuery.refetch()}
               onSelect={selectEvent}
             />
           )}
@@ -776,8 +795,10 @@ export default function App() {
       </section>
 
       <footer>
-        <span>ATLASPULSE / EVIDENCE RELATIONSHIP SLICE / v0.7.0</span>
-        <span>Retrieval: PostgreSQL FTS + local BGE + pgvector · no generated claim</span>
+        <span>ATLASPULSE / AGENT EVIDENCE PACK SLICE / v0.7.0</span>
+        <span>
+          Bounded traceable context · untrusted source text · no generated claim or action
+        </span>
       </footer>
     </main>
   );

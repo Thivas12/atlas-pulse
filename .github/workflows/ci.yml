@@ -151,6 +151,16 @@ jobs:
           response = json.load(sys.stdin)
           assert response["embedding_model"] == "BAAI/bge-small-en-v1.5"
           assert response["count"] == 0'
+          curl --fail --silent --show-error \
+            'http://localhost:3000/api/v1/evidence-packs?q=earthquake' | python3 -c '
+          import json, sys
+          response = json.load(sys.stdin)
+          assert response["pack_id"].startswith("pack-")
+          assert response["status"] == "no_traceable_evidence"
+          assert response["answer_generated"] is False
+          assert response["item_count"] == 0
+          assert response["exclusion_count"] == 0
+          assert response["retrieval"]["embedding_model"] == "BAAI/bge-small-en-v1.5"'
 
       - name: Stop containers
         if: always()

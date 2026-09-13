@@ -1047,8 +1047,8 @@ input:focus-visible {
 
 .search-panel {
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   background: var(--panel);
 }
@@ -1147,7 +1147,103 @@ input:focus-visible {
   color: #ffc4cb;
 }
 
+.evidence-pack-control {
+  padding: 11px 14px;
+  border-bottom: 1px solid rgba(75, 166, 255, 0.14);
+  background: rgba(34, 111, 173, 0.045);
+}
+
+.evidence-pack-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.evidence-pack-heading span,
+.evidence-pack-heading strong {
+  display: block;
+}
+
+.evidence-pack-heading span {
+  color: #5e8194;
+  font:
+    7px "DM Mono",
+    monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.evidence-pack-heading strong {
+  margin-top: 3px;
+  color: #b9d9e7;
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.evidence-pack-heading button {
+  flex: 0 0 auto;
+  padding: 7px 9px;
+  color: #cfeafb;
+  border: 1px solid rgba(75, 166, 255, 0.26);
+  border-radius: 5px;
+  background: rgba(38, 102, 150, 0.16);
+  cursor: pointer;
+  font:
+    7px "DM Mono",
+    monospace;
+  text-transform: uppercase;
+}
+
+.evidence-pack-heading button:disabled {
+  color: #486878;
+  cursor: not-allowed;
+}
+
+.evidence-pack-control > p,
+.evidence-pack-summary p,
+.evidence-pack-summary small {
+  margin: 7px 0 0;
+  color: #5c7786;
+  font:
+    7px / 1.45 "DM Mono",
+    monospace;
+}
+
+.evidence-pack-control > p.error {
+  color: #ffc4cb;
+}
+
+.evidence-pack-summary > span {
+  margin-top: 8px;
+  display: block;
+  color: var(--pulse);
+  font:
+    7px "DM Mono",
+    monospace;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.evidence-pack-summary > span.no_traceable_evidence {
+  color: var(--danger);
+}
+
+.evidence-pack-summary code {
+  margin-top: 5px;
+  display: block;
+  overflow-wrap: anywhere;
+  color: #7ba7bc;
+  font-size: 7px;
+}
+
+.evidence-pack-summary small {
+  display: block;
+  color: #8a7ba2;
+}
+
 .retrieval-results {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   scrollbar-width: thin;

@@ -1,5 +1,7 @@
 """HTTP API behavior tests."""
 
+import hashlib
+import json
 from datetime import UTC, datetime
 
 import httpx
@@ -8,12 +10,20 @@ from agent_rag_core import Event, GeoPoint
 
 from atlas_pulse.api import create_app
 from atlas_pulse.correlation import CORRELATION_CAVEAT, CorrelationBatch, CorrelationPair
+from atlas_pulse.evidence_packs import (
+    EVIDENCE_PACK_CAVEAT,
+    EVIDENCE_PACK_IDENTITY_ALGORITHM,
+    EVIDENCE_PACK_RULE_VERSION,
+    EVIDENCE_PACK_SCHEMA_VERSION,
+    EVIDENCE_PACK_TRUST_BOUNDARY,
+)
 from atlas_pulse.projections import CorrelationQuery, SignalPage, SignalQuery
 from atlas_pulse.retrieval import (
     CandidateBatch,
     ChannelCandidate,
     SearchQuery,
     SearchResult,
+    document_hash,
     fuse_and_rerank,
 )
 from atlas_pulse.retrieval.ranking import RANKING_RULE, RETRIEVAL_CAVEAT
@@ -536,8 +546,11 @@ async def test_search_requires_an_index_and_readiness_reports_index_failure() ->
     )
     async with httpx.AsyncClient(transport=unavailable_transport, base_url="http://test") as client:
         unavailable = await client.get("/v1/search", params={"q": "earthquake"})
+        unavailable_pack = await client.get("/v1/evidence-packs", params={"q": "earthquake"})
     assert unavailable.status_code == 503
     assert unavailable.json() == {"detail": "retrieval index unavailable"}
+    assert unavailable_pack.status_code == 503
+    assert unavailable_pack.json() == {"detail": "retrieval index unavailable"}
 
     unready_transport = httpx.ASGITransport(
         app=create_app(InMemoryEventBus(), StubSignalStore(), StubSearchService(ready=False))
@@ -546,6 +559,153 @@ async def test_search_requires_an_index_and_readiness_reports_index_failure() ->
         unready = await client.get("/readyz")
     assert unready.status_code == 503
     assert unready.json() == {"detail": "retrieval index unavailable"}
+
+
+async def test_evidence_pack_returns_bounded_content_addressed_agent_handoff() -> None:
+    traceable_event = Event(
+        event_id="alert-1",
+        event_type="weather.alert",
+        source="nws",
+        occurred_at=datetime(2026, 9, 12, 12, tzinfo=UTC),
+        ingested_at=datetime(2026, 9, 12, 12, 1, tzinfo=UTC),
+        payload={
+            "title": "Severe thunderstorm warning",
+            "source_url": "https://api.weather.gov/alerts/alert-1",
+        },
+    )
+    missing_event = Event(
+        event_id="quake-2",
+        event_type="seismic.earthquake",
+        source="usgs",
+        occurred_at=datetime(2026, 9, 12, 12, 2, tzinfo=UTC),
+        ingested_at=datetime(2026, 9, 12, 12, 3, tzinfo=UTC),
+        payload={"title": "Earthquake without public evidence URL"},
+    )
+    traceable = ChannelCandidate(
+        message=StreamMessage(stream_id="200-1", event=traceable_event),
+        document_text="Title: Severe thunderstorm warning",
+        rank=1,
+        score=0.91,
+        distance_km=14.25,
+    )
+    missing = ChannelCandidate(
+        message=StreamMessage(stream_id="200-2", event=missing_event),
+        document_text="Title: Earthquake without public evidence URL",
+        rank=2,
+        score=0.80,
+    )
+    hits = fuse_and_rerank(
+        CandidateBatch(lexical=(traceable, missing), dense=(traceable, missing)),
+        query_text="severe thunderstorm",
+        limit=5,
+    )
+    search = StubSearchService(
+        result=SearchResult(
+            hits=hits,
+            candidates_considered=7,
+            embedding_model="BAAI/bge-small-en-v1.5",
+            ranking_mode="hybrid",
+            ranking_rule=RANKING_RULE,
+            caveat=RETRIEVAL_CAVEAT,
+        )
+    )
+    transport = httpx.ASGITransport(app=create_app(InMemoryEventBus(), StubSignalStore(), search))
+    params: dict[str, str | int] = {
+        "q": "  severe   thunderstorm ",
+        "retrieval_limit": 5,
+        "candidate_limit": 25,
+        "max_items": 2,
+        "max_characters_per_item": 12,
+        "max_total_characters": 12,
+        "source": "nws",
+        "bbox": "-100,30,-90,40",
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/evidence-packs", params=params)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema_version"] == EVIDENCE_PACK_SCHEMA_VERSION
+    assert body["rule_version"] == EVIDENCE_PACK_RULE_VERSION
+    assert body["identity_algorithm"] == EVIDENCE_PACK_IDENTITY_ALGORITHM
+    assert body["pack_id"].startswith("pack-") and len(body["pack_id"]) == 69
+    identity = {key: value for key, value in body.items() if key != "pack_id"}
+    expected_hash = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    assert body["pack_id"] == f"pack-{expected_hash}"
+    assert body["status"] == "traceable_evidence_available"
+    assert body["item_count"] == 1
+    assert body["exclusion_count"] == 1
+    assert body["source_text_characters"] == 12
+    assert body["answer_generated"] is False
+    assert body["trust_boundary"] == EVIDENCE_PACK_TRUST_BOUNDARY
+    assert body["caveat"] == EVIDENCE_PACK_CAVEAT
+    assert body["budget"] == {
+        "max_items": 2,
+        "max_characters_per_item": 12,
+        "max_total_characters": 12,
+        "character_unit": "unicode_code_points",
+    }
+    item = body["items"][0]
+    assert item["retrieval_rank"] == 1
+    assert item["event_id"] == "alert-1"
+    assert item["ingested_at"] == "2026-09-12T12:01:00Z"
+    assert item["text"] == "Title: Sever"
+    assert item["truncated"] is True
+    assert item["document_sha256"] == document_hash(traceable.document_text)
+    assert item["text_sha256"] == document_hash("Title: Sever")
+    assert item["citation"]["status"] == "traceable"
+    assert item["ranking"]["lexical_rank"] == 1
+    assert body["exclusions"][0]["event_id"] == "quake-2"
+    assert body["exclusions"][0]["reason"] == "citation_missing"
+    assert body["exclusions"][0]["ranking"]["dense_rank"] == 2
+    assert body["exclusions"][0]["occurred_at"] == "2026-09-12T12:02:00Z"
+    assert "Earthquake without public evidence URL" not in response.text
+    assert body["retrieval"] == {
+        "candidates_considered": 7,
+        "returned_hits": 2,
+        "embedding_model": "BAAI/bge-small-en-v1.5",
+        "ranking_mode": "hybrid",
+        "ranking_rule": RANKING_RULE,
+        "caveat": RETRIEVAL_CAVEAT,
+        "parameters": {
+            "query": "severe thunderstorm",
+            "limit": 5,
+            "candidate_limit": 25,
+            "source": "nws",
+            "occurred_after": None,
+            "occurred_before": None,
+            "active_only": True,
+            "bbox": [-100.0, 30.0, -90.0, 40.0],
+            "near": None,
+            "radius_km": None,
+            "ranking_mode": "hybrid",
+        },
+    }
+    assert search.query is not None
+    assert search.query.limit == 5
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"q": "earthquake", "retrieval_limit": 10, "candidate_limit": 5},
+        {"q": "earthquake", "max_items": 0},
+        {"q": "earthquake", "max_characters_per_item": 8_001},
+        {"q": "earthquake", "max_total_characters": 64_001},
+        {"q": "earthquake", "near": "181,1"},
+    ],
+)
+async def test_evidence_pack_rejects_invalid_budgets_and_filters(
+    params: dict[str, str | int],
+) -> None:
+    transport = httpx.ASGITransport(
+        app=create_app(InMemoryEventBus(), StubSignalStore(), StubSearchService())
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/evidence-packs", params=params)
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(

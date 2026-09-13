@@ -190,6 +190,20 @@ export const searchHitSchema = z.object({
   citation: citationSchema,
 });
 
+const searchParametersSchema = z.object({
+  query: z.string().min(2),
+  limit: z.number().int().positive(),
+  candidate_limit: z.number().int().positive(),
+  source: z.enum(["usgs", "nws", "firms", "gdelt"]).nullable(),
+  occurred_after: z.string().nullable(),
+  occurred_before: z.string().nullable(),
+  active_only: z.boolean(),
+  bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]).nullable(),
+  near: z.tuple([z.number(), z.number()]).nullable(),
+  radius_km: z.number().positive().nullable(),
+  ranking_mode: z.enum(["lexical", "dense", "rrf", "hybrid"]),
+});
+
 export const searchResponseSchema = z.object({
   count: z.number().int().nonnegative(),
   candidates_considered: z.number().int().nonnegative(),
@@ -198,20 +212,153 @@ export const searchResponseSchema = z.object({
   ranking_mode: z.enum(["lexical", "dense", "rrf", "hybrid"]),
   ranking_rule: z.string().min(1),
   caveat: z.string().min(1),
-  parameters: z.object({
-    query: z.string().min(2),
-    limit: z.number().int().positive(),
-    candidate_limit: z.number().int().positive(),
-    source: z.enum(["usgs", "nws", "firms", "gdelt"]).nullable(),
-    occurred_after: z.string().nullable(),
-    occurred_before: z.string().nullable(),
-    active_only: z.boolean(),
-    bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]).nullable(),
-    near: z.tuple([z.number(), z.number()]).nullable(),
-    radius_km: z.number().positive().nullable(),
-    ranking_mode: z.enum(["lexical", "dense", "rrf", "hybrid"]),
-  }),
+  parameters: searchParametersSchema,
 });
+
+const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+const traceableCitationSchema = citationSchema.extend({
+  status: z.literal("traceable"),
+  url: z.string().url(),
+  source_field: z.string().min(1),
+});
+
+const evidencePackItemSchema = z.object({
+  evidence_id: z.string().regex(/^evidence-[0-9a-f]{64}$/),
+  retrieval_rank: z.number().int().positive(),
+  stream_id: z.string().regex(/^\d+-\d+$/),
+  event_id: z.string().min(1),
+  event_type: z.string().min(1),
+  source: z.string().min(1),
+  occurred_at: z.string(),
+  ingested_at: z.string(),
+  event_schema_version: z.string().min(1),
+  text: z.string().min(1),
+  document_sha256: sha256Schema,
+  text_sha256: sha256Schema,
+  document_characters: z.number().int().positive(),
+  text_characters: z.number().int().positive(),
+  truncated: z.boolean(),
+  distance_km: z.number().nonnegative().nullable(),
+  ranking: rankingSchema,
+  citation: traceableCitationSchema,
+});
+
+const evidencePackExclusionSchema = z.object({
+  retrieval_rank: z.number().int().positive(),
+  stream_id: z.string().regex(/^\d+-\d+$/),
+  event_id: z.string().min(1),
+  event_type: z.string().min(1),
+  source: z.string().min(1),
+  occurred_at: z.string(),
+  ingested_at: z.string(),
+  event_schema_version: z.string().min(1),
+  document_sha256: sha256Schema,
+  distance_km: z.number().nonnegative().nullable(),
+  ranking: rankingSchema,
+  citation: citationSchema,
+  reason: z.enum([
+    "citation_missing",
+    "citation_rejected",
+    "citation_contract_invalid",
+    "empty_source_text",
+    "item_limit",
+    "source_text_character_limit",
+  ]),
+});
+
+export const evidencePackResponseSchema = z
+  .object({
+    pack_id: z.string().regex(/^pack-[0-9a-f]{64}$/),
+    schema_version: z.literal("1.0.0"),
+    rule_version: z.literal("retrieval-evidence-pack-v1"),
+    identity_algorithm: z.literal("sha256-canonical-json-v1"),
+    status: z.enum(["traceable_evidence_available", "no_traceable_evidence"]),
+    item_count: z.number().int().nonnegative(),
+    exclusion_count: z.number().int().nonnegative(),
+    source_text_characters: z.number().int().nonnegative(),
+    budget: z.object({
+      max_items: z.number().int().min(1).max(50),
+      max_characters_per_item: z.number().int().min(1).max(8_000),
+      max_total_characters: z.number().int().min(1).max(64_000),
+      character_unit: z.literal("unicode_code_points"),
+    }),
+    retrieval: z.object({
+      candidates_considered: z.number().int().nonnegative(),
+      returned_hits: z.number().int().nonnegative(),
+      embedding_model: z.string().min(1),
+      ranking_mode: z.enum(["lexical", "dense", "rrf", "hybrid"]),
+      ranking_rule: z.string().min(1),
+      caveat: z.string().min(1),
+      parameters: searchParametersSchema,
+    }),
+    items: z.array(evidencePackItemSchema),
+    exclusions: z.array(evidencePackExclusionSchema),
+    answer_generated: z.literal(false),
+    trust_boundary: z.string().min(1),
+    caveat: z.string().min(1),
+  })
+  .superRefine((pack, context) => {
+    const textCharacters = pack.items.reduce((total, item) => total + [...item.text].length, 0);
+    const invariant = (valid: boolean, message: string, path: (string | number)[]) => {
+      if (!valid) context.addIssue({ code: "custom", message, path });
+    };
+    invariant(pack.item_count === pack.items.length, "item_count does not match items", [
+      "item_count",
+    ]);
+    invariant(
+      pack.exclusion_count === pack.exclusions.length,
+      "exclusion_count does not match exclusions",
+      ["exclusion_count"],
+    );
+    invariant(
+      pack.retrieval.returned_hits === pack.items.length + pack.exclusions.length,
+      "returned_hits does not match the accounted retrieval results",
+      ["retrieval", "returned_hits"],
+    );
+    invariant(
+      pack.source_text_characters === textCharacters,
+      "source_text_characters does not match included text",
+      ["source_text_characters"],
+    );
+    invariant(pack.items.length <= pack.budget.max_items, "item budget exceeded", ["items"]);
+    invariant(
+      textCharacters <= pack.budget.max_total_characters,
+      "total source-text budget exceeded",
+      ["items"],
+    );
+    invariant(
+      pack.status ===
+        (pack.items.length > 0 ? "traceable_evidence_available" : "no_traceable_evidence"),
+      "status does not match evidence availability",
+      ["status"],
+    );
+    pack.items.forEach((item, index) => {
+      const length = [...item.text].length;
+      invariant(item.text_characters === length, "text_characters does not match text", [
+        "items",
+        index,
+        "text_characters",
+      ]);
+      invariant(
+        length <= pack.budget.max_characters_per_item,
+        "per-item source-text budget exceeded",
+        ["items", index, "text"],
+      );
+    });
+    pack.exclusions.forEach((exclusion, index) => {
+      const expectedStatus =
+        exclusion.reason === "citation_missing"
+          ? "missing"
+          : exclusion.reason === "citation_rejected"
+            ? "rejected"
+            : "traceable";
+      invariant(
+        exclusion.citation.status === expectedStatus,
+        "exclusion reason does not match citation status",
+        ["exclusions", index, "reason"],
+      );
+    });
+  });
 
 export interface ViewportBounds {
   west: number;
@@ -230,3 +377,4 @@ export type IncidentCandidate = z.infer<typeof incidentCandidateSchema>;
 export type IncidentsResponse = z.infer<typeof incidentsResponseSchema>;
 export type SearchHit = z.infer<typeof searchHitSchema>;
 export type SearchResponse = z.infer<typeof searchResponseSchema>;
+export type EvidencePack = z.infer<typeof evidencePackResponseSchema>;

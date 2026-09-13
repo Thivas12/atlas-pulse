@@ -1,8 +1,9 @@
 # Human-reviewed retrieval evaluation
 
-AtlasPulse measures retrieval before adding generation. Day 10 adds a reproducible, pooled human
-judgment workflow over the changing public-event corpus while retaining the deterministic and
-real-service proofs from Day 9.
+AtlasPulse measures retrieval before adding generation. The evaluation layer provides a
+reproducible, pooled human-judgment workflow over the changing public-event corpus, plus a
+content-addressed multi-capture campaign, while retaining the deterministic and real-service
+proofs beneath it.
 
 ## What is compared
 
@@ -101,6 +102,34 @@ changed evidence under one document ID, and conflicting grades on identical evid
 
 This is a longitudinal measurement unless both endpoints read the same underlying database
 snapshot. Live arrivals, revisions, expiry, and ingestion state remain possible causes of a delta.
+
+## Multi-capture campaigns
+
+`atlas-pulse-evaluate campaign` extends the shared-pool rule to two or more reviewed captures. It
+forms one judged union across the complete ordered series, then rescores every capture against
+that same universe. This avoids constructing a misleading trend from pairwise comparisons whose
+denominators change at every step.
+
+The JSON report records the content-addressed global union, every original pool hash and reviewer,
+candidate additions/drops between adjacent captures, absolute metrics, capture-minus-baseline
+deltas, ranking-rule/model provenance, coverage gaps, latency, and source/intent slice movement.
+The Markdown view presents the capture chain, mode trajectories, latest slice movement, and
+latest coverage changes.
+
+Campaign construction fails closed unless all inputs are fully reviewed, unique, strictly
+chronological, and based on the exact same query definitions and ranking-mode shape. Changed
+evidence under a stable document ID and conflicting human grades are rejected. The campaign never
+fills a label or issues a model-release verdict. See
+[ADR 0018](adr/0018-content-addressed-retrieval-campaigns.md).
+
+```bash
+uv run atlas-pulse-evaluate campaign \
+  --pool artifacts/evaluation/reviewed-baseline-pool.json \
+  --pool artifacts/evaluation/reviewed-candidate-pool.json \
+  --pool artifacts/evaluation/reviewed-followup-pool.json \
+  --output-json artifacts/evaluation/campaign.json \
+  --output-markdown artifacts/evaluation/campaign.md
+```
 
 ## Boundaries that remain explicit
 

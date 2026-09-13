@@ -7,7 +7,7 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — governed, content-addressed agent preflight.** Independent workers
+> **Current milestone — longitudinal evidence quality and governed agent preflight.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
@@ -19,7 +19,10 @@ component can run without a paid API key.
 > PostGIS filters to both channels, fuses ranks with RRF, applies evidence-only tie-breaks, validates
 > credential-safe citations, and exposes every score in the dashboard. A pooled, rank-blind human
 > judgment workflow compares lexical, dense, RRF, and hybrid modes with standard IR metrics,
-> source/intent slices, content-addressed reports, and explicit regression gates. Every measured
+> source/intent slices, content-addressed reports, and explicit regression gates. Two or more
+> reviewed captures can now form one content-addressed campaign: every point is rescored against
+> the same global judged union and exposes baseline-relative quality, coverage, slice, and latency
+> movement without inventing a model-release verdict. Every measured
 > incident edge now receives a separate `structured-claims-v1` annotation: source-backed claims,
 > exact field provenance, narrow corroboration/contradiction rules, and an explicit insufficient-
 > evidence result. These annotations never rewrite measured distance/time facts and do not claim
@@ -53,7 +56,7 @@ component can run without a paid API key.
 | Claim relationships | Stable source-field claims, conservative corroboration/contradiction rules, explicit abstention, immutable parent-edge references |
 | Relationship evaluation | Versioned live edge sampling, dual prediction-blind reviews, Cohen's kappa, disagreement-only adjudication, exact provenance, abstention and slice metrics |
 | Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable evidence tie-breaks |
-| Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, shared-pool before/after deltas, slice reports, explicit gates |
+| Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, global-union campaign trajectories, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
 | Agent handoff | Content-addressed evidence packs, exact retrieval provenance, hard source-text budgets, explicit exclusions, and an untrusted-data policy |
 | Agent governance | Pack-bound immutable run manifests, default-deny policy snapshots, explicit human/evaluation gates, and zero-execution proof |
@@ -98,7 +101,7 @@ flowchart TD
 
     subgraph GOVERN["04 · GOVERN / RELEASE CONTROL"]
         direction LR
-        RETRIEVAL_REVIEW["Rank-blind retrieval review"]:::review
+        RETRIEVAL_REVIEW["Longitudinal retrieval campaign"]:::review
         RELATION_REVIEW["Dual semantic review"]:::review
         PREFLIGHT["Default-deny preflight"]:::gate
         MANIFEST["Immutable run manifest"]:::gate
@@ -250,7 +253,10 @@ uv run atlas-pulse-evaluate capture \
 
 The complete review/import/score workflow and `0..3` rubric are in
 [`evals/retrieval/README.md`](evals/retrieval/README.md). AtlasPulse does not ship invented labels
-or quality floors; gates become valid only after a named human reviews a captured corpus.
+or quality floors; gates become valid only after a named human reviews a captured corpus. Once at
+least two reviewed pools exist, the same CLI builds a content-addressed campaign that scores every
+capture against one global judged union and reports quality, coverage, latency, and slice
+trajectories.
 
 The separate [`structured-claims-v1` contract cases](evals/relationships/README.md) freeze exact
 corroboration, contradiction, and abstention behavior. They are synthetic regression cases, not a
@@ -499,7 +505,9 @@ agreement measurement, disagreement-only adjudication, and final gold provenance
 [ADR 0016](docs/adr/0016-content-addressed-agent-evidence-packs.md) for deterministic bounded
 agent context, and
 [ADR 0017](docs/adr/0017-default-deny-agent-run-preflight.md) for pack-bound authorization,
-immutable manifests, and the zero-execution gate.
+immutable manifests, and the zero-execution gate, and
+[ADR 0018](docs/adr/0018-content-addressed-retrieval-campaigns.md) for chronological reviewed
+campaigns, global-union scoring, and baseline-relative trajectories.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -533,8 +541,9 @@ credential solely for transaction metering.
 
 ## Next milestones
 
-1. Run the shared-pool longitudinal capture after deployment and use its slice deltas to decide
-   whether a free local cross-encoder earns its added latency and complexity.
+1. Populate the first multi-capture campaign after deployment and use its globally pooled slice
+   trajectories to decide whether a free local cross-encoder earns its added latency and
+   complexity.
 2. Run the live claim-pair benchmark through two independent reviews and adjudication, then
    evaluate a free local NLI/LLM proposer against `structured-claims-v1` before it can add a new
    annotation version.

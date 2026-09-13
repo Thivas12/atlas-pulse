@@ -175,7 +175,7 @@ def _cutoff_comparison(
     )
 
 
-def _aggregate_comparison(
+def compare_aggregate_metrics(
     baseline: AggregateMetrics,
     candidate: AggregateMetrics,
 ) -> AggregateComparison:
@@ -273,7 +273,9 @@ def _rules(pool: CandidatePool) -> dict[RankingMode, str]:
     return dict(sorted(rules.items()))
 
 
-def _identity(pool: CandidatePool) -> ComparedPool:
+def pool_provenance(pool: CandidatePool) -> ComparedPool:
+    """Return immutable reviewed-pool provenance for comparison artifacts."""
+    _validate_reviewed(pool, label="candidate")
     assert pool.reviewer is not None
     assert pool.reviewed_at is not None
     return ComparedPool(
@@ -314,8 +316,8 @@ def compare_pools(
     if set(baseline_report.slices) != set(candidate_report.slices):
         raise ValueError("comparison reports contain different slices")
 
-    baseline_identity = _identity(baseline)
-    candidate_identity = _identity(candidate)
+    baseline_identity = pool_provenance(baseline)
+    candidate_identity = pool_provenance(candidate)
     baseline_candidates = _candidate_keys(baseline)
     candidate_candidates = _candidate_keys(candidate)
     digest = canonical_sha256(
@@ -340,7 +342,7 @@ def compare_pools(
         baseline=baseline_identity,
         candidate=candidate_identity,
         modes={
-            mode: _aggregate_comparison(
+            mode: compare_aggregate_metrics(
                 baseline_report.modes[mode],
                 candidate_report.modes[mode],
             )
@@ -348,7 +350,7 @@ def compare_pools(
         },
         slices={
             slice_name: {
-                mode: _aggregate_comparison(
+                mode: compare_aggregate_metrics(
                     baseline_report.slices[slice_name][mode],
                     candidate_report.slices[slice_name][mode],
                 )

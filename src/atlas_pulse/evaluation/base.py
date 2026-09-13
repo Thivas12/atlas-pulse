@@ -172,6 +172,10 @@ class PooledCandidate(StrictModel):
             raise ValueError("untraceable candidates must not expose citation_url")
         return self
 
+    def evidence_identity(self) -> dict[str, object]:
+        """Return every reviewer-visible field without its judgment."""
+        return self.model_dump(mode="python", exclude={"relevance", "rationale"})
+
 
 class CapturedRun(StrictModel):
     """The immutable ordered output of one retrieval mode for one query."""

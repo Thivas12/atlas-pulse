@@ -43,6 +43,11 @@ The capture JSON keeps system runs for audit and scoring. Reviewers work only fr
 rank-blind CSV. Generated artifacts are ignored by Git unless a reviewed baseline is intentionally
 promoted with reviewer and capture provenance intact.
 
+A later capture can seed its CSV from a reviewed pool. AtlasPulse reuses a prior grade only when
+the query-set identity and captured query definitions match and every reviewer-visible evidence
+field is identical. Event IDs alone are insufficient: changed content, time, title, or citation
+metadata leaves the new grade blank.
+
 The relevance scale is graded `0..3`: irrelevant, weakly related, useful, and direct/actionable.
 Citation status is excluded from relevance judgment and scored independently. See the exact
 rubric and commands in [`evals/retrieval/README.md`](../evals/retrieval/README.md).
@@ -79,6 +84,23 @@ slice and, unlike cutoff metrics, does not take a cutoff.
 
 Reports containing candidate coverage use evaluation report schema `1.1.0`; query sets,
 candidate pools, and gate policies remain at schema `1.0.0`.
+
+## Longitudinal comparison
+
+`atlas-pulse-evaluate compare` accepts two reviewed candidate pools produced from the same frozen
+query set. It constructs the per-query union of candidates surfaced by either system and rescores
+both captured runs against that shared judged universe. Pooled recall and ideal nDCG therefore use
+the same relevance denominator instead of comparing two independently pooled reports.
+
+The versioned comparison preserves both original pool hashes, endpoints, capture/review times,
+reviewers, embedding models, and ranking rules. JSON retains every cutoff; Markdown highlights
+candidate-minus-baseline mode and slice deltas, latency, resolved empty queries, and new coverage
+gaps. Comparison fails closed for different query-set hashes, changed query definitions or modes,
+changed evidence under one document ID, and conflicting grades on identical evidence. See
+[ADR 0012](adr/0012-shared-pool-longitudinal-evaluation.md).
+
+This is a longitudinal measurement unless both endpoints read the same underlying database
+snapshot. Live arrivals, revisions, expiry, and ingestion state remain possible causes of a delta.
 
 ## Boundaries that remain explicit
 

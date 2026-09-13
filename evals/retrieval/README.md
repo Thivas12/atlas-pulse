@@ -38,6 +38,22 @@ uv run atlas-pulse-evaluate capture \
   --judgments-output artifacts/evaluation/judgments.csv
 ```
 
+For a later capture of the same frozen query set, seed only byte-identical prior evidence from the
+reviewed baseline:
+
+```bash
+uv run atlas-pulse-evaluate capture \
+  --queries evals/retrieval/live-disruptions-v1.json \
+  --base-url http://localhost:8000 \
+  --output artifacts/evaluation/candidate-pool.json \
+  --judgments-output artifacts/evaluation/candidate-judgments.csv \
+  --seed-reviewed-pool artifacts/evaluation/reviewed-baseline-pool.json
+```
+
+The command reports how many grades were reused and how many blank cells remain. Reuse requires the
+same query-set hash and identical captured query definitions. A candidate is prefilled only when
+all reviewer-visible evidence is unchanged; a revised event with the same source ID remains blank.
+
 Open `judgments.csv` in VS Code. Fill every `relevance_0_to_3` cell and optional `rationale`; do not
 change protected evidence columns. The sheet omits retrieval mode, score, and rank. Public text
 that begins like a spreadsheet formula is prefixed with a single quote in the review sheet; the
@@ -59,6 +75,23 @@ uv run atlas-pulse-evaluate score \
   --output-json artifacts/evaluation/report.json \
   --output-markdown artifacts/evaluation/report.md
 ```
+
+After importing the candidate judgments, compare both reviewed captures against the union of
+evidence surfaced by either system:
+
+```bash
+uv run atlas-pulse-evaluate compare \
+  --baseline-pool artifacts/evaluation/reviewed-baseline-pool.json \
+  --candidate-pool artifacts/evaluation/reviewed-candidate-pool.json \
+  --output-json artifacts/evaluation/comparison.json \
+  --output-markdown artifacts/evaluation/comparison.md
+```
+
+The comparison records baseline/candidate/overlap/union query-document candidate counts,
+candidate-minus-baseline deltas at every cutoff, resolved and newly empty queries, slice changes,
+model/rule identities, latency, and both original pool hashes. It rejects different query sets,
+changed evidence under one document ID, and conflicting grades. The JSON is the complete audit
+artifact; Markdown is the decision view.
 
 Only after a reviewed baseline exists, create a `GatePolicy` JSON with explicit floors or latency
 ceilings and pass it with `--policy`. A failed rule exits `1`; malformed or incomplete evidence

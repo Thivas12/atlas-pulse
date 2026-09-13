@@ -1,4 +1,4 @@
-"""Command-line workflow for capture, human review, scoring, and gates."""
+"""Command-line workflow for capture, review, scoring, comparison, and gates."""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from atlas_pulse.evaluation.base import (
     GatePolicy,
 )
 from atlas_pulse.evaluation.capture import capture_pool
-from atlas_pulse.evaluation.judgments import apply_judgments, export_judgments
+from atlas_pulse.evaluation.comparison import compare_pools, render_comparison_markdown
+from atlas_pulse.evaluation.judgments import apply_judgments, build_judgment_sheet
 from atlas_pulse.evaluation.metrics import evaluate_gates, score_pool
 from atlas_pulse.evaluation.report import render_markdown
 
@@ -43,13 +44,25 @@ def _ensure_writable(paths: Sequence[Path], *, force: bool) -> None:
 async def _capture(args: argparse.Namespace) -> int:
     _ensure_writable((args.output, args.judgments_output), force=args.force)
     query_set = _json_model(args.queries, EvaluationQuerySet)
+    seed_pool = (
+        _json_model(args.seed_reviewed_pool, CandidatePool)
+        if args.seed_reviewed_pool is not None
+        else None
+    )
     pool = await capture_pool(query_set, base_url=args.base_url)
+    sheet = build_judgment_sheet(pool, seed_pool=seed_pool)
     _write(
         args.output,
         pool.model_dump_json(indent=2) + "\n",
     )
-    _write(args.judgments_output, export_judgments(pool))
-    print(f"Captured {sum(len(query.candidates) for query in pool.queries)} pooled candidates")
+    _write(args.judgments_output, sheet.content)
+    candidate_count = sum(len(query.candidates) for query in pool.queries)
+    print(f"Captured {candidate_count} pooled candidates")
+    if seed_pool is not None:
+        print(
+            f"Reused {sheet.reused_count} exact prior judgment(s); "
+            f"{sheet.pending_count} candidate(s) remain for review"
+        )
     empty_queries = tuple(
         pooled_query.query.query_id for pooled_query in pool.queries if not pooled_query.candidates
     )
@@ -58,7 +71,10 @@ async def _capture(args: argparse.Namespace) -> int:
             "Candidate coverage warning; no mode returned results for: " + ", ".join(empty_queries),
             file=sys.stderr,
         )
-    print(f"Review every relevance_0_to_3 cell in {args.judgments_output}")
+    if sheet.pending_count:
+        print(f"Complete the blank relevance_0_to_3 cells in {args.judgments_output}")
+    else:
+        print(f"No blank relevance judgments remain in {args.judgments_output}")
     return 0
 
 
@@ -102,10 +118,21 @@ def _score(args: argparse.Namespace) -> int:
     return 0
 
 
+def _compare(args: argparse.Namespace) -> int:
+    _ensure_writable((args.output_json, args.output_markdown), force=args.force)
+    baseline = _json_model(args.baseline_pool, CandidatePool)
+    candidate = _json_model(args.candidate_pool, CandidatePool)
+    comparison = compare_pools(baseline, candidate, cutoffs=tuple(args.cutoff))
+    _write(args.output_json, comparison.model_dump_json(indent=2) + "\n")
+    _write(args.output_markdown, render_comparison_markdown(comparison))
+    print(f"Wrote {comparison.comparison_id}")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="atlas-pulse-evaluate",
-        description="Capture and score human-reviewed AtlasPulse retrieval pools.",
+        description="Capture, review, score, and compare AtlasPulse retrieval pools.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -114,6 +141,11 @@ def _parser() -> argparse.ArgumentParser:
     capture.add_argument("--base-url", default="http://localhost:8000")
     capture.add_argument("--output", type=Path, required=True)
     capture.add_argument("--judgments-output", type=Path, required=True)
+    capture.add_argument(
+        "--seed-reviewed-pool",
+        type=Path,
+        help="prefill judgments only for byte-identical evidence from this reviewed pool",
+    )
     capture.add_argument("--force", action="store_true")
 
     review = subparsers.add_parser("review", help="import a completed rank-blind judgment sheet")
@@ -130,6 +162,17 @@ def _parser() -> argparse.ArgumentParser:
     score.add_argument("--output-json", type=Path, required=True)
     score.add_argument("--output-markdown", type=Path, required=True)
     score.add_argument("--force", action="store_true")
+
+    compare = subparsers.add_parser(
+        "compare",
+        help="compare two reviewed captures against their shared candidate union",
+    )
+    compare.add_argument("--baseline-pool", type=Path, required=True)
+    compare.add_argument("--candidate-pool", type=Path, required=True)
+    compare.add_argument("--cutoff", type=int, action="append", default=None)
+    compare.add_argument("--output-json", type=Path, required=True)
+    compare.add_argument("--output-markdown", type=Path, required=True)
+    compare.add_argument("--force", action="store_true")
     return parser
 
 
@@ -144,7 +187,9 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             return _review(args)
         if args.cutoff is None:
             args.cutoff = [1, 3, 5, 10]
-        return _score(args)
+        if args.command == "score":
+            return _score(args)
+        return _compare(args)
     except (FileExistsError, OSError, RuntimeError, ValueError, ValidationError) as error:
         print(f"evaluation failed: {error}", file=sys.stderr)
         return 2

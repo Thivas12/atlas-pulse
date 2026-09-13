@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from atlas_pulse.evaluation.base import CandidatePool, PooledCandidate
@@ -24,19 +25,62 @@ JUDGMENT_COLUMNS = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class JudgmentSheet:
+    """Rank-blind CSV plus an auditable exact-reuse count."""
+
+    content: str
+    reused_count: int
+    pending_count: int
+
+
 def _csv_safe(value: str) -> str:
     """Neutralize public text that spreadsheet software could treat as a formula."""
     stripped = value.lstrip()
     return f"'{value}" if stripped.startswith(("=", "+", "-", "@")) else value
 
 
-def export_judgments(pool: CandidatePool) -> str:
-    """Create a reviewer sheet that deliberately excludes modes, scores, and ranks."""
+def build_judgment_sheet(
+    pool: CandidatePool,
+    *,
+    seed_pool: CandidatePool | None = None,
+) -> JudgmentSheet:
+    """Create a blind sheet and reuse only identical evidence from a reviewed pool."""
+    reusable: dict[tuple[str, str], PooledCandidate] = {}
+    if seed_pool is not None:
+        if seed_pool.judgment_status != "reviewed":
+            raise ValueError("a judgment seed pool must be fully reviewed")
+        if (
+            seed_pool.query_set_id != pool.query_set_id
+            or seed_pool.query_set_sha256 != pool.query_set_sha256
+        ):
+            raise ValueError("judgment reuse requires the same query-set ID and SHA-256")
+        current_queries = {item.query.query_id: item.query for item in pool.queries}
+        seed_queries = {item.query.query_id: item.query for item in seed_pool.queries}
+        if current_queries != seed_queries:
+            raise ValueError("judgment reuse requires identical captured query definitions")
+        reusable = {
+            (pooled_query.query.query_id, candidate.document_id): candidate
+            for pooled_query in seed_pool.queries
+            for candidate in pooled_query.candidates
+        }
+
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=JUDGMENT_COLUMNS, lineterminator="\n")
     writer.writeheader()
+    reused_count = 0
+    pending_count = 0
     for pooled_query in pool.queries:
         for candidate in pooled_query.candidates:
+            prior = reusable.get((pooled_query.query.query_id, candidate.document_id))
+            if prior is not None and prior.evidence_identity() == candidate.evidence_identity():
+                relevance = prior.relevance
+                rationale = prior.rationale
+                reused_count += 1
+            else:
+                relevance = candidate.relevance
+                rationale = candidate.rationale
+                pending_count += int(relevance is None)
             writer.writerow(
                 {
                     "query_id": pooled_query.query.query_id,
@@ -49,11 +93,20 @@ def export_judgments(pool: CandidatePool) -> str:
                     "document_text": _csv_safe(candidate.document_text),
                     "citation_status": candidate.citation_status,
                     "citation_url": _csv_safe(candidate.citation_url or ""),
-                    "relevance_0_to_3": "" if candidate.relevance is None else candidate.relevance,
-                    "rationale": _csv_safe(candidate.rationale or ""),
+                    "relevance_0_to_3": "" if relevance is None else relevance,
+                    "rationale": _csv_safe(rationale or ""),
                 }
             )
-    return output.getvalue()
+    return JudgmentSheet(
+        content=output.getvalue(),
+        reused_count=reused_count,
+        pending_count=pending_count,
+    )
+
+
+def export_judgments(pool: CandidatePool) -> str:
+    """Create a reviewer sheet that deliberately excludes modes, scores, and ranks."""
+    return build_judgment_sheet(pool).content
 
 
 def _candidate_metadata(query_id: str, candidate: PooledCandidate) -> dict[str, str]:

@@ -36,7 +36,7 @@ component can run without a paid API key.
 | Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
 | Transparent correlation | Versioned cross-source rules, exact geography distance/time evidence, stable graph IDs, hard result caps, and explicit non-causal semantics |
 | Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable evidence tie-breaks |
-| Retrieval evaluation | Versioned live queries, four ablations, rank-blind human grading, pooled Recall/MRR/nDCG, slice reports, explicit gates |
+| Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, shared-pool before/after deltas, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels |
@@ -358,7 +358,9 @@ filter, and citation decisions, and
 [ADR 0010](docs/adr/0010-pooled-human-retrieval-evaluation.md) for pooled judgments, blinding,
 metrics, and gate semantics, and
 [ADR 0011](docs/adr/0011-baseline-driven-retrieval-hardening.md) for the measured lexical-recall,
-RRF-monotonic hybrid, and candidate-coverage decisions.
+RRF-monotonic hybrid, and candidate-coverage decisions, and
+[ADR 0012](docs/adr/0012-shared-pool-longitudinal-evaluation.md) for exact judgment reuse and
+shared-pool before/after measurement.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -389,7 +391,7 @@ credential solely for transaction metering.
 
 ## Next milestones
 
-1. Capture and adjudicate the first live human relevance baseline; use its slice errors to decide
+1. Run the shared-pool longitudinal capture after deployment and use its slice deltas to decide
    whether a free local cross-encoder earns its added latency and complexity.
 2. Separately versioned semantic corroboration and contradiction detection, evaluated against the
    deterministic evidence graph instead of rewriting its measured edges.

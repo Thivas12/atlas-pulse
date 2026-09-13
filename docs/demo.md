@@ -97,8 +97,10 @@ RRF, and hybrid rankings are scored with pooled Recall, MRR, graded nDCG, citati
 candidate coverage, latency, and per-source/intent slices. Point out that the first reviewed
 baseline exposed zero lexical coverage and a degrading weighted hybrid rule, so the next version
 repaired candidate recall and limited evidence features to RRF tie-breaking before considering a
-cross-encoder. No relevance score or gate exists until a named human reviews the captured
-evidence. Then show CI: strict Ruff/mypy/pytest with real Valkey, PostGIS,
+cross-encoder. Show the shared-pool comparison: unchanged evidence reuses only exact prior grades,
+and both versions are rescored against the union surfaced by either system. No relevance score or
+gate exists until a named human reviews the captured evidence. Then show CI: strict
+Ruff/mypy/pytest with real Valkey, PostGIS,
 and pgvector; TypeScript/Biome/Vitest; a production build; and a container/edge smoke test. Close
 with the architectural boundary: generation, contradiction detection, and agents remain
 separately versioned layers rather than hidden claims.

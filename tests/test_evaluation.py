@@ -83,7 +83,7 @@ def pool(*, reviewed: bool = False) -> CandidatePool:
     runs = (
         CapturedRun(
             mode="lexical",
-            ranking_rule="postgres-english-fts-v1",
+            ranking_rule="postgres-english-fts-any-v2",
             embedding_model="test/model",
             latency_ms=10,
             document_ids=("nws:doc-2", "nws:doc-1", "nws:doc-3"),
@@ -104,7 +104,7 @@ def pool(*, reviewed: bool = False) -> CandidatePool:
         ),
         CapturedRun(
             mode="hybrid",
-            ranking_rule="rrf60-transparent-rerank-v1",
+            ranking_rule="rrf60-evidence-tiebreak-v2",
             embedding_model="test/model",
             latency_ms=25,
             document_ids=("nws:doc-1", "nws:doc-2", "nws:doc-3"),
@@ -246,18 +246,41 @@ def test_scoring_aggregates_modes_slices_percentiles_and_content_hash() -> None:
 
     report = score_pool(reviewed, cutoffs=(3, 1, 3))
 
+    assert report.schema_version == "1.1.0"
     assert report.pool_sha256 == canonical_sha256(reviewed)
     assert report.report_id.endswith(report.pool_sha256[:12])
     assert report.embedding_models == ("test/model",)
     assert set(report.modes) == {"lexical", "dense", "rrf", "hybrid"}
     assert report.modes["hybrid"].query_count == 1
+    assert report.modes["hybrid"].candidate_coverage == 1
+    assert report.modes["hybrid"].empty_query_ids == ()
     assert report.modes["hybrid"].latency_p50_ms == 25
     assert set(report.modes["hybrid"].cutoffs) == {1, 3}
     assert report.slices["weather"]["dense"].query_count == 1
     assert "pooled recall" in report.caveats[0].casefold()
+    assert "- Report schema: `1.1.0`" in render_markdown(report)
 
     reordered = {"b": 2, "a": 1}
     assert canonical_sha256(reordered) == canonical_sha256({"a": 1, "b": 2})
+
+
+def test_scoring_exposes_empty_query_coverage_without_calling_it_irrelevant() -> None:
+    reviewed = pool(reviewed=True)
+    original = reviewed.queries[0]
+    empty = PooledQuery(
+        query=evaluation_query("empty-source-query"),
+        candidates=(),
+        runs=tuple(run.model_copy(update={"document_ids": ()}) for run in original.runs),
+    )
+    expanded = reviewed.model_copy(update={"queries": (original, empty)})
+
+    report = score_pool(expanded, cutoffs=(1,))
+
+    assert report.modes["hybrid"].candidate_coverage == 0.5
+    assert report.modes["hybrid"].empty_query_ids == ("empty-source-query",)
+    markdown = render_markdown(report)
+    assert "| hybrid | 1/2 | `empty-source-query` |" in markdown
+    assert "does not prove that an eligible source corpus existed" in markdown
 
 
 @pytest.mark.parametrize("cutoffs", [(), (0,), (51,)])
@@ -294,18 +317,27 @@ def test_regression_gates_pass_fail_and_render_with_caveats() -> None:
                 cutoff=1,
                 minimum=1,
             ),
+            GateRule(
+                rule_id="weather-dense-coverage",
+                mode="dense",
+                slice_name="weather",
+                metric="candidate_coverage",
+                minimum=1,
+            ),
         ),
     )
 
     outcomes = evaluate_gates(report, policy)
     markdown = render_markdown(report, gates=outcomes)
 
-    assert [outcome.passed for outcome in outcomes] == [True, False, True]
+    assert [outcome.passed for outcome in outcomes] == [True, False, True, True]
     assert outcomes[0].comparison == ">= 0.9"
     assert outcomes[1].comparison == "<= 20"
     assert outcomes[2].slice_name == "weather"
+    assert outcomes[3].observed == 1
     assert "## Mode comparison" in markdown
     assert "## Slice comparison" in markdown
+    assert "## Candidate coverage gaps" in markdown
     assert "| `hybrid-latency` | overall / hybrid | latency_p95_ms | FAIL" in markdown
     assert "## Caveats" in markdown
     assert "Regression gates" not in render_markdown(report)
@@ -328,6 +360,14 @@ def test_gate_and_pool_contracts_reject_ambiguous_or_corrupt_artifacts() -> None
             metric="latency_p95_ms",
             cutoff=10,
             maximum=500,
+        )
+    with pytest.raises(ValidationError, match="must not define a cutoff"):
+        GateRule(
+            rule_id="bad-coverage",
+            mode="hybrid",
+            metric="candidate_coverage",
+            cutoff=10,
+            minimum=1,
         )
     with pytest.raises(ValidationError, match="require a cutoff"):
         GateRule(rule_id="bad-quality", mode="hybrid", metric="ndcg", minimum=0.5)
@@ -730,3 +770,72 @@ def test_cli_capture_writes_pool_and_rank_blind_sheet(
     )
     assert CandidatePool.model_validate_json(pool_path.read_text(encoding="utf-8")) == pool()
     assert tuple(csv.DictReader(io.StringIO(sheet_path.read_text(encoding="utf-8"))))
+
+
+def test_cli_capture_warns_when_every_mode_is_empty_for_a_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    query_set = EvaluationQuerySet(
+        query_set_id="empty-capture.v1",
+        title="Empty capture test",
+        description="A valid query set used to expose an empty candidate pool.",
+        modes=("hybrid",),
+        queries=(evaluation_query("missing-source"),),
+    )
+    queries_path = tmp_path / "queries.json"
+    pool_path = tmp_path / "pool.json"
+    sheet_path = tmp_path / "judgments.csv"
+    queries_path.write_text(query_set.model_dump_json(indent=2), encoding="utf-8")
+    source = pool()
+    empty_pool = CandidatePool.model_validate(
+        source.model_copy(
+            update={
+                "queries": (
+                    PooledQuery(
+                        query=evaluation_query("missing-source"),
+                        candidates=(),
+                        runs=(
+                            CapturedRun(
+                                mode="hybrid",
+                                ranking_rule="rrf60-evidence-tiebreak-v2",
+                                embedding_model="test/model",
+                                latency_ms=5,
+                                document_ids=(),
+                            ),
+                        ),
+                    ),
+                )
+            }
+        ).model_dump(mode="python")
+    )
+
+    async def fake_capture(
+        _received: EvaluationQuerySet,
+        *,
+        base_url: str,
+    ) -> CandidatePool:
+        assert base_url == "https://atlas.example"
+        return empty_pool
+
+    monkeypatch.setattr("atlas_pulse.evaluation.cli.capture_pool", fake_capture)
+    assert (
+        run_cli(
+            [
+                "capture",
+                "--queries",
+                str(queries_path),
+                "--base-url",
+                "https://atlas.example",
+                "--output",
+                str(pool_path),
+                "--judgments-output",
+                str(sheet_path),
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr()
+    assert "Candidate coverage warning" in output.err
+    assert "missing-source" in output.err

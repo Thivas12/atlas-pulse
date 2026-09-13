@@ -290,7 +290,7 @@ def test_geo_radius_rejects_invalid_values(kwargs: dict[str, float], message: st
         GeoRadius(**kwargs)
 
 
-def test_rrf_combines_channels_and_exposes_transparent_reranking() -> None:
+def test_rrf_combines_channels_and_exposes_evidence_features() -> None:
     shared = make_event("event-1", title="Severe weather evacuation order")
     lexical_only = make_event("event-2", title="Severe weather advisory")
     dense_only = make_event("event-3", title="Residents told to leave immediately")
@@ -307,7 +307,7 @@ def test_rrf_combines_channels_and_exposes_transparent_reranking() -> None:
 
     hits = fuse_and_rerank(batch, query_text="severe weather", limit=3)
 
-    assert [hit.message.event.event_id for hit in hits] == ["event-1", "event-2", "event-3"]
+    assert [hit.message.event.event_id for hit in hits] == ["event-1", "event-3", "event-2"]
     first = hits[0]
     assert first.ranking.lexical_rank == 1
     assert first.ranking.dense_rank == 2
@@ -315,7 +315,7 @@ def test_rrf_combines_channels_and_exposes_transparent_reranking() -> None:
     assert first.ranking.token_coverage == 1
     assert first.distance_km == 3.5
     assert first.citation.status == "traceable"
-    assert hits[2].ranking.lexical_rank is None
+    assert hits[1].ranking.lexical_rank is None
 
 
 def test_ranking_modes_reuse_one_candidate_snapshot_for_honest_ablations() -> None:
@@ -344,7 +344,23 @@ def test_ranking_modes_reuse_one_candidate_snapshot_for_honest_ablations() -> No
     assert orders["lexical"] == ["event-1", "event-2"]
     assert orders["dense"] == ["event-3", "event-1"]
     assert orders["rrf"] == ["event-1", "event-3", "event-2"]
-    assert orders["hybrid"] == ["event-1", "event-2", "event-3"]
+    assert orders["hybrid"] == orders["rrf"]
+
+
+def test_hybrid_evidence_features_break_only_exact_rrf_ties() -> None:
+    lexical_only = make_event("alpha-1", source="nws", title="Unrelated advisory")
+    dense_only = make_event("beta-2", source="usgs", title="Severe weather")
+    batch = CandidateBatch(
+        lexical=(candidate(lexical_only, rank=1, score=0.8),),
+        dense=(candidate(dense_only, rank=1, score=0.9),),
+    )
+
+    rrf = rank_candidates(batch, query_text="severe weather", limit=2, mode="rrf")
+    hybrid = rank_candidates(batch, query_text="severe weather", limit=2, mode="hybrid")
+
+    assert [hit.message.event.event_id for hit in rrf] == ["alpha-1", "beta-2"]
+    assert [hit.message.event.event_id for hit in hybrid] == ["beta-2", "alpha-1"]
+    assert all(hit.ranking.rerank_score == hit.ranking.rrf_score for hit in hybrid)
 
 
 def test_rrf_ties_are_stable_and_empty_queries_have_zero_coverage() -> None:

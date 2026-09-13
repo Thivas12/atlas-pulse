@@ -22,8 +22,9 @@ curl -fsS 'http://localhost:8000/v1/signals?source=nws&min_severity=3&bbox=-125,
 ## 18–33 seconds: prove evidence-first hybrid retrieval
 
 Open **Search** and enter a paraphrase such as “residents ordered to shelter from a dangerous
-storm.” Point out the independent FTS and vector ranks, final transparent rerank score, and
-traceable evidence link. Toggle viewport scope. State the boundary visible in the UI: these are
+storm.” Point out the independent FTS and vector ranks, final monotonic RRF score, evidence
+tie-break features, and traceable evidence link. Toggle viewport scope. State the boundary visible
+in the UI: these are
 ranked source events, not an LLM answer, and citation validation is structural rather than a truth
 claim.
 
@@ -93,8 +94,11 @@ docker compose exec postgres psql -U atlas -d atlas -c \
 
 Show the versioned 15-query set and rank-blind review sheet workflow. Explain that lexical, dense,
 RRF, and hybrid rankings are scored with pooled Recall, MRR, graded nDCG, citation traceability,
-latency, and per-source/intent slices; no relevance score or gate exists until a named human
-reviews the captured evidence. Then show CI: strict Ruff/mypy/pytest with real Valkey, PostGIS,
+candidate coverage, latency, and per-source/intent slices. Point out that the first reviewed
+baseline exposed zero lexical coverage and a degrading weighted hybrid rule, so the next version
+repaired candidate recall and limited evidence features to RRF tie-breaking before considering a
+cross-encoder. No relevance score or gate exists until a named human reviews the captured
+evidence. Then show CI: strict Ruff/mypy/pytest with real Valkey, PostGIS,
 and pgvector; TypeScript/Biome/Vitest; a production build; and a container/edge smoke test. Close
 with the architectural boundary: generation, contradiction detection, and agents remain
 separately versioned layers rather than hidden claims.

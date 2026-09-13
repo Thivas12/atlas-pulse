@@ -98,7 +98,7 @@ function searchResponse(item: EventEnvelope): SearchResponse {
     ],
     embedding_model: "BAAI/bge-small-en-v1.5",
     ranking_mode: "hybrid",
-    ranking_rule: "rrf60-transparent-rerank-v1",
+    ranking_rule: "rrf60-evidence-tiebreak-v2",
     caveat: "Ranked source events, not a generated answer.",
     parameters: {
       query: "residents shelter from violent storm",

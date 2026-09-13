@@ -26,6 +26,8 @@ from atlas_pulse.retrieval import RankingMode
 _CAVEATS = (
     "Recall is pooled recall: relevance outside the judged candidate pool is unknown.",
     "Unjudged retrieved documents receive zero gain and reduce judged-rate; they are not proven irrelevant.",
+    "Candidate coverage means a mode returned at least one result; it does not prove that an "
+    "eligible source corpus existed or that no relevant event existed.",
     "Citation traceability validates link structure and event attachment, not factual truth.",
     "Latency is observed client-side for this capture and is not a universal service-level guarantee.",
 )
@@ -126,8 +128,11 @@ def _aggregate(rows: Sequence[QueryRunMetrics]) -> AggregateMetrics:
     if not rows:
         raise ValueError("cannot aggregate an empty metric group")
     latencies = [row.latency_ms for row in rows]
+    empty_query_ids = tuple(sorted(row.query_id for row in rows if row.result_count == 0))
     return AggregateMetrics(
         query_count=len(rows),
+        candidate_coverage=(len(rows) - len(empty_query_ids)) / len(rows),
+        empty_query_ids=empty_query_ids,
         latency_p50_ms=_percentile(latencies, 0.50),
         latency_p95_ms=_percentile(latencies, 0.95),
         cutoffs=_average_cutoffs(rows),
@@ -155,6 +160,7 @@ def score_pool(pool: CandidatePool, *, cutoffs: Iterable[int] = (1, 3, 5, 10)) -
                     mode=run.mode,
                     ranking_rule=run.ranking_rule,
                     latency_ms=run.latency_ms,
+                    result_count=len(run.document_ids),
                     cutoffs={
                         cutoff: metrics_at_k(
                             run.document_ids,
@@ -210,6 +216,8 @@ def evaluate_gates(report: EvaluationReport, policy: GatePolicy) -> tuple[GateOu
             raise ValueError(f"report does not contain mode {rule.mode}{scope}")
         if rule.metric == "latency_p95_ms":
             observed = aggregate.latency_p95_ms
+        elif rule.metric == "candidate_coverage":
+            observed = aggregate.candidate_coverage
         else:
             assert rule.cutoff is not None
             cutoff = aggregate.cutoffs.get(rule.cutoff)

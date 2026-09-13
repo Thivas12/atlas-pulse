@@ -82,7 +82,7 @@ export function SearchPanel({
         <p>
           Local BGE embeddings · PostgreSQL FTS · pgvector HNSW ·{" "}
           {response === undefined || response.ranking_mode === "hybrid"
-            ? "RRF + transparent rerank"
+            ? "RRF + evidence tie-break"
             : `${response.ranking_mode.toUpperCase()} evaluation mode`}
         </p>
       </form>

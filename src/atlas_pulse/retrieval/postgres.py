@@ -1,5 +1,6 @@
 """Atomic PostgreSQL full-text and pgvector retrieval projection."""
 
+import re
 from collections.abc import Mapping
 from decimal import Decimal
 from typing import cast
@@ -107,6 +108,25 @@ ON CONFLICT (projection_name) DO UPDATE SET
 WHERE (projection_checkpoints.last_stream_ms, projection_checkpoints.last_stream_seq)
     < (EXCLUDED.last_stream_ms, EXCLUDED.last_stream_seq)
 """
+
+_LEXICAL_TOKEN = re.compile(r"[^\W_]+", flags=re.UNICODE)
+_LEXICAL_OPERATORS = frozenset({"and", "not", "or"})
+_MAX_LEXICAL_TERMS = 32
+
+
+def _relaxed_websearch_query(value: str) -> str:
+    """Build a bounded any-term query without forwarding user search syntax."""
+    terms: list[str] = []
+    seen: set[str] = set()
+    for match in _LEXICAL_TOKEN.finditer(value.casefold()):
+        term = match.group()
+        if term in _LEXICAL_OPERATORS or term in seen:
+            continue
+        terms.append(term)
+        seen.add(term)
+        if len(terms) == _MAX_LEXICAL_TERMS:
+            break
+    return " OR ".join(terms)
 
 
 def _vector_literal(embedding: Embedding) -> str:
@@ -268,7 +288,7 @@ class PostgresRetrievalStore:
     ) -> CandidateBatch:
         conditions, parameters = self._filters(query)
         parameters.update(
-            query_text=query.text,
+            lexical_query=_relaxed_websearch_query(query.text),
             query_embedding=_vector_literal(embedding),
             embedding_model=embedding_model,
         )
@@ -276,15 +296,20 @@ class PostgresRetrievalStore:
         distance = self._distance_expression(query)
         lexical = text(
             f"""
+            WITH lexical_query AS (
+                SELECT websearch_to_tsquery('english', :lexical_query) AS value
+            )
             SELECT
                 stream_id,
                 event_json,
                 document_text,
-                ts_rank_cd(text_search, websearch_to_tsquery('english', :query_text)) AS score,
+                ts_rank_cd(text_search, lexical_query.value) AS score,
                 {distance}
             FROM retrieval_documents
+            CROSS JOIN lexical_query
             WHERE {predicate}
-              AND text_search @@ websearch_to_tsquery('english', :query_text)
+              AND numnode(lexical_query.value) > 0
+              AND text_search @@ lexical_query.value
             ORDER BY score DESC, stream_ms DESC, stream_seq DESC, source, event_id
             LIMIT :candidate_limit
             """

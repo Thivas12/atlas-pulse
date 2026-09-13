@@ -337,6 +337,18 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
         assert thermal.hits[0].distance_km is not None
         assert thermal.hits[0].distance_km < 10
 
+        relaxed_lexical = await search.search(
+            SearchQuery(
+                text="high confidence intense satellite thermal anomaly",
+                limit=3,
+                candidate_limit=10,
+                source="firms",
+                ranking_mode="lexical",
+            )
+        )
+        assert [hit.message.event.event_id for hit in relaxed_lexical.hits] == ["day5-fire"]
+        assert relaxed_lexical.hits[0].ranking.lexical_rank == 1
+
         conflict = await search.search(
             SearchQuery(
                 text="fight between opposing groups",

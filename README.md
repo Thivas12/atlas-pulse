@@ -16,7 +16,7 @@ component can run without a paid API key.
 > PostGIS. A bounded query-time correlation engine measures cross-source spatial and temporal
 > co-occurrence. A separate restart-safe worker renders and locally embeds current evidence into
 > PostgreSQL full-text search plus pgvector. `/v1/search` applies the same source, time, expiry, and
-> PostGIS filters to both channels, fuses ranks with RRF, transparently reranks them, validates
+> PostGIS filters to both channels, fuses ranks with RRF, applies evidence-only tie-breaks, validates
 > credential-safe citations, and exposes every score in the dashboard. A pooled, rank-blind human
 > judgment workflow compares lexical, dense, RRF, and hybrid modes with standard IR metrics,
 > source/intent slices, content-addressed reports, and explicit regression gates. Search still
@@ -35,7 +35,7 @@ component can run without a paid API key.
 | Durable current state | Immutable PostgreSQL revisions plus atomic current pointers and restart-safe checkpoint |
 | Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
 | Transparent correlation | Versioned cross-source rules, exact geography distance/time evidence, stable graph IDs, hard result caps, and explicit non-causal semantics |
-| Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable reranking |
+| Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable evidence tie-breaks |
 | Retrieval evaluation | Versioned live queries, four ablations, rank-blind human grading, pooled Recall/MRR/nDCG, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
@@ -62,7 +62,7 @@ flowchart TD
     PostGIS --> Correlate["Bounded geography + time join"]
     Correlate --> Graph["Deterministic evidence graph"]
     PostGIS --> API["FastAPI current-state API"]
-    Hybrid --> Search["RRF + transparent rerank"]
+    Hybrid --> Search["RRF + evidence tie-break"]
     Search --> Evaluate["Pooled human evaluation"]
     Search --> API
     Graph --> API
@@ -132,7 +132,7 @@ curl -s --get 'http://localhost:8000/v1/search' \
 Switch between **Live** and **Replay**, then filter **All**, **Earthquakes**, **Weather**, or
 **Fires**, or **Conflict**. Open **Correlations** to inspect measured cross-source clusters and
 follow each node back to its public source evidence. Open **Search** and try a paraphrase rather
-than copying a source headline. Every result shows its lexical rank, dense rank, fused/reranked
+than copying a source headline. Every result shows its lexical rank, dense rank, fused/final
 score, and citation status.
 Live mode is served from current PostGIS state, omits expired alerts/detections, and refreshes the
 map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
@@ -265,9 +265,11 @@ English full-text search. It accepts `source`, aware `occurred_after`/`occurred_
 `active_only`, `bbox`, a `near=longitude,latitude` plus `radius_km` filter, and
 `ranking_mode=lexical|dense|rrf|hybrid` (default `hybrid`). Both channels use the same predicates.
 Each channel retrieves at most `candidate_limit` rows (default 50, maximum 200), Reciprocal Rank
-Fusion combines their ranks with `k=60`, and an inspectable reranker adds exact-phrase and
-token-coverage features. Raw FTS/cosine scores, channel ranks, RRF score, final score, measured
-distance, model ID, mode/rule ID, and exact query parameters are returned.
+Fusion combines their ranks with `k=60`, and exact-phrase/token-coverage evidence breaks only
+exact fused-score ties. The lexical channel uses a bounded any-term English query so one missing
+paraphrased term cannot collapse the whole candidate set. Raw FTS/cosine scores, channel ranks,
+RRF score, final score, measured distance, model ID, mode/rule ID, and exact query parameters are
+returned.
 
 Citation status `traceable` means only that AtlasPulse found a public HTTP(S) evidence URL without
 embedded credentials or credential-like query parameters and attached it to the exact source and
@@ -337,7 +339,8 @@ deterministic for retained entries rather than an indefinite event archive.
   derived document/model identity changes during an intentional rebuild. Generated text search,
   vector data, and the retrieval checkpoint commit atomically.
 - Dense and lexical scores are never added directly. Deterministic RRF combines ranks, and the
-  response exposes all reranking features and hard candidate caps.
+  response exposes evidence tie-breakers and hard candidate caps. A reviewed baseline must justify
+  any future learned reranker.
 
 See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision,
 [ADR 0002](docs/adr/0002-snapshot-before-validation.md) for the evidence boundary, and
@@ -353,7 +356,9 @@ identity, query bounds, and non-causal semantics, and
 [ADR 0009](docs/adr/0009-independent-hybrid-retrieval.md) for model, failure-isolation, fusion,
 filter, and citation decisions, and
 [ADR 0010](docs/adr/0010-pooled-human-retrieval-evaluation.md) for pooled judgments, blinding,
-metrics, and gate semantics.
+metrics, and gate semantics, and
+[ADR 0011](docs/adr/0011-baseline-driven-retrieval-hardening.md) for the measured lexical-recall,
+RRF-monotonic hybrid, and candidate-coverage decisions.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 

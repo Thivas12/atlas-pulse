@@ -110,7 +110,7 @@ class RetrievalIndexerService:
 
 
 class HybridSearchService:
-    """Local dense retrieval, FTS, RRF, reranking, and citation validation."""
+    """Local dense retrieval, FTS, RRF, evidence tie-breaking, and citation validation."""
 
     def __init__(self, *, store: RetrievalStore, embedder: EmbeddingProvider) -> None:
         self._store = store

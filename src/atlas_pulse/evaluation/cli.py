@@ -50,6 +50,14 @@ async def _capture(args: argparse.Namespace) -> int:
     )
     _write(args.judgments_output, export_judgments(pool))
     print(f"Captured {sum(len(query.candidates) for query in pool.queries)} pooled candidates")
+    empty_queries = tuple(
+        pooled_query.query.query_id for pooled_query in pool.queries if not pooled_query.candidates
+    )
+    if empty_queries:
+        print(
+            "Candidate coverage warning; no mode returned results for: " + ", ".join(empty_queries),
+            file=sys.stderr,
+        )
     print(f"Review every relevance_0_to_3 cell in {args.judgments_output}")
     return 0
 

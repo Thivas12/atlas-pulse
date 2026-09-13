@@ -17,6 +17,7 @@ def render_markdown(
     lines = [
         f"# Retrieval evaluation: {report.report_id}",
         "",
+        f"- Report schema: `{report.schema_version}`",
         f"- Pool: `{report.pool_id}`",
         f"- Pool SHA-256: `{report.pool_sha256}`",
         f"- Reviewer: `{report.reviewer}`",
@@ -30,13 +31,14 @@ def render_markdown(
         "",
         "## Mode comparison",
         "",
-        "| Mode | k | Precision | Pooled recall | MRR | nDCG | Hit rate | Judged | Citation | p50 ms | p95 ms |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Mode | Coverage | k | Precision | Pooled recall | MRR | nDCG | Hit rate | Judged | Citation | p50 ms | p95 ms |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for mode, aggregate in report.modes.items():
         for cutoff, metrics in aggregate.cutoffs.items():
             lines.append(
-                f"| {mode} | {cutoff} | {_metric(metrics.precision)} | "
+                f"| {mode} | {_metric(aggregate.candidate_coverage)} | {cutoff} | "
+                f"{_metric(metrics.precision)} | "
                 f"{_metric(metrics.pooled_recall)} | {_metric(metrics.reciprocal_rank)} | "
                 f"{_metric(metrics.ndcg)} | {_metric(metrics.hit_rate)} | "
                 f"{_metric(metrics.judged_rate)} | {_metric(metrics.citation_traceability)} | "
@@ -46,10 +48,24 @@ def render_markdown(
     lines.extend(
         [
             "",
+            "## Candidate coverage gaps",
+            "",
+            "| Mode | Covered queries | Empty query IDs |",
+            "| --- | ---: | --- |",
+        ]
+    )
+    for mode, aggregate in report.modes.items():
+        covered = aggregate.query_count - len(aggregate.empty_query_ids)
+        empty = ", ".join(f"`{query_id}`" for query_id in aggregate.empty_query_ids) or "None"
+        lines.append(f"| {mode} | {covered}/{aggregate.query_count} | {empty} |")
+
+    lines.extend(
+        [
+            "",
             "## Slice comparison",
             "",
-            "| Slice | Mode | Queries | k | Precision | Pooled recall | MRR | nDCG | Hit rate | Citation |",
-            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| Slice | Mode | Queries | Coverage | k | Precision | Pooled recall | MRR | nDCG | Hit rate | Citation |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for slice_name, modes in report.slices.items():
@@ -57,7 +73,8 @@ def render_markdown(
             cutoff = max(aggregate.cutoffs)
             metrics = aggregate.cutoffs[cutoff]
             lines.append(
-                f"| {slice_name} | {mode} | {aggregate.query_count} | {cutoff} | "
+                f"| {slice_name} | {mode} | {aggregate.query_count} | "
+                f"{_metric(aggregate.candidate_coverage)} | {cutoff} | "
                 f"{_metric(metrics.precision)} | {_metric(metrics.pooled_recall)} | "
                 f"{_metric(metrics.reciprocal_rank)} | {_metric(metrics.ndcg)} | "
                 f"{_metric(metrics.hit_rate)} | {_metric(metrics.citation_traceability)} |"

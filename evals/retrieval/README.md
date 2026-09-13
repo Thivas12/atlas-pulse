@@ -64,6 +64,11 @@ Only after a reviewed baseline exists, create a `GatePolicy` JSON with explicit 
 ceilings and pass it with `--policy`. A failed rule exits `1`; malformed or incomplete evidence
 exits `2`. Outputs are never overwritten unless `--force` is supplied deliberately.
 
+Every report now records `candidate_coverage` and the exact query IDs for which a mode returned
+nothing. Capture also prints an immediate warning when all modes are empty for a query. Coverage
+can reveal a missing source or retrieval failure, but it cannot distinguish ingestion, indexing,
+expiry, filtering, and ranking by itself.
+
 A policy can gate the overall mode or one declared slice. Choose values from an accepted reviewed
 baseline; the numbers below only demonstrate the schema:
 
@@ -92,6 +97,13 @@ baseline; the numbers below only demonstrate the schema:
       "mode": "hybrid",
       "metric": "latency_p95_ms",
       "maximum": 1000
+    },
+    {
+      "rule_id": "firms-candidate-coverage",
+      "mode": "hybrid",
+      "slice_name": "source-firms",
+      "metric": "candidate_coverage",
+      "minimum": 1.0
     }
   ]
 }

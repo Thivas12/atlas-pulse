@@ -67,13 +67,43 @@ Undefined precision, recall, F1, or selective accuracy is serialized as `null` a
 `N/A`. A missing contradiction in one small live window is not reported as perfect or zero
 contradiction performance.
 
+## Independent review and adjudication
+
+A single reviewed pool is useful for internal error discovery, but it is not treated as public
+gold. `independent-review-adjudication-v1` requires two complete first-pass reviews from different
+people over the exact same capture. The capture identity excludes only human judgments, reviewer
+metadata, and its artifact-envelope version. It retains event documents, graph measurements,
+request parameters, rule versions, and deployed predictions, so reviews of different systems or
+snapshots cannot be mixed.
+
+Review order is canonical by reviewer identity. The agreement report is therefore stable when CLI
+arguments are reversed and contains:
+
+- observed and expected marginal agreement;
+- Cohen's kappa, or `null` when expected agreement is exactly one;
+- a complete first-reviewer-by-second-reviewer confusion matrix;
+- predicate and source-pair agreement slices;
+- both reviewed-pool hashes and every disagreement case ID.
+
+Only disagreements are written to the adjudication CSV. The sheet exposes both human labels and
+rationales but remains blind to system labels, claims, bases, and rationales. Every evidence and
+review column is protected during import. A named third adjudicator must resolve each row with an
+allowed label and non-empty rationale. Matching reviewer labels pass through without an override.
+
+The resulting schema `1.1.0` gold pool embeds the independent reviewers, both reviewed-pool hashes,
+agreement report identity, observed agreement, kappa, adjudicator, UTC timestamp, and decision
+count. The ordinary scorer consumes this pool and surfaces the provenance in both JSON and
+Markdown. Software can verify artifact identity and distinct names; it cannot prove that the
+humans worked independently.
+
 ## Promotion boundary
 
-No quality floor is checked in before the first representative human-reviewed pool exists. A
-future local NLI or LLM proposer must run over the same evidence cases and preserve model,
-prompt, threshold, and runtime identities. It may earn a new annotation version only if the
-reviewed comparison shows useful recall gains without unacceptable false decisiveness, latency,
+No quality floor is checked in before a representative pool completes independent review and
+adjudication. A future local NLI or LLM proposer must run over the same evidence cases and preserve
+model, prompt, threshold, and runtime identities. It may earn a new annotation version only if the
+adjudicated comparison shows useful recall gains without unacceptable false decisiveness, latency,
 or source/predicate regressions. It may never rewrite the measured graph.
 
-See [ADR 0014](adr/0014-human-reviewed-claim-pair-benchmark.md) for the decision and
+See [ADR 0014](adr/0014-human-reviewed-claim-pair-benchmark.md) for the benchmark decision,
+[ADR 0015](adr/0015-independent-review-adjudication.md) for gold-label finalization, and
 [`evals/relationships/README.md`](../evals/relationships/README.md) for commands and the rubric.

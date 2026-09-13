@@ -110,7 +110,10 @@ Ruff/mypy/pytest with real Valkey, PostGIS,
 and pgvector; TypeScript/Biome/Vitest; a production build; and a container/edge smoke test. Close
 with the architectural boundary: generated proposals and agents remain separately versioned
 layers rather than hidden claims. Show that semantic changes now have their own prediction-blind
-human benchmark rather than relying on synthetic examples or an LLM judge.
+human benchmark rather than relying on synthetic examples or an LLM judge. Explain that public or
+promotion-oriented results require two exact first-pass reviews: AtlasPulse reports observed
+agreement and Cohen's kappa, sends only disagreements to a third system-blind adjudicator, and
+content-addresses the final gold pool with both review hashes.
 
 ```bash
 uv run atlas-pulse-evaluate --help

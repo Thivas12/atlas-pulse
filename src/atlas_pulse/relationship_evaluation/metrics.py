@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from atlas_pulse.evaluation.metrics import canonical_sha256
@@ -26,14 +27,26 @@ _BASE_CAVEATS = (
 )
 
 
+@dataclass(frozen=True)
+class RelationshipScoreSet:
+    """Reusable metrics over one exact set of reviewed cases and predicted labels."""
+
+    overall: RelationshipSliceMetrics
+    predicates: dict[str, RelationshipSliceMetrics]
+    source_pairs: dict[str, RelationshipSliceMetrics]
+    confusion_matrix: dict[RelationshipLabel, dict[RelationshipLabel, int]]
+    outcomes: tuple[RelationshipCaseOutcome, ...]
+
+
 def _label_metrics(
     cases: Sequence[RelationshipCase],
+    predictions: Mapping[str, RelationshipLabel],
     label: RelationshipLabel,
 ) -> LabelMetrics:
     support = sum(case.gold_label == label for case in cases)
-    predicted = sum(case.system_prediction.label == label for case in cases)
+    predicted = sum(predictions[case.case_id] == label for case in cases)
     true_positive = sum(
-        case.gold_label == label and case.system_prediction.label == label for case in cases
+        case.gold_label == label and predictions[case.case_id] == label for case in cases
     )
     false_positive = predicted - true_positive
     false_negative = support - true_positive
@@ -58,14 +71,17 @@ def _label_metrics(
     )
 
 
-def _slice_metrics(cases: Sequence[RelationshipCase]) -> RelationshipSliceMetrics:
+def _slice_metrics(
+    cases: Sequence[RelationshipCase],
+    predictions: Mapping[str, RelationshipLabel],
+) -> RelationshipSliceMetrics:
     if not cases:
         raise ValueError("cannot score an empty relationship slice")
     if any(case.gold_label is None for case in cases):
         raise ValueError("relationship metrics require a gold label for every case")
-    correct = sum(case.system_prediction.label == case.gold_label for case in cases)
-    decisive = [case for case in cases if case.system_prediction.label != "insufficient_evidence"]
-    labels = {label: _label_metrics(cases, label) for label in RELATIONSHIP_LABELS}
+    correct = sum(predictions[case.case_id] == case.gold_label for case in cases)
+    decisive = [case for case in cases if predictions[case.case_id] != "insufficient_evidence"]
+    labels = {label: _label_metrics(cases, predictions, label) for label in RELATIONSHIP_LABELS}
     f1_values = [metrics.f1 for metrics in labels.values() if metrics.f1 is not None]
     return RelationshipSliceMetrics(
         case_count=len(cases),
@@ -74,8 +90,7 @@ def _slice_metrics(cases: Sequence[RelationshipCase]) -> RelationshipSliceMetric
         decisive_coverage=len(decisive) / len(cases),
         abstention_rate=(len(cases) - len(decisive)) / len(cases),
         selective_accuracy=(
-            sum(case.system_prediction.label == case.gold_label for case in decisive)
-            / len(decisive)
+            sum(predictions[case.case_id] == case.gold_label for case in decisive) / len(decisive)
             if decisive
             else None
         ),
@@ -85,12 +100,12 @@ def _slice_metrics(cases: Sequence[RelationshipCase]) -> RelationshipSliceMetric
 
 def _confusion_matrix(
     cases: Sequence[RelationshipCase],
+    predictions: Mapping[str, RelationshipLabel],
 ) -> dict[RelationshipLabel, dict[RelationshipLabel, int]]:
     return {
         gold: {
             predicted: sum(
-                case.gold_label == gold and case.system_prediction.label == predicted
-                for case in cases
+                case.gold_label == gold and predictions[case.case_id] == predicted for case in cases
             )
             for predicted in RELATIONSHIP_LABELS
         }
@@ -98,32 +113,72 @@ def _confusion_matrix(
     }
 
 
-def score_relationship_pool(pool: RelationshipPool) -> RelationshipEvaluationReport:
-    """Score one fully reviewed pool while retaining every case-level outcome."""
-    if pool.judgment_status != "reviewed" or pool.reviewer is None:
-        raise ValueError("only a fully reviewed relationship pool can be scored")
+def calculate_relationship_scores(
+    cases: Sequence[RelationshipCase],
+    predictions: Mapping[str, RelationshipLabel],
+) -> RelationshipScoreSet:
+    """Calculate identical metrics for any exact prediction map over reviewed cases."""
+    if not cases:
+        raise ValueError("cannot score an empty relationship case set")
+    case_ids = {case.case_id for case in cases}
+    prediction_ids = set(predictions)
+    missing = sorted(case_ids - prediction_ids)
+    unexpected = sorted(prediction_ids - case_ids)
+    if missing or unexpected:
+        details: list[str] = []
+        if missing:
+            details.append(f"missing {len(missing)} case(s)")
+        if unexpected:
+            details.append(f"contains {len(unexpected)} unknown case(s)")
+        raise ValueError("prediction map " + " and ".join(details))
+    invalid_labels = sorted(set(predictions.values()) - set(RELATIONSHIP_LABELS))
+    if invalid_labels:
+        raise ValueError(f"prediction map contains unknown label(s): {invalid_labels}")
+    if any(case.gold_label is None for case in cases):
+        raise ValueError("relationship metrics require a gold label for every case")
 
     by_predicate: dict[str, list[RelationshipCase]] = defaultdict(list)
     by_source_pair: dict[str, list[RelationshipCase]] = defaultdict(list)
-    for case in pool.cases:
+    outcomes: list[RelationshipCaseOutcome] = []
+    for case in cases:
+        predicted = predictions[case.case_id]
         by_predicate[case.predicate].append(case)
         by_source_pair["+".join(case.source_pair)].append(case)
-
-    outcomes: list[RelationshipCaseOutcome] = []
-    for case in pool.cases:
-        if case.gold_label is None:
-            raise ValueError("reviewed relationship pool contains an unlabeled case")
+        assert case.gold_label is not None
         outcomes.append(
             RelationshipCaseOutcome(
                 case_id=case.case_id,
                 edge_id=case.edge_id,
                 predicate=case.predicate,
                 source_pair=case.source_pair,
-                predicted_label=case.system_prediction.label,
+                predicted_label=predicted,
                 gold_label=case.gold_label,
-                correct=case.system_prediction.label == case.gold_label,
+                correct=predicted == case.gold_label,
             )
         )
+
+    return RelationshipScoreSet(
+        overall=_slice_metrics(cases, predictions),
+        predicates={
+            predicate: _slice_metrics(rows, predictions)
+            for predicate, rows in sorted(by_predicate.items())
+        },
+        source_pairs={
+            source_pair: _slice_metrics(rows, predictions)
+            for source_pair, rows in sorted(by_source_pair.items())
+        },
+        confusion_matrix=_confusion_matrix(cases, predictions),
+        outcomes=tuple(outcomes),
+    )
+
+
+def score_relationship_pool(pool: RelationshipPool) -> RelationshipEvaluationReport:
+    """Score one fully reviewed pool while retaining every case-level outcome."""
+    if pool.judgment_status != "reviewed" or pool.reviewer is None:
+        raise ValueError("only a fully reviewed relationship pool can be scored")
+
+    predictions = {case.case_id: case.system_prediction.label for case in pool.cases}
+    scores = calculate_relationship_scores(pool.cases, predictions)
 
     pool_hash = canonical_sha256(pool)
     if pool.adjudication is None:
@@ -158,16 +213,11 @@ def score_relationship_pool(pool: RelationshipPool) -> RelationshipEvaluationRep
         sampled_edge_count=pool.sampled_edge_count,
         incidents_truncated=pool.incidents_truncated,
         candidate_edges_truncated=pool.candidate_edges_truncated,
-        overall=_slice_metrics(pool.cases),
-        predicates={
-            predicate: _slice_metrics(cases) for predicate, cases in sorted(by_predicate.items())
-        },
-        source_pairs={
-            source_pair: _slice_metrics(cases)
-            for source_pair, cases in sorted(by_source_pair.items())
-        },
-        confusion_matrix=_confusion_matrix(pool.cases),
-        outcomes=tuple(outcomes),
+        overall=scores.overall,
+        predicates=scores.predicates,
+        source_pairs=scores.source_pairs,
+        confusion_matrix=scores.confusion_matrix,
+        outcomes=scores.outcomes,
         adjudication=pool.adjudication,
         caveats=(*_BASE_CAVEATS, review_caveat),
     )

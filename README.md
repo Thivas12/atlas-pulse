@@ -7,7 +7,7 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — evidence-first hybrid retrieval.** Independent workers
+> **Current milestone — measured, evidence-first hybrid retrieval.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
@@ -17,8 +17,10 @@ component can run without a paid API key.
 > co-occurrence. A separate restart-safe worker renders and locally embeds current evidence into
 > PostgreSQL full-text search plus pgvector. `/v1/search` applies the same source, time, expiry, and
 > PostGIS filters to both channels, fuses ranks with RRF, transparently reranks them, validates
-> credential-safe citations, and exposes every score in the dashboard. It returns evidence—not an
-> LLM answer or a claim of causation, corroboration, or truth.
+> credential-safe citations, and exposes every score in the dashboard. A pooled, rank-blind human
+> judgment workflow compares lexical, dense, RRF, and hybrid modes with standard IR metrics,
+> source/intent slices, content-addressed reports, and explicit regression gates. Search still
+> returns evidence—not an LLM answer or a claim of causation, corroboration, or truth.
 
 ## Why this is portfolio-grade
 
@@ -34,6 +36,7 @@ component can run without a paid API key.
 | Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
 | Transparent correlation | Versioned cross-source rules, exact geography distance/time evidence, stable graph IDs, hard result caps, and explicit non-causal semantics |
 | Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable reranking |
+| Retrieval evaluation | Versioned live queries, four ablations, rank-blind human grading, pooled Recall/MRR/nDCG, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels |
@@ -60,6 +63,7 @@ flowchart TD
     Correlate --> Graph["Deterministic evidence graph"]
     PostGIS --> API["FastAPI current-state API"]
     Hybrid --> Search["RRF + transparent rerank"]
+    Search --> Evaluate["Pooled human evaluation"]
     Search --> API
     Graph --> API
     Stream --> API
@@ -137,6 +141,22 @@ at the oldest retained stream entry; its controls operate on cursor-paged histor
 OpenAPI documentation is at <http://localhost:8000/docs>. Stop the stack with
 `docker compose down`. Add `--volumes` only when you intentionally want to delete local stream,
 PostGIS, and raw snapshot data.
+
+To measure the live retriever rather than judge a few hand-picked examples, capture the checked-in
+operator query set, grade the separate rank-blind CSV, and score its content-addressed pool:
+
+```bash
+mkdir -p artifacts/evaluation
+uv run atlas-pulse-evaluate capture \
+  --queries evals/retrieval/live-disruptions-v1.json \
+  --base-url http://localhost:8000 \
+  --output artifacts/evaluation/pool.json \
+  --judgments-output artifacts/evaluation/judgments.csv
+```
+
+The complete review/import/score workflow and `0..3` rubric are in
+[`evals/retrieval/README.md`](evals/retrieval/README.md). AtlasPulse does not ship invented labels
+or quality floors; gates become valid only after a named human reviews a captured corpus.
 
 ## Develop without rebuilding containers
 
@@ -242,11 +262,12 @@ shared real-world incident.
 
 `/v1/search` runs the query through local `BAAI/bge-small-en-v1.5` embeddings and PostgreSQL
 English full-text search. It accepts `source`, aware `occurred_after`/`occurred_before`,
-`active_only`, `bbox`, and a `near=longitude,latitude` plus `radius_km` filter. Both channels use
-the same predicates. Each channel retrieves at most `candidate_limit` rows (default 50, maximum
-200), Reciprocal Rank Fusion combines their ranks with `k=60`, and an inspectable reranker adds
-exact-phrase and token-coverage features. Raw FTS/cosine scores, channel ranks, RRF score, final
-score, measured distance, model ID, rule ID, and exact query parameters are returned.
+`active_only`, `bbox`, a `near=longitude,latitude` plus `radius_km` filter, and
+`ranking_mode=lexical|dense|rrf|hybrid` (default `hybrid`). Both channels use the same predicates.
+Each channel retrieves at most `candidate_limit` rows (default 50, maximum 200), Reciprocal Rank
+Fusion combines their ranks with `k=60`, and an inspectable reranker adds exact-phrase and
+token-coverage features. Raw FTS/cosine scores, channel ranks, RRF score, final score, measured
+distance, model ID, mode/rule ID, and exact query parameters are returned.
 
 Citation status `traceable` means only that AtlasPulse found a public HTTP(S) evidence URL without
 embedded credentials or credential-like query parameters and attached it to the exact source and
@@ -330,7 +351,9 @@ time, and uncertainty boundaries, and
 [ADR 0008](docs/adr/0008-deterministic-evidence-graph-correlation.md) for correlation rules,
 identity, query bounds, and non-causal semantics, and
 [ADR 0009](docs/adr/0009-independent-hybrid-retrieval.md) for model, failure-isolation, fusion,
-filter, and citation decisions.
+filter, and citation decisions, and
+[ADR 0010](docs/adr/0010-pooled-human-retrieval-evaluation.md) for pooled judgments, blinding,
+metrics, and gate semantics.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -350,6 +373,7 @@ credential solely for transaction metering.
 | Durable geospatial state | PostgreSQL + PostGIS + SQLAlchemy/Alembic | Open source |
 | Dense retrieval | [FastEmbed](https://github.com/qdrant/fastembed) + [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) | Apache-2.0 tooling + MIT model; local CPU inference |
 | Sparse/vector retrieval | PostgreSQL full-text search + [pgvector](https://github.com/pgvector/pgvector) | Open source; self-hosted |
+| Retrieval evaluation | Pydantic, Python CSV, pytest, human judgments | Open source/local; no judge API |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
 | Static serving | Caddy | Open source |
@@ -360,14 +384,14 @@ credential solely for transaction metering.
 
 ## Next milestones
 
-1. Versioned human relevance judgments with Recall@k, MRR, nDCG, latency, and filter-selectivity
-   dashboards; evaluate a free local cross-encoder before adopting it.
+1. Capture and adjudicate the first live human relevance baseline; use its slice errors to decide
+   whether a free local cross-encoder earns its added latency and complexity.
 2. Separately versioned semantic corroboration and contradiction detection, evaluated against the
    deterministic evidence graph instead of rewriting its measured edges.
 3. A hierarchy of specialist agents for evidence triage, impact
    assessment, forecasting, and human approval.
-4. Evaluation datasets, RAGAS-style retrieval metrics, agent trajectory scoring, drift
-   monitoring, and a fully free deployment path.
+4. Grounded-answer faithfulness/citation datasets, agent trajectory scoring, drift monitoring,
+   and a fully free deployment path.
 
 ## Data and attribution
 

@@ -97,6 +97,7 @@ function searchResponse(item: EventEnvelope): SearchResponse {
       },
     ],
     embedding_model: "BAAI/bge-small-en-v1.5",
+    ranking_mode: "hybrid",
     ranking_rule: "rrf60-transparent-rerank-v1",
     caveat: "Ranked source events, not a generated answer.",
     parameters: {
@@ -110,6 +111,7 @@ function searchResponse(item: EventEnvelope): SearchResponse {
       bbox: [-10, -5, 20, 30],
       near: null,
       radius_km: null,
+      ranking_mode: "hybrid",
     },
   };
 }

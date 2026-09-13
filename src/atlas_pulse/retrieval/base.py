@@ -11,6 +11,7 @@ from atlas_pulse.streams import StreamMessage
 
 Embedding = tuple[float, ...]
 CitationStatus = Literal["traceable", "missing", "rejected"]
+RankingMode = Literal["lexical", "dense", "rrf", "hybrid"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +46,7 @@ class SearchQuery:
     bounds: GeoBounds | None = None
     near: GeoRadius | None = None
     active_only: bool = True
+    ranking_mode: RankingMode = "hybrid"
 
     def __post_init__(self) -> None:
         normalized = " ".join(self.text.split())
@@ -63,6 +65,8 @@ class SearchQuery:
             and self.occurred_after > self.occurred_before
         ):
             raise ValueError("occurred_after must not be later than occurred_before")
+        if self.ranking_mode not in {"lexical", "dense", "rrf", "hybrid"}:
+            raise ValueError("ranking_mode must be lexical, dense, rrf, or hybrid")
         object.__setattr__(self, "text", normalized)
 
 
@@ -138,6 +142,7 @@ class SearchResult:
     hits: tuple[SearchHit, ...]
     candidates_considered: int
     embedding_model: str
+    ranking_mode: RankingMode
     ranking_rule: str
     caveat: str
 

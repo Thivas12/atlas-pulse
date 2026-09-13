@@ -18,7 +18,7 @@ from atlas_pulse.correlation import (
 )
 from atlas_pulse.projections import CorrelationQuery, GeoBounds, SignalQuery, SignalStore
 from atlas_pulse.projections.base import SourceName
-from atlas_pulse.retrieval import GeoRadius, SearchQuery, SearchResult, SearchService
+from atlas_pulse.retrieval import GeoRadius, RankingMode, SearchQuery, SearchResult, SearchService
 from atlas_pulse.streams.base import EventBus
 
 
@@ -183,6 +183,7 @@ class SearchParametersResponse(BaseModel):
     bbox: tuple[float, float, float, float] | None
     near: tuple[float, float] | None
     radius_km: float | None
+    ranking_mode: RankingMode
 
 
 class SearchResponse(BaseModel):
@@ -192,6 +193,7 @@ class SearchResponse(BaseModel):
     candidates_considered: int
     items: tuple[SearchHitResponse, ...]
     embedding_model: str
+    ranking_mode: RankingMode
     ranking_rule: str
     caveat: str
     parameters: SearchParametersResponse
@@ -346,6 +348,7 @@ def _search_response(result: SearchResult, query: SearchQuery) -> SearchResponse
             for hit in result.hits
         ),
         embedding_model=result.embedding_model,
+        ranking_mode=result.ranking_mode,
         ranking_rule=result.ranking_rule,
         caveat=result.caveat,
         parameters=SearchParametersResponse(
@@ -359,6 +362,7 @@ def _search_response(result: SearchResult, query: SearchQuery) -> SearchResponse
             bbox=(bounds.west, bounds.south, bounds.east, bounds.north) if bounds else None,
             near=(near.longitude, near.latitude) if near else None,
             radius_km=near.radius_km if near else None,
+            ranking_mode=query.ranking_mode,
         ),
     )
 
@@ -554,6 +558,7 @@ def create_app(
         ),
         radius_km: float = Query(default=250.0, gt=0, le=2_000),
         active_only: bool = Query(default=True),
+        ranking_mode: RankingMode = "hybrid",
     ) -> SearchResponse:
         if search_service is None:
             raise HTTPException(
@@ -572,6 +577,7 @@ def create_app(
                 bounds=_bounds_from_query(bbox),
                 near=_near_from_query(near, radius_km),
                 active_only=active_only,
+                ranking_mode=ranking_mode,
             )
         except ValueError as error:
             raise HTTPException(

@@ -27,12 +27,13 @@ from atlas_pulse.retrieval import (
     SearchResult,
     document_hash,
     fuse_and_rerank,
+    rank_candidates,
     render_event_document,
     validate_event_citation,
 )
 from atlas_pulse.retrieval.base import Embedding
 from atlas_pulse.retrieval.document import _render_value
-from atlas_pulse.retrieval.ranking import RANKING_RULE, RETRIEVAL_CAVEAT
+from atlas_pulse.retrieval.ranking import RANKING_RULE, RANKING_RULES, RETRIEVAL_CAVEAT
 from atlas_pulse.streams import InMemoryEventBus, StreamMessage
 
 
@@ -252,6 +253,7 @@ def test_search_contract_normalizes_and_preserves_all_filters() -> None:
         ({"text": "ok", "limit": 0}, "limit"),
         ({"text": "ok", "limit": 10, "candidate_limit": 9}, "candidate_limit"),
         ({"text": "ok", "candidate_limit": 201}, "candidate_limit"),
+        ({"text": "ok", "ranking_mode": "unknown"}, "ranking_mode"),
         (
             {"text": "ok", "occurred_after": datetime(2026, 1, 1)},
             "UTC offset",
@@ -314,6 +316,35 @@ def test_rrf_combines_channels_and_exposes_transparent_reranking() -> None:
     assert first.distance_km == 3.5
     assert first.citation.status == "traceable"
     assert hits[2].ranking.lexical_rank is None
+
+
+def test_ranking_modes_reuse_one_candidate_snapshot_for_honest_ablations() -> None:
+    shared = make_event("event-1", title="Severe weather evacuation order")
+    lexical_only = make_event("event-2", title="Severe weather advisory")
+    dense_only = make_event("event-3", title="Residents told to leave immediately")
+    batch = CandidateBatch(
+        lexical=(
+            candidate(shared, rank=1, score=0.8),
+            candidate(lexical_only, rank=2, score=0.5),
+        ),
+        dense=(
+            candidate(dense_only, rank=1, score=0.94),
+            candidate(shared, rank=2, score=0.91),
+        ),
+    )
+
+    orders = {
+        mode: [
+            hit.message.event.event_id
+            for hit in rank_candidates(batch, query_text="severe weather", limit=3, mode=mode)
+        ]
+        for mode in RANKING_RULES
+    }
+
+    assert orders["lexical"] == ["event-1", "event-2"]
+    assert orders["dense"] == ["event-3", "event-1"]
+    assert orders["rrf"] == ["event-1", "event-3", "event-2"]
+    assert orders["hybrid"] == ["event-1", "event-2", "event-3"]
 
 
 def test_rrf_ties_are_stable_and_empty_queries_have_zero_coverage() -> None:
@@ -402,6 +433,7 @@ async def test_hybrid_search_service_embeds_fuses_counts_and_closes() -> None:
     assert result.candidates_considered == 1
     assert len(result.hits) == 1
     assert result.embedding_model == embedder.model_name
+    assert result.ranking_mode == "hybrid"
     assert result.ranking_rule == RANKING_RULE
     assert result.caveat == RETRIEVAL_CAVEAT
     assert store.query == query
@@ -518,6 +550,7 @@ def test_typed_search_dataclasses_hold_evidence_without_generation() -> None:
         hits=(hit,),
         candidates_considered=1,
         embedding_model="test/model",
+        ranking_mode="hybrid",
         ranking_rule="test-rule",
         caveat="no answer",
     )

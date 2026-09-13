@@ -130,6 +130,7 @@ describe("AtlasPulse API client", () => {
         },
       ],
       embedding_model: "BAAI/bge-small-en-v1.5",
+      ranking_mode: "hybrid" as const,
       ranking_rule: "rrf60-transparent-rerank-v1",
       caveat: "Ranked evidence only; no generated answer.",
       parameters: {
@@ -143,6 +144,7 @@ describe("AtlasPulse API client", () => {
         bbox: [-10, -5, 20, 30] as [number, number, number, number],
         near: null,
         radius_km: null,
+        ranking_mode: "hybrid" as const,
       },
     };
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body));

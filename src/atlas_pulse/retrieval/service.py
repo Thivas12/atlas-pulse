@@ -14,9 +14,9 @@ from atlas_pulse.retrieval.base import (
 )
 from atlas_pulse.retrieval.document import document_hash, render_event_document
 from atlas_pulse.retrieval.ranking import (
-    RANKING_RULE,
+    RANKING_RULES,
     RETRIEVAL_CAVEAT,
-    fuse_and_rerank,
+    rank_candidates,
 )
 from atlas_pulse.streams import EventBus
 
@@ -124,7 +124,12 @@ class HybridSearchService:
                 embedding,
                 embedding_model=self._embedder.model_name,
             )
-            hits = fuse_and_rerank(candidates, query_text=query.text, limit=query.limit)
+            hits = rank_candidates(
+                candidates,
+                query_text=query.text,
+                limit=query.limit,
+                mode=query.ranking_mode,
+            )
             candidate_count = len(
                 {
                     (candidate.message.event.source, candidate.message.event.event_id)
@@ -138,7 +143,8 @@ class HybridSearchService:
                 hits=hits,
                 candidates_considered=candidate_count,
                 embedding_model=self._embedder.model_name,
-                ranking_rule=RANKING_RULE,
+                ranking_mode=query.ranking_mode,
+                ranking_rule=RANKING_RULES[query.ranking_mode],
                 caveat=RETRIEVAL_CAVEAT,
             )
 

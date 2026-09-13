@@ -7,11 +7,18 @@ from atlas_pulse.retrieval.base import (
     CandidateBatch,
     ChannelCandidate,
     RankingExplanation,
+    RankingMode,
     SearchHit,
 )
 from atlas_pulse.retrieval.document import validate_event_citation
 
 RANKING_RULE = "rrf60-transparent-rerank-v1"
+RANKING_RULES: dict[RankingMode, str] = {
+    "lexical": "postgres-english-fts-v1",
+    "dense": "bge-cosine-hnsw-v1",
+    "rrf": "rrf60-v1",
+    "hybrid": RANKING_RULE,
+}
 RRF_K = 60
 RETRIEVAL_CAVEAT = (
     "Results are ranked source events, not a generated answer. A traceable citation validates "
@@ -50,13 +57,14 @@ def _merge(batch: CandidateBatch) -> dict[tuple[str, str], _MergedCandidate]:
     return merged
 
 
-def fuse_and_rerank(
+def rank_candidates(
     batch: CandidateBatch,
     *,
     query_text: str,
     limit: int,
+    mode: RankingMode = "hybrid",
 ) -> tuple[SearchHit, ...]:
-    """Fuse channel ranks with RRF, then rerank with inspectable text features."""
+    """Rank one candidate snapshot for production or evaluation ablations."""
     query_normalized = " ".join(query_text.casefold().split())
     query_tokens = _tokens(query_text)
     hits: list[SearchHit] = []
@@ -92,12 +100,49 @@ def fuse_and_rerank(
                 citation=validate_event_citation(merged.candidate.message.event),
             )
         )
-    hits.sort(
-        key=lambda hit: (
-            -hit.ranking.rerank_score,
-            -hit.ranking.rrf_score,
-            hit.message.event.source,
-            hit.message.event.event_id,
+    if mode == "lexical":
+        hits = [hit for hit in hits if hit.ranking.lexical_rank is not None]
+        hits.sort(
+            key=lambda hit: (
+                hit.ranking.lexical_rank or 0,
+                hit.message.event.source,
+                hit.message.event.event_id,
+            )
         )
-    )
+    elif mode == "dense":
+        hits = [hit for hit in hits if hit.ranking.dense_rank is not None]
+        hits.sort(
+            key=lambda hit: (
+                hit.ranking.dense_rank or 0,
+                hit.message.event.source,
+                hit.message.event.event_id,
+            )
+        )
+    elif mode == "rrf":
+        hits.sort(
+            key=lambda hit: (
+                -hit.ranking.rrf_score,
+                hit.message.event.source,
+                hit.message.event.event_id,
+            )
+        )
+    else:
+        hits.sort(
+            key=lambda hit: (
+                -hit.ranking.rerank_score,
+                -hit.ranking.rrf_score,
+                hit.message.event.source,
+                hit.message.event.event_id,
+            )
+        )
     return tuple(hits[:limit])
+
+
+def fuse_and_rerank(
+    batch: CandidateBatch,
+    *,
+    query_text: str,
+    limit: int,
+) -> tuple[SearchHit, ...]:
+    """Preserve the original hybrid-ranking API for existing consumers."""
+    return rank_candidates(batch, query_text=query_text, limit=limit, mode="hybrid")

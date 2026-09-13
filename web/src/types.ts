@@ -149,6 +149,7 @@ export const searchResponseSchema = z.object({
   candidates_considered: z.number().int().nonnegative(),
   items: z.array(searchHitSchema),
   embedding_model: z.string().min(1),
+  ranking_mode: z.enum(["lexical", "dense", "rrf", "hybrid"]),
   ranking_rule: z.string().min(1),
   caveat: z.string().min(1),
   parameters: z.object({
@@ -162,6 +163,7 @@ export const searchResponseSchema = z.object({
     bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]).nullable(),
     near: z.tuple([z.number(), z.number()]).nullable(),
     radius_km: z.number().positive().nullable(),
+    ranking_mode: z.enum(["lexical", "dense", "rrf", "hybrid"]),
   }),
 });
 

@@ -77,6 +77,7 @@ class StubSearchService:
             hits=(),
             candidates_considered=0,
             embedding_model="test/local-model",
+            ranking_mode="hybrid",
             ranking_rule=RANKING_RULE,
             caveat=RETRIEVAL_CAVEAT,
         )
@@ -451,7 +452,8 @@ async def test_search_returns_typed_rank_evidence_and_all_reproducibility_parame
             hits=hits,
             candidates_considered=1,
             embedding_model="BAAI/bge-small-en-v1.5",
-            ranking_rule=RANKING_RULE,
+            ranking_mode="rrf",
+            ranking_rule="rrf60-v1",
             caveat=RETRIEVAL_CAVEAT,
         )
     )
@@ -467,6 +469,7 @@ async def test_search_returns_typed_rank_evidence_and_all_reproducibility_parame
         "near": "-97,35",
         "radius_km": 100,
         "active_only": "false",
+        "ranking_mode": "rrf",
     }
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/v1/search", params=params)
@@ -476,7 +479,8 @@ async def test_search_returns_typed_rank_evidence_and_all_reproducibility_parame
     assert body["count"] == 1
     assert body["candidates_considered"] == 1
     assert body["embedding_model"] == "BAAI/bge-small-en-v1.5"
-    assert body["ranking_rule"] == RANKING_RULE
+    assert body["ranking_mode"] == "rrf"
+    assert body["ranking_rule"] == "rrf60-v1"
     assert body["caveat"] == RETRIEVAL_CAVEAT
     assert body["items"][0]["event"]["event_id"] == "alert-1"
     assert body["items"][0]["distance_km"] == 14.25
@@ -500,11 +504,13 @@ async def test_search_returns_typed_rank_evidence_and_all_reproducibility_parame
         "bbox": [-100, 30, -90, 40],
         "near": [-97, 35],
         "radius_km": 100,
+        "ranking_mode": "rrf",
     }
     assert search.query is not None
     assert search.query.near is not None
     assert search.query.near.longitude == -97
     assert search.query.bounds is not None
+    assert search.query.ranking_mode == "rrf"
 
 
 async def test_search_requires_an_index_and_readiness_reports_index_failure() -> None:
@@ -533,6 +539,7 @@ async def test_search_requires_an_index_and_readiness_reports_index_failure() ->
         {"q": "earthquake", "near": "1"},
         {"q": "earthquake", "near": "181,1"},
         {"q": "earthquake", "bbox": "20,-5,-10,30"},
+        {"q": "earthquake", "ranking_mode": "unknown"},
         {"q": "earthquake", "occurred_after": "2026-09-01T00:00:00"},
         {
             "q": "earthquake",

@@ -79,7 +79,12 @@ export function SearchPanel({
           />
           Limit to current map viewport
         </label>
-        <p>Local BGE embeddings · PostgreSQL FTS · pgvector HNSW · RRF + transparent rerank</p>
+        <p>
+          Local BGE embeddings · PostgreSQL FTS · pgvector HNSW ·{" "}
+          {response === undefined || response.ranking_mode === "hybrid"
+            ? "RRF + transparent rerank"
+            : `${response.ranking_mode.toUpperCase()} evaluation mode`}
+        </p>
       </form>
       {error && <p className="retrieval-state error">{error.message}</p>}
       {!error && !loading && query && items.length === 0 && (

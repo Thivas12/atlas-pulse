@@ -11,6 +11,10 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from atlas_pulse.relationship_evaluation.adjudication import (
+    apply_relationship_adjudication,
+    build_relationship_adjudication_sheet,
+)
 from atlas_pulse.relationship_evaluation.base import (
     RelationshipBenchmarkDefinition,
     RelationshipPool,
@@ -21,7 +25,11 @@ from atlas_pulse.relationship_evaluation.judgments import (
     build_relationship_judgment_sheet,
 )
 from atlas_pulse.relationship_evaluation.metrics import score_relationship_pool
-from atlas_pulse.relationship_evaluation.report import render_relationship_markdown
+from atlas_pulse.relationship_evaluation.report import (
+    render_adjudication_markdown,
+    render_relationship_markdown,
+    render_review_agreement_markdown,
+)
 
 
 def _json_model[ModelT: BaseModel](path: Path, model: type[ModelT]) -> ModelT:
@@ -33,9 +41,18 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _ensure_writable(paths: Sequence[Path], *, force: bool) -> None:
-    if len(set(paths)) != len(paths):
+def _ensure_writable(
+    paths: Sequence[Path],
+    *,
+    force: bool,
+    inputs: Sequence[Path] = (),
+) -> None:
+    resolved_outputs = {path.resolve() for path in paths}
+    if len(resolved_outputs) != len(paths):
         raise ValueError("output paths must be distinct")
+    protected_inputs = {path.resolve() for path in inputs}
+    if resolved_outputs & protected_inputs:
+        raise ValueError("output paths must not replace input artifacts")
     existing = [path for path in paths if path.exists()]
     if existing and not force:
         targets = ", ".join(str(path) for path in existing)
@@ -43,7 +60,14 @@ def _ensure_writable(paths: Sequence[Path], *, force: bool) -> None:
 
 
 async def _capture(args: argparse.Namespace) -> int:
-    _ensure_writable((args.output, args.judgments_output), force=args.force)
+    inputs = (args.definition,) + (
+        (args.seed_reviewed_pool,) if args.seed_reviewed_pool is not None else ()
+    )
+    _ensure_writable(
+        (args.output, args.judgments_output),
+        force=args.force,
+        inputs=inputs,
+    )
     definition = _json_model(args.definition, RelationshipBenchmarkDefinition)
     seed_pool = (
         _json_model(args.seed_reviewed_pool, RelationshipPool)
@@ -82,7 +106,11 @@ async def _capture(args: argparse.Namespace) -> int:
 
 
 def _review(args: argparse.Namespace) -> int:
-    _ensure_writable((args.output,), force=args.force)
+    _ensure_writable(
+        (args.output,),
+        force=args.force,
+        inputs=(args.pool, args.judgments),
+    )
     pool = _json_model(args.pool, RelationshipPool)
     reviewed = apply_relationship_judgments(
         pool,
@@ -95,7 +123,11 @@ def _review(args: argparse.Namespace) -> int:
 
 
 def _score(args: argparse.Namespace) -> int:
-    _ensure_writable((args.output_json, args.output_markdown), force=args.force)
+    _ensure_writable(
+        (args.output_json, args.output_markdown),
+        force=args.force,
+        inputs=(args.pool,),
+    )
     pool = _json_model(args.pool, RelationshipPool)
     report = score_relationship_pool(pool)
     _write(args.output_json, report.model_dump_json(indent=2) + "\n")
@@ -104,10 +136,61 @@ def _score(args: argparse.Namespace) -> int:
     return 0
 
 
+def _agreement(args: argparse.Namespace) -> int:
+    _ensure_writable(
+        (args.output_json, args.output_markdown, args.adjudication_output),
+        force=args.force,
+        inputs=(args.first_pool, args.second_pool),
+    )
+    first = _json_model(args.first_pool, RelationshipPool)
+    second = _json_model(args.second_pool, RelationshipPool)
+    sheet = build_relationship_adjudication_sheet(first, second)
+    report = sheet.agreement_report
+    _write(args.output_json, report.model_dump_json(indent=2) + "\n")
+    _write(args.output_markdown, render_review_agreement_markdown(report))
+    _write(args.adjudication_output, sheet.content)
+    print(
+        f"Compared {report.overall.case_count} cases from two independent reviewers: "
+        f"{report.overall.agreement_count} agreement(s), "
+        f"{report.overall.disagreement_count} disagreement(s)"
+    )
+    if sheet.pending_count:
+        print(f"Complete the adjudicated_label cells in {args.adjudication_output}")
+    else:
+        print("The reviewers agreed on every case; the adjudication sheet contains only its header")
+    return 0
+
+
+def _adjudicate(args: argparse.Namespace) -> int:
+    _ensure_writable(
+        (args.output_pool, args.output_json, args.output_markdown),
+        force=args.force,
+        inputs=(args.first_pool, args.second_pool, args.adjudication_sheet),
+    )
+    first = _json_model(args.first_pool, RelationshipPool)
+    second = _json_model(args.second_pool, RelationshipPool)
+    pool, report = apply_relationship_adjudication(
+        first,
+        second,
+        args.adjudication_sheet.read_text(encoding="utf-8"),
+        adjudicator=args.adjudicator,
+    )
+    _write(args.output_pool, pool.model_dump_json(indent=2) + "\n")
+    _write(args.output_json, report.model_dump_json(indent=2) + "\n")
+    _write(args.output_markdown, render_adjudication_markdown(report))
+    print(
+        f"Finalized {len(pool.cases)} gold labels as {report.report_id}; "
+        f"adjudicated {report.adjudication_decision_count} disagreement(s)"
+    )
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="atlas-pulse-evaluate-relationships",
-        description="Capture, blindly review, and score live AtlasPulse claim pairs.",
+        description=(
+            "Capture, independently review, adjudicate, and score live AtlasPulse claim pairs."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -132,6 +215,30 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--output", type=Path, required=True)
     review.add_argument("--force", action="store_true")
 
+    agreement = subparsers.add_parser(
+        "agreement",
+        help="measure two exact independent reviews and export only their disagreements",
+    )
+    agreement.add_argument("--first-pool", type=Path, required=True)
+    agreement.add_argument("--second-pool", type=Path, required=True)
+    agreement.add_argument("--output-json", type=Path, required=True)
+    agreement.add_argument("--output-markdown", type=Path, required=True)
+    agreement.add_argument("--adjudication-output", type=Path, required=True)
+    agreement.add_argument("--force", action="store_true")
+
+    adjudicate = subparsers.add_parser(
+        "adjudicate",
+        help="import protected disagreement decisions and finalize one gold pool",
+    )
+    adjudicate.add_argument("--first-pool", type=Path, required=True)
+    adjudicate.add_argument("--second-pool", type=Path, required=True)
+    adjudicate.add_argument("--adjudication-sheet", type=Path, required=True)
+    adjudicate.add_argument("--adjudicator", required=True)
+    adjudicate.add_argument("--output-pool", type=Path, required=True)
+    adjudicate.add_argument("--output-json", type=Path, required=True)
+    adjudicate.add_argument("--output-markdown", type=Path, required=True)
+    adjudicate.add_argument("--force", action="store_true")
+
     score = subparsers.add_parser("score", help="score a fully reviewed claim-pair pool")
     score.add_argument("--pool", type=Path, required=True)
     score.add_argument("--output-json", type=Path, required=True)
@@ -149,7 +256,11 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             return asyncio.run(_capture(args))
         if args.command == "review":
             return _review(args)
-        return _score(args)
+        if args.command == "score":
+            return _score(args)
+        if args.command == "agreement":
+            return _agreement(args)
+        return _adjudicate(args)
     except (
         FileExistsError,
         OSError,

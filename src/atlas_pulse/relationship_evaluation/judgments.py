@@ -58,7 +58,8 @@ def _csv_safe(value: str) -> str:
     return f"'{value}" if stripped.startswith(("=", "+", "-", "@")) else value
 
 
-def _protected_metadata(case: RelationshipCase) -> dict[str, str]:
+def relationship_review_metadata(case: RelationshipCase) -> dict[str, str]:
+    """Render the exact protected evidence columns shared by review workflows."""
     return {
         "case_id": case.case_id,
         "predicate": case.predicate,
@@ -121,7 +122,7 @@ def build_relationship_judgment_sheet(
             pending_count += int(gold_label is None)
         writer.writerow(
             {
-                **_protected_metadata(case),
+                **relationship_review_metadata(case),
                 "gold_label": gold_label or "",
                 "rationale": _csv_safe(rationale or ""),
             }
@@ -168,7 +169,7 @@ def apply_relationship_judgments(
             raise ValueError(f"relationship judgment row {line_number} has an unknown case")
         if case_id in judgments:
             raise ValueError(f"relationship judgment row {line_number} duplicates {case_id}")
-        metadata = _protected_metadata(case)
+        metadata = relationship_review_metadata(case)
         changed = [field for field, value in metadata.items() if row[field] != value]
         if changed:
             raise ValueError(

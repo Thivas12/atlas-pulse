@@ -18,12 +18,11 @@ from atlas_pulse.relationship_evaluation.base import (
 )
 from atlas_pulse.relationships import RelationshipLabel
 
-_CAVEATS = (
+_BASE_CAVEATS = (
     "Gold labels compare what two public source records explicitly say at the named predicate and scope; they do not establish that either source is true.",
     "Only pairs already linked by the bounded spatiotemporal evidence graph are eligible, so these metrics do not measure missed graph edges or unobserved sources.",
     "Source-pair stable-hash caps create a reviewable benchmark, not an estimate weighted to live source prevalence.",
     "Insufficient evidence is the deployed system's abstention. Decisive coverage must be read with selective accuracy and per-label recall, not optimized alone.",
-    "A single reviewed pool has no inter-annotator agreement estimate; comparative public claims require independent review and adjudication.",
 )
 
 
@@ -127,7 +126,25 @@ def score_relationship_pool(pool: RelationshipPool) -> RelationshipEvaluationRep
         )
 
     pool_hash = canonical_sha256(pool)
+    if pool.adjudication is None:
+        review_caveat = (
+            "A single reviewed pool has no inter-annotator agreement estimate; comparative "
+            "public claims require independent review and adjudication."
+        )
+    else:
+        kappa = (
+            "undefined"
+            if pool.adjudication.cohen_kappa is None
+            else f"{pool.adjudication.cohen_kappa:.4f}"
+        )
+        review_caveat = (
+            "Gold labels passed independent review and system-blind adjudication under "
+            f"{pool.adjudication.process_version}; observed agreement was "
+            f"{pool.adjudication.observed_agreement:.4f} and Cohen's kappa was {kappa}. "
+            "Agreement measures consistency, not correctness."
+        )
     return RelationshipEvaluationReport(
+        schema_version=pool.schema_version,
         report_id=f"{pool.pool_id}-{pool_hash[:12]}",
         pool_id=pool.pool_id,
         pool_sha256=pool_hash,
@@ -151,5 +168,6 @@ def score_relationship_pool(pool: RelationshipPool) -> RelationshipEvaluationRep
         },
         confusion_matrix=_confusion_matrix(pool.cases),
         outcomes=tuple(outcomes),
-        caveats=_CAVEATS,
+        adjudication=pool.adjudication,
+        caveats=(*_BASE_CAVEATS, review_caveat),
     )

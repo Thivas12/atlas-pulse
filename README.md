@@ -7,7 +7,7 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — reviewed evidence relationships.** Independent workers
+> **Current milestone — independently reviewed evidence relationships.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
@@ -26,6 +26,9 @@ component can run without a paid API key.
 > truth, causation, or a verified shared incident. A separate live evaluation now samples measured
 > edges by source pair, blinds every deployed prediction from reviewers, imports protected human
 > labels, and reports per-label precision/recall/F1 with abstention and predicate/source slices.
+> Two exact first-pass reviews can now be compared with observed agreement and Cohen's kappa;
+> only disagreements enter a separately protected, system-blind adjudication sheet, and the final
+> gold pool retains both review hashes plus the third-person decision provenance.
 
 ## Why this is portfolio-grade
 
@@ -41,7 +44,7 @@ component can run without a paid API key.
 | Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
 | Transparent correlation | Versioned cross-source rules, exact geography distance/time evidence, stable graph IDs, hard result caps, and explicit non-causal semantics |
 | Claim relationships | Stable source-field claims, conservative corroboration/contradiction rules, explicit abstention, immutable parent-edge references |
-| Relationship evaluation | Versioned live edge sampling, prediction-blind labels, exact evidence reuse, confusion matrices, predicate/source-pair slices, abstention metrics |
+| Relationship evaluation | Versioned live edge sampling, dual prediction-blind reviews, Cohen's kappa, disagreement-only adjudication, exact provenance, abstention and slice metrics |
 | Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable evidence tie-breaks |
 | Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, shared-pool before/after deltas, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
@@ -69,7 +72,7 @@ flowchart TD
     PostGIS --> Correlate["Bounded geography + time join"]
     Correlate --> Graph["Deterministic evidence graph"]
     Graph --> Claims["Versioned claim relationships"]
-    Claims --> RelEvaluate["Blinded claim-pair evaluation"]
+    Claims --> RelEvaluate["Blinded dual review + adjudication"]
     PostGIS --> API["FastAPI current-state API"]
     Hybrid --> Search["RRF + evidence tie-break"]
     Search --> Evaluate["Pooled human evaluation"]
@@ -183,9 +186,10 @@ uv run atlas-pulse-evaluate-relationships capture \
   --judgments-output artifacts/relationship-evaluation/judgments.csv
 ```
 
-The complete prediction-blind rubric, strict import, exact reuse, and scoring workflow is in
-[`evals/relationships/README.md`](evals/relationships/README.md). No live accuracy claim or
-promotion threshold exists until a named human reviews the captured pool.
+The complete prediction-blind rubric, strict dual review, adjudication, exact reuse, and scoring
+workflow is in [`evals/relationships/README.md`](evals/relationships/README.md). No live accuracy
+claim or promotion threshold exists until a representative pool completes independent review and
+adjudication.
 
 ## Develop without rebuilding containers
 
@@ -396,7 +400,9 @@ shared-pool before/after measurement, and
 [ADR 0013](docs/adr/0013-versioned-source-claim-relationships.md) for claim provenance,
 comparison scope, abstention, and the model boundary, and
 [ADR 0014](docs/adr/0014-human-reviewed-claim-pair-benchmark.md) for live edge sampling,
-prediction blinding, strict human labels, and semantic promotion metrics.
+prediction blinding, strict human labels, and semantic promotion metrics, and
+[ADR 0015](docs/adr/0015-independent-review-adjudication.md) for exact independent reviews,
+agreement measurement, disagreement-only adjudication, and final gold provenance.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -431,10 +437,11 @@ credential solely for transaction metering.
 
 1. Run the shared-pool longitudinal capture after deployment and use its slice deltas to decide
    whether a free local cross-encoder earns its added latency and complexity.
-2. Run and independently review the live claim-pair benchmark, then evaluate a free local NLI/LLM
-   proposer against `structured-claims-v1` before it can add a new annotation version.
-3. A hierarchy of specialist agents for evidence triage, impact
-   assessment, forecasting, and human approval.
+2. Run the live claim-pair benchmark through two independent reviews and adjudication, then
+   evaluate a free local NLI/LLM proposer against `structured-claims-v1` before it can add a new
+   annotation version.
+3. A hierarchy of specialist agents for evidence triage, impact assessment, forecasting, and
+   human approval.
 4. Grounded-answer faithfulness/citation datasets, agent trajectory scoring, drift monitoring,
    and a fully free deployment path.
 

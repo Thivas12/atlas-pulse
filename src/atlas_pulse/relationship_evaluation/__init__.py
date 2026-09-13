@@ -1,9 +1,24 @@
 """Human-in-the-loop relationship evaluation public API."""
 
+from atlas_pulse.relationship_evaluation.adjudication import (
+    ADJUDICATION_COLUMNS,
+    AdjudicationDecision,
+    IndependentReviewAgreementReport,
+    RelationshipAdjudicationReport,
+    RelationshipAdjudicationSheet,
+    ReviewAgreementMetrics,
+    ReviewDisagreement,
+    ReviewedPoolIdentity,
+    apply_relationship_adjudication,
+    build_relationship_adjudication_sheet,
+    compare_independent_reviews,
+    relationship_capture_sha256,
+)
 from atlas_pulse.relationship_evaluation.base import (
     RELATIONSHIP_LABELS,
     CapturedClaim,
     EventEvidence,
+    IndependentAdjudicationProvenance,
     LabelMetrics,
     RelationshipBenchmarkDefinition,
     RelationshipCaptureParameters,
@@ -22,16 +37,27 @@ from atlas_pulse.relationship_evaluation.judgments import (
     apply_relationship_judgments,
     build_relationship_judgment_sheet,
     export_relationship_judgments,
+    relationship_review_metadata,
 )
 from atlas_pulse.relationship_evaluation.metrics import score_relationship_pool
-from atlas_pulse.relationship_evaluation.report import render_relationship_markdown
+from atlas_pulse.relationship_evaluation.report import (
+    render_adjudication_markdown,
+    render_relationship_markdown,
+    render_review_agreement_markdown,
+)
 
 __all__ = [
+    "ADJUDICATION_COLUMNS",
     "JUDGMENT_COLUMNS",
     "RELATIONSHIP_LABELS",
+    "AdjudicationDecision",
     "CapturedClaim",
     "EventEvidence",
+    "IndependentAdjudicationProvenance",
+    "IndependentReviewAgreementReport",
     "LabelMetrics",
+    "RelationshipAdjudicationReport",
+    "RelationshipAdjudicationSheet",
     "RelationshipBenchmarkDefinition",
     "RelationshipCaptureParameters",
     "RelationshipCase",
@@ -40,12 +66,22 @@ __all__ = [
     "RelationshipJudgmentSheet",
     "RelationshipPool",
     "RelationshipSliceMetrics",
+    "ReviewAgreementMetrics",
+    "ReviewDisagreement",
+    "ReviewedPoolIdentity",
     "SystemPrediction",
+    "apply_relationship_adjudication",
     "apply_relationship_judgments",
+    "build_relationship_adjudication_sheet",
     "build_relationship_judgment_sheet",
     "capture_relationship_pool",
+    "compare_independent_reviews",
     "export_relationship_judgments",
+    "relationship_capture_sha256",
     "relationship_case_id",
+    "relationship_review_metadata",
+    "render_adjudication_markdown",
     "render_relationship_markdown",
+    "render_review_agreement_markdown",
     "score_relationship_pool",
 ]

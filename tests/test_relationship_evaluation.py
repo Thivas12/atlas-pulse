@@ -18,6 +18,7 @@ from atlas_pulse.correlation import CorrelationBatch, CorrelationPair
 from atlas_pulse.projections import CorrelationQuery, SignalPage, SignalQuery
 from atlas_pulse.projections.base import SourceName
 from atlas_pulse.relationship_evaluation import (
+    ADJUDICATION_COLUMNS,
     JUDGMENT_COLUMNS,
     CapturedClaim,
     EventEvidence,
@@ -26,11 +27,17 @@ from atlas_pulse.relationship_evaluation import (
     RelationshipCase,
     RelationshipPool,
     SystemPrediction,
+    apply_relationship_adjudication,
     apply_relationship_judgments,
+    build_relationship_adjudication_sheet,
     build_relationship_judgment_sheet,
     capture_relationship_pool,
+    compare_independent_reviews,
+    relationship_capture_sha256,
     relationship_case_id,
+    render_adjudication_markdown,
     render_relationship_markdown,
+    render_review_agreement_markdown,
     score_relationship_pool,
 )
 from atlas_pulse.relationship_evaluation.cli import run_cli
@@ -615,3 +622,350 @@ def test_unreviewed_pool_cannot_be_scored_or_seed_reuse() -> None:
         score_relationship_pool(pool)
     with pytest.raises(ValueError, match="seed must be fully reviewed"):
         build_relationship_judgment_sheet(pool, seed_pool=pool)
+
+
+def _reviewed_pool(
+    pool: RelationshipPool,
+    *,
+    reviewer: str,
+    introduce_error: bool = False,
+) -> RelationshipPool:
+    return apply_relationship_judgments(
+        pool,
+        _completed_sheet(pool, introduce_error=introduce_error),
+        reviewer=reviewer,
+    )
+
+
+def _completed_adjudication_sheet(
+    first: RelationshipPool,
+    second: RelationshipPool,
+    *,
+    label: str = "corroborates",
+    rationale: str = "The first review follows the explicit claim-pair rubric.",
+) -> str:
+    sheet = build_relationship_adjudication_sheet(first, second)
+    rows = list(csv.DictReader(io.StringIO(sheet.content)))
+    for row in rows:
+        row["adjudicated_label"] = label
+        row["adjudication_rationale"] = rationale
+    return _write_adjudication_rows(rows)
+
+
+def _write_adjudication_rows(rows: list[dict[str, str]]) -> str:
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=ADJUDICATION_COLUMNS, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+def test_independent_review_agreement_is_canonical_sliced_and_system_blind() -> None:
+    pool = asyncio.run(_captured_pool())
+    alice = _reviewed_pool(pool, reviewer="Alice Reviewer")
+    bob = _reviewed_pool(pool, reviewer="Bob Reviewer", introduce_error=True)
+    generated_at = datetime(2026, 9, 13, 13, tzinfo=UTC)
+
+    report = compare_independent_reviews(bob, alice, generated_at=generated_at)
+    reverse = compare_independent_reviews(alice, bob, generated_at=generated_at)
+
+    assert report.report_id == reverse.report_id
+    assert report.first_review.reviewer == "Alice Reviewer"
+    assert report.second_review.reviewer == "Bob Reviewer"
+    assert report.generated_at == generated_at
+    assert report.overall.case_count == 6
+    assert report.overall.agreement_count == 5
+    assert report.overall.disagreement_count == 1
+    assert report.overall.observed_agreement == pytest.approx(5 / 6)
+    assert report.overall.expected_agreement == pytest.approx(5 / 6)
+    assert report.overall.cohen_kappa == pytest.approx(0)
+    assert report.predicates["hazard_domain"].case_count == 2
+    assert report.source_pairs["firms+nws"].case_count == 3
+    assert report.confusion_matrix["corroborates"]["insufficient_evidence"] == 1
+    assert len(report.disagreements) == 1
+
+    sheet = build_relationship_adjudication_sheet(bob, alice)
+    rows = list(csv.DictReader(io.StringIO(sheet.content)))
+    assert tuple(rows[0]) == ADJUDICATION_COLUMNS
+    assert len(rows) == 1
+    assert rows[0]["first_label"] == "corroborates"
+    assert rows[0]["second_label"] == "insufficient_evidence"
+    assert rows[0]["adjudicated_label"] == ""
+    assert "system_prediction" not in sheet.content
+    assert "exact_normalized_agreement" not in sheet.content
+    markdown = render_review_agreement_markdown(report)
+    assert "Cohen's kappa" in markdown
+    assert report.disagreements[0].case_id in markdown
+
+
+def test_agreement_reports_undefined_kappa_for_degenerate_marginals() -> None:
+    pool = asyncio.run(_captured_pool())
+    reader = csv.DictReader(io.StringIO(build_relationship_judgment_sheet(pool).content))
+    rows = list(reader)
+    for row in rows:
+        row["gold_label"] = "insufficient_evidence"
+        row["rationale"] = "Neither document makes a comparable claim."
+    completed = _write_rows(rows)
+    first = apply_relationship_judgments(pool, completed, reviewer="First Reviewer")
+    second = apply_relationship_judgments(pool, completed, reviewer="Second Reviewer")
+
+    report = compare_independent_reviews(first, second)
+
+    assert report.overall.observed_agreement == 1
+    assert report.overall.expected_agreement == 1
+    assert report.overall.cohen_kappa is None
+    assert report.disagreements == ()
+    assert "N/A" in render_review_agreement_markdown(report)
+
+
+def test_independent_review_rejects_identity_capture_and_review_state_drift() -> None:
+    pool = asyncio.run(_captured_pool())
+    first = _reviewed_pool(pool, reviewer="Same Reviewer")
+    same_person = _reviewed_pool(pool, reviewer="same reviewer", introduce_error=True)
+    with pytest.raises(ValueError, match="different reviewer"):
+        compare_independent_reviews(first, same_person)
+    with pytest.raises(ValueError, match="fully reviewed"):
+        compare_independent_reviews(first, pool)
+
+    changed_data = pool.model_dump(mode="python")
+    changed_data["relationship_rule_version"] = "candidate-v2"
+    changed_pool = RelationshipPool.model_validate(changed_data)
+    changed_review = _reviewed_pool(changed_pool, reviewer="Other Reviewer")
+    with pytest.raises(ValueError, match="exact same captured pool"):
+        compare_independent_reviews(first, changed_review)
+
+
+def test_system_blind_adjudication_finalizes_provenance_and_scoring() -> None:
+    pool = asyncio.run(_captured_pool())
+    first = _reviewed_pool(pool, reviewer="Alice Reviewer")
+    second = _reviewed_pool(pool, reviewer="Bob Reviewer", introduce_error=True)
+    adjudicated_at = datetime(2026, 9, 13, 14, tzinfo=UTC)
+    csv_text = _completed_adjudication_sheet(first, second)
+
+    final_pool, record = apply_relationship_adjudication(
+        second,
+        first,
+        csv_text,
+        adjudicator="Casey Adjudicator",
+        adjudicated_at=adjudicated_at,
+    )
+
+    assert final_pool.schema_version == "1.1.0"
+    assert final_pool.reviewer == "Casey Adjudicator"
+    assert final_pool.reviewed_at == adjudicated_at
+    assert final_pool.adjudication is not None
+    assert final_pool.adjudication.independent_reviewers == (
+        "Alice Reviewer",
+        "Bob Reviewer",
+    )
+    assert final_pool.adjudication.agreement_report_id == record.agreement_report_id
+    assert final_pool.adjudication.adjudication_decision_count == 1
+    assert relationship_capture_sha256(final_pool) == relationship_capture_sha256(first)
+    assert record.final_pool_sha256
+    assert record.adjudication_decision_count == 1
+    assert record.inherited_agreement_count == 5
+    assert record.decisions[0].adjudicated_label == "corroborates"
+
+    report = score_relationship_pool(final_pool)
+    assert report.schema_version == "1.1.0"
+    assert report.adjudication == final_pool.adjudication
+    assert any("system-blind adjudication" in caveat for caveat in report.caveats)
+    score_markdown = render_relationship_markdown(report)
+    assert "Independent reviewers" in score_markdown
+    assert "Alice Reviewer" in score_markdown
+    adjudication_markdown = render_adjudication_markdown(record)
+    assert "Casey Adjudicator" in adjudication_markdown
+    assert record.decisions[0].rationale in adjudication_markdown
+
+
+def test_adjudication_import_rejects_tampering_missing_decisions_and_invalid_people() -> None:
+    pool = asyncio.run(_captured_pool())
+    first = _reviewed_pool(pool, reviewer="Alice Reviewer")
+    second = _reviewed_pool(pool, reviewer="Bob Reviewer", introduce_error=True)
+    completed = _completed_adjudication_sheet(first, second)
+    rows = list(csv.DictReader(io.StringIO(completed)))
+
+    tampered = [dict(row) for row in rows]
+    tampered[0]["first_label"] = "contradicts"
+    with pytest.raises(ValueError, match="changed protected fields"):
+        apply_relationship_adjudication(
+            first,
+            second,
+            _write_adjudication_rows(tampered),
+            adjudicator="Third Reviewer",
+        )
+
+    invalid = [dict(row) for row in rows]
+    invalid[0]["adjudicated_label"] = "maybe"
+    with pytest.raises(ValueError, match="requires one of"):
+        apply_relationship_adjudication(
+            first,
+            second,
+            _write_adjudication_rows(invalid),
+            adjudicator="Third Reviewer",
+        )
+
+    blank_reason = [dict(row) for row in rows]
+    blank_reason[0]["adjudication_rationale"] = "   "
+    with pytest.raises(ValueError, match="requires a rationale"):
+        apply_relationship_adjudication(
+            first,
+            second,
+            _write_adjudication_rows(blank_reason),
+            adjudicator="Third Reviewer",
+        )
+
+    with pytest.raises(ValueError, match="missing 1 disagreement"):
+        apply_relationship_adjudication(
+            first,
+            second,
+            _write_adjudication_rows([]),
+            adjudicator="Third Reviewer",
+        )
+    with pytest.raises(ValueError, match="duplicates"):
+        apply_relationship_adjudication(
+            first,
+            second,
+            _write_adjudication_rows([*rows, rows[0]]),
+            adjudicator="Third Reviewer",
+        )
+    with pytest.raises(ValueError, match="independent from both reviewers"):
+        apply_relationship_adjudication(
+            first,
+            second,
+            completed,
+            adjudicator="alice reviewer",
+        )
+
+
+def test_all_agreements_finalize_with_header_only_sheet() -> None:
+    pool = asyncio.run(_captured_pool())
+    first = _reviewed_pool(pool, reviewer="Alice Reviewer")
+    second = _reviewed_pool(pool, reviewer="Bob Reviewer")
+    sheet = build_relationship_adjudication_sheet(first, second)
+
+    assert sheet.pending_count == 0
+    assert list(csv.DictReader(io.StringIO(sheet.content))) == []
+    final_pool, record = apply_relationship_adjudication(
+        first,
+        second,
+        sheet.content,
+        adjudicator="Casey Adjudicator",
+    )
+    assert record.adjudication_decision_count == 0
+    assert record.inherited_agreement_count == len(pool.cases)
+    assert final_pool.adjudication is not None
+    assert final_pool.adjudication.cohen_kappa == 1
+    assert "No disagreements" in render_adjudication_markdown(record)
+
+
+def test_adjudicated_contract_rejects_missing_provenance_and_reuse_as_first_pass() -> None:
+    pool = asyncio.run(_captured_pool())
+    invalid = pool.model_dump(mode="python")
+    invalid["schema_version"] = "1.1.0"
+    with pytest.raises(ValidationError, match="requires adjudication provenance"):
+        RelationshipPool.model_validate(invalid)
+
+    first = _reviewed_pool(pool, reviewer="Alice Reviewer")
+    second = _reviewed_pool(pool, reviewer="Bob Reviewer")
+    final_pool, _ = apply_relationship_adjudication(
+        first,
+        second,
+        build_relationship_adjudication_sheet(first, second).content,
+        adjudicator="Casey Adjudicator",
+    )
+    with pytest.raises(ValueError, match="first-pass review"):
+        compare_independent_reviews(first, final_pool)
+
+
+def test_cli_agreement_adjudication_and_final_score(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pool = asyncio.run(_captured_pool())
+    first = _reviewed_pool(pool, reviewer="Alice Reviewer")
+    second = _reviewed_pool(pool, reviewer="Bob Reviewer", introduce_error=True)
+    first_path = tmp_path / "first.json"
+    second_path = tmp_path / "second.json"
+    first_path.write_text(first.model_dump_json(indent=2), encoding="utf-8")
+    second_path.write_text(second.model_dump_json(indent=2), encoding="utf-8")
+    agreement_json = tmp_path / "agreement.json"
+    agreement_md = tmp_path / "agreement.md"
+    adjudication_csv = tmp_path / "adjudication.csv"
+
+    assert (
+        run_cli(
+            [
+                "agreement",
+                "--first-pool",
+                str(second_path),
+                "--second-pool",
+                str(first_path),
+                "--output-json",
+                str(agreement_json),
+                "--output-markdown",
+                str(agreement_md),
+                "--adjudication-output",
+                str(adjudication_csv),
+            ]
+        )
+        == 0
+    )
+    assert "1 disagreement" in capsys.readouterr().out
+    rows = list(csv.DictReader(io.StringIO(adjudication_csv.read_text(encoding="utf-8"))))
+    rows[0]["adjudicated_label"] = "corroborates"
+    rows[0]["adjudication_rationale"] = "Explicit fire claims agree at the rubric scope."
+    adjudication_csv.write_text(_write_adjudication_rows(rows), encoding="utf-8")
+
+    final_pool_path = tmp_path / "gold.json"
+    adjudication_json = tmp_path / "adjudication.json"
+    adjudication_md = tmp_path / "adjudication.md"
+    assert (
+        run_cli(
+            [
+                "adjudicate",
+                "--first-pool",
+                str(first_path),
+                "--second-pool",
+                str(second_path),
+                "--adjudication-sheet",
+                str(adjudication_csv),
+                "--adjudicator",
+                "Casey Adjudicator",
+                "--output-pool",
+                str(final_pool_path),
+                "--output-json",
+                str(adjudication_json),
+                "--output-markdown",
+                str(adjudication_md),
+            ]
+        )
+        == 0
+    )
+    assert "adjudicated 1 disagreement" in capsys.readouterr().out
+    final_pool = RelationshipPool.model_validate_json(final_pool_path.read_text(encoding="utf-8"))
+    assert final_pool.adjudication is not None
+    assert "Final pool SHA-256" in adjudication_md.read_text(encoding="utf-8")
+
+    original_first = first_path.read_text(encoding="utf-8")
+    assert (
+        run_cli(
+            [
+                "agreement",
+                "--first-pool",
+                str(first_path),
+                "--second-pool",
+                str(second_path),
+                "--output-json",
+                str(first_path),
+                "--output-markdown",
+                str(agreement_md),
+                "--adjudication-output",
+                str(adjudication_csv),
+                "--force",
+            ]
+        )
+        == 2
+    )
+    assert "must not replace input artifacts" in capsys.readouterr().err
+    assert first_path.read_text(encoding="utf-8") == original_first

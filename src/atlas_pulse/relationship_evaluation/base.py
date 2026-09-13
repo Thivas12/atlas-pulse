@@ -14,10 +14,12 @@ from atlas_pulse.projections.base import SourceName
 from atlas_pulse.relationships import ClaimPredicate, ClaimScope, RelationshipLabel
 
 SchemaVersion = Literal["1.0.0"]
+RelationshipArtifactSchemaVersion = Literal["1.0.0", "1.1.0"]
 JudgmentStatus = Literal["unjudged", "reviewed"]
 ReviewRubricVersion = Literal["claim-pair-rubric-v1"]
 SamplingMethod = Literal["source-pair-stable-hash-v1"]
 GeometryBasis = Literal["point", "polygon"]
+ReviewProcessVersion = Literal["independent-review-adjudication-v1"]
 
 RELATIONSHIP_LABELS: tuple[RelationshipLabel, ...] = (
     "corroborates",
@@ -236,10 +238,66 @@ class RelationshipCase(StrictModel):
         )
 
 
+class IndependentAdjudicationProvenance(StrictModel):
+    """Auditable human-review process attached only to a finalized gold pool."""
+
+    process_version: ReviewProcessVersion = "independent-review-adjudication-v1"
+    independent_reviewers: tuple[str, str]
+    review_pool_sha256s: tuple[str, str]
+    agreement_report_id: str = Field(min_length=1, max_length=240)
+    observed_agreement: float = Field(ge=0, le=1, allow_inf_nan=False)
+    cohen_kappa: float | None = Field(default=None, ge=-1, le=1, allow_inf_nan=False)
+    adjudicator: str = Field(min_length=1, max_length=200)
+    adjudicated_at: datetime
+    adjudication_decision_count: int = Field(ge=0)
+
+    @field_validator("independent_reviewers")
+    @classmethod
+    def validate_reviewers(cls, value: tuple[str, str]) -> tuple[str, str]:
+        normalized = tuple(" ".join(reviewer.split()) for reviewer in value)
+        if any(not reviewer for reviewer in normalized):
+            raise ValueError("independent reviewers must not be blank")
+        if any(len(reviewer) > 200 for reviewer in normalized):
+            raise ValueError("independent reviewer names cannot exceed 200 characters")
+        if normalized[0].casefold() == normalized[1].casefold():
+            raise ValueError("independent reviewers must be different people")
+        if normalized != tuple(sorted(normalized, key=lambda item: (item.casefold(), item))):
+            raise ValueError("independent reviewers must use canonical name order")
+        return normalized[0], normalized[1]
+
+    @field_validator("review_pool_sha256s")
+    @classmethod
+    def validate_review_hashes(cls, value: tuple[str, str]) -> tuple[str, str]:
+        if any(
+            len(item) != 64 or any(char not in "0123456789abcdef" for char in item)
+            for item in value
+        ):
+            raise ValueError("independent review pool hashes must be lowercase SHA-256 values")
+        return value
+
+    @field_validator("adjudicator")
+    @classmethod
+    def normalize_adjudicator(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("adjudicator must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_process(self) -> IndependentAdjudicationProvenance:
+        if self.adjudicator.casefold() in {
+            reviewer.casefold() for reviewer in self.independent_reviewers
+        }:
+            raise ValueError("adjudicator must be independent from both reviewers")
+        if self.adjudicated_at.tzinfo is None:
+            raise ValueError("adjudicated_at must be timezone-aware")
+        return self
+
+
 class RelationshipPool(StrictModel):
     """Portable live capture completed only through strict judgment import."""
 
-    schema_version: SchemaVersion = "1.0.0"
+    schema_version: RelationshipArtifactSchemaVersion = "1.0.0"
     pool_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{2,159}$")
     benchmark_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{2,119}$")
     benchmark_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -264,6 +322,10 @@ class RelationshipPool(StrictModel):
     judgment_status: JudgmentStatus = "unjudged"
     reviewer: str | None = Field(default=None, max_length=200)
     reviewed_at: datetime | None = None
+    adjudication: IndependentAdjudicationProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     cases: tuple[RelationshipCase, ...] = Field(min_length=1)
 
     @field_validator("predicates")
@@ -352,6 +414,18 @@ class RelationshipPool(StrictModel):
             raise ValueError("unjudged pools must not claim reviewer metadata")
         elif any(case.gold_label is not None or case.rationale is not None for case in self.cases):
             raise ValueError("unjudged pools must not contain partial judgments")
+
+        if self.adjudication is not None:
+            if self.schema_version != "1.1.0":
+                raise ValueError("adjudicated pools require relationship artifact schema 1.1.0")
+            if self.judgment_status != "reviewed":
+                raise ValueError("only reviewed pools may contain adjudication provenance")
+            if self.reviewer != self.adjudication.adjudicator:
+                raise ValueError("pool reviewer must equal the adjudication finalizer")
+            if self.reviewed_at != self.adjudication.adjudicated_at:
+                raise ValueError("pool reviewed_at must equal adjudicated_at")
+        elif self.schema_version != "1.0.0":
+            raise ValueError("relationship artifact schema 1.1.0 requires adjudication provenance")
         return self
 
 
@@ -395,7 +469,7 @@ class RelationshipCaseOutcome(StrictModel):
 class RelationshipEvaluationReport(StrictModel):
     """Content-addressed evaluation of one deployed relationship rule."""
 
-    schema_version: SchemaVersion = "1.0.0"
+    schema_version: RelationshipArtifactSchemaVersion = "1.0.0"
     report_id: str
     pool_id: str
     pool_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -414,4 +488,16 @@ class RelationshipEvaluationReport(StrictModel):
     source_pairs: dict[str, RelationshipSliceMetrics]
     confusion_matrix: dict[RelationshipLabel, dict[RelationshipLabel, int]]
     outcomes: tuple[RelationshipCaseOutcome, ...]
+    adjudication: IndependentAdjudicationProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     caveats: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def validate_review_provenance(self) -> RelationshipEvaluationReport:
+        if (self.schema_version == "1.1.0") != (self.adjudication is not None):
+            raise ValueError("report schema 1.1.0 and adjudication provenance must appear together")
+        if self.adjudication is not None and self.reviewer != self.adjudication.adjudicator:
+            raise ValueError("report reviewer must equal the adjudication finalizer")
+        return self

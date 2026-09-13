@@ -62,21 +62,76 @@ exist. For `evacuation_state` and `road_access_state`, require the same named pl
 nearby coordinates alone do not create comparable operational claims. Labels describe agreement
 between source records, not real-world truth. Add a short rationale for difficult cases.
 
-Do not edit protected evidence columns. Complete every `gold_label`, then import the sheet:
+Do not edit protected evidence columns. Give two reviewers separate copies of the same blank CSV.
+They must complete every `gold_label` independently without seeing the deployed prediction or the
+other review. Import each sheet separately:
 
 ```bash
+cp artifacts/relationship-evaluation/judgments.csv \
+  artifacts/relationship-evaluation/reviewer-a.csv
+cp artifacts/relationship-evaluation/judgments.csv \
+  artifacts/relationship-evaluation/reviewer-b.csv
+
 uv run atlas-pulse-evaluate-relationships review \
   --pool artifacts/relationship-evaluation/pool.json \
-  --judgments artifacts/relationship-evaluation/judgments.csv \
-  --reviewer "Reviewer name" \
-  --output artifacts/relationship-evaluation/reviewed-pool.json
+  --judgments artifacts/relationship-evaluation/reviewer-a.csv \
+  --reviewer "Reviewer A" \
+  --output artifacts/relationship-evaluation/reviewed-a.json
+
+uv run atlas-pulse-evaluate-relationships review \
+  --pool artifacts/relationship-evaluation/pool.json \
+  --judgments artifacts/relationship-evaluation/reviewer-b.csv \
+  --reviewer "Reviewer B" \
+  --output artifacts/relationship-evaluation/reviewed-b.json
 ```
 
-## 3. Score
+One reviewed pool can support internal error analysis. Do not use it for a public comparison or
+model-promotion decision.
+
+## 3. Measure agreement and adjudicate disagreements
+
+Compare the two exact reviews and create a system-blind sheet containing only disagreements:
+
+```bash
+uv run atlas-pulse-evaluate-relationships agreement \
+  --first-pool artifacts/relationship-evaluation/reviewed-a.json \
+  --second-pool artifacts/relationship-evaluation/reviewed-b.json \
+  --output-json artifacts/relationship-evaluation/agreement.json \
+  --output-markdown artifacts/relationship-evaluation/agreement.md \
+  --adjudication-output artifacts/relationship-evaluation/adjudication.csv
+```
+
+The agreement report contains observed agreement, expected marginal agreement, Cohen's kappa, a
+complete reviewer confusion matrix, predicate/source-pair slices, and every disagreement ID.
+`N/A` is used when kappa is undefined because expected agreement is exactly one. High agreement
+does not prove that either reviewer is correct.
+
+The adjudication CSV contains both human labels and rationales, but still excludes every deployed
+system decision. A third named person must choose an allowed `adjudicated_label` and provide a
+short `adjudication_rationale` for every row. If the reviewers agreed everywhere, leave the
+header-only sheet unchanged. Finalize one content-addressed gold pool:
+
+```bash
+uv run atlas-pulse-evaluate-relationships adjudicate \
+  --first-pool artifacts/relationship-evaluation/reviewed-a.json \
+  --second-pool artifacts/relationship-evaluation/reviewed-b.json \
+  --adjudication-sheet artifacts/relationship-evaluation/adjudication.csv \
+  --adjudicator "Adjudicator name" \
+  --output-pool artifacts/relationship-evaluation/gold-pool.json \
+  --output-json artifacts/relationship-evaluation/adjudication.json \
+  --output-markdown artifacts/relationship-evaluation/adjudication.md
+```
+
+The final pool embeds both independent reviewed-pool hashes, the agreement report ID, observed
+agreement, kappa, adjudicator identity, UTC timestamp, and decision count. Protected-field edits,
+different captures or system versions, duplicate reviewer identities, missing decisions, blank
+rationales, and an adjudicator who matches either reviewer all fail closed.
+
+## 4. Score
 
 ```bash
 uv run atlas-pulse-evaluate-relationships score \
-  --pool artifacts/relationship-evaluation/reviewed-pool.json \
+  --pool artifacts/relationship-evaluation/gold-pool.json \
   --output-json artifacts/relationship-evaluation/report.json \
   --output-markdown artifacts/relationship-evaluation/report.md
 ```
@@ -88,6 +143,7 @@ metric has no denominator rather than silently reporting zero.
 
 The overall score describes this capped benchmark, not live source prevalence. A response that
 reports incident or candidate-edge truncation remains usable for bounded error analysis, but the
-flags stay visible and must accompany any result. Do not set promotion thresholds until a named
-human has reviewed a representative pool. A second independent reviewer and adjudication are
-required before making public comparative claims or promoting an NLI/LLM proposal rule.
+flags stay visible and must accompany any result. Do not set promotion thresholds until a
+representative pool has completed the independent-review and adjudication workflow. See
+[`docs/adr/0015-independent-review-adjudication.md`](../../docs/adr/0015-independent-review-adjudication.md)
+for the provenance and blinding decision.

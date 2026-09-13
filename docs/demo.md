@@ -32,7 +32,7 @@ curl -fsS --get 'http://localhost:8000/v1/search' \
   --data-urlencode 'q=residents ordered to shelter from a dangerous storm' \
   --data-urlencode 'candidate_limit=100' \
   --data-urlencode 'limit=3' \
-  | jq '{count, candidates_considered, embedding_model, ranking_rule, caveat,
+  | jq '{count, candidates_considered, embedding_model, ranking_mode, ranking_rule, caveat,
          first: (.items[0] | {event_id: .event.event_id, source: .event.source,
                               ranking, citation})}'
 ```
@@ -91,7 +91,16 @@ docker compose exec postgres psql -U atlas -d atlas -c \
 
 ## 58–60 seconds: close on engineering quality
 
-Show CI: strict Ruff/mypy/pytest with real Valkey, PostGIS, and pgvector; TypeScript/Biome/Vitest;
-a production build; and a container/edge smoke test. Close with the architectural boundary:
-AtlasPulse now delivers transparent evidence graphs and hybrid retrieval. Generation,
-contradiction detection, and agents remain separately versioned layers rather than hidden claims.
+Show the versioned 15-query set and rank-blind review sheet workflow. Explain that lexical, dense,
+RRF, and hybrid rankings are scored with pooled Recall, MRR, graded nDCG, citation traceability,
+latency, and per-source/intent slices; no relevance score or gate exists until a named human
+reviews the captured evidence. Then show CI: strict Ruff/mypy/pytest with real Valkey, PostGIS,
+and pgvector; TypeScript/Biome/Vitest; a production build; and a container/edge smoke test. Close
+with the architectural boundary: generation, contradiction detection, and agents remain
+separately versioned layers rather than hidden claims.
+
+```bash
+uv run atlas-pulse-evaluate --help
+jq '{query_set_id, pool_depth, modes, query_count: (.queries | length)}' \
+  evals/retrieval/live-disruptions-v1.json
+```

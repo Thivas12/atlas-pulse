@@ -3,12 +3,14 @@
 from atlas_pulse.retrieval.base import (
     CandidateBatch,
     ChannelCandidate,
+    CitationStatus,
     CitationValidation,
     Embedding,
     EmbeddingProvider,
     GeoRadius,
     IndexedDocument,
     RankingExplanation,
+    RankingMode,
     RetrievalStore,
     SearchHit,
     SearchQuery,
@@ -24,8 +26,10 @@ from atlas_pulse.retrieval.embedding import FastEmbedProvider
 from atlas_pulse.retrieval.postgres import PostgresRetrievalStore
 from atlas_pulse.retrieval.ranking import (
     RANKING_RULE,
+    RANKING_RULES,
     RETRIEVAL_CAVEAT,
     fuse_and_rerank,
+    rank_candidates,
 )
 from atlas_pulse.retrieval.service import (
     HybridSearchService,
@@ -35,9 +39,11 @@ from atlas_pulse.retrieval.service import (
 
 __all__ = [
     "RANKING_RULE",
+    "RANKING_RULES",
     "RETRIEVAL_CAVEAT",
     "CandidateBatch",
     "ChannelCandidate",
+    "CitationStatus",
     "CitationValidation",
     "Embedding",
     "EmbeddingProvider",
@@ -48,6 +54,7 @@ __all__ = [
     "IndexingCycle",
     "PostgresRetrievalStore",
     "RankingExplanation",
+    "RankingMode",
     "RetrievalIndexerService",
     "RetrievalStore",
     "SearchHit",
@@ -56,6 +63,7 @@ __all__ = [
     "SearchService",
     "document_hash",
     "fuse_and_rerank",
+    "rank_candidates",
     "render_event_document",
     "validate_event_citation",
 ]

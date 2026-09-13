@@ -776,7 +776,7 @@ export default function App() {
       </section>
 
       <footer>
-        <span>ATLASPULSE / HYBRID RETRIEVAL SLICE / v0.7.0</span>
+        <span>ATLASPULSE / MEASURED RETRIEVAL SLICE / v0.7.0</span>
         <span>Retrieval: PostgreSQL FTS + local BGE + pgvector · no generated claim</span>
       </footer>
     </main>

@@ -34,6 +34,7 @@ function response(): SearchResponse {
       },
     ],
     embedding_model: "BAAI/bge-small-en-v1.5",
+    ranking_mode: "hybrid",
     ranking_rule: "rrf60-transparent-rerank-v1",
     caveat: "Ranked source events, not a generated answer.",
     parameters: {
@@ -47,6 +48,7 @@ function response(): SearchResponse {
       bbox: null,
       near: null,
       radius_km: null,
+      ranking_mode: "hybrid",
     },
   };
 }
@@ -69,6 +71,7 @@ describe("SearchPanel", () => {
   it("explains the no-generation boundary and disables incomplete searches", () => {
     render(<SearchPanel {...requiredProps} />);
     expect(screen.getByText(/never a generated answer/)).toBeInTheDocument();
+    expect(screen.getByText(/RRF \+ transparent rerank/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Search" })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: /current map viewport/ })).toBeDisabled();
   });
@@ -150,5 +153,19 @@ describe("SearchPanel", () => {
       />,
     );
     expect(screen.getByText(/No current evidence matched/)).toBeInTheDocument();
+
+    rerender(
+      <SearchPanel
+        {...requiredProps}
+        query="storm"
+        draft="storm"
+        response={{
+          ...response(),
+          ranking_mode: "dense",
+          parameters: { ...response().parameters, ranking_mode: "dense" },
+        }}
+      />,
+    );
+    expect(screen.getByText(/DENSE evaluation mode/)).toBeInTheDocument();
   });
 });

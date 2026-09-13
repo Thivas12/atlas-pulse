@@ -23,6 +23,7 @@ htmlcov/
 .env
 data/raw/**
 !data/raw/.gitkeep
+artifacts/
 
 # Editors and operating systems
 .idea/

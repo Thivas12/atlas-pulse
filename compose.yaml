@@ -6,6 +6,9 @@ x-atlas-environment: &atlas-environment
   ATLAS_VALKEY_URL: valkey://valkey:6379/0
   ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:atlas@postgres:5432/atlas
   ATLAS_RAW_DATA_DIR: /app/data/raw
+  ATLAS_EMBEDDING_CACHE_DIR: /opt/atlas-models
+  ATLAS_EMBEDDING_MODEL_PATH: /opt/atlas-models/bge-small-en-v1.5
+  ATLAS_EMBEDDING_LOCAL_FILES_ONLY: "true"
 
 services:
   valkey:
@@ -23,7 +26,10 @@ services:
       retries: 10
 
   postgres:
-    image: postgis/postgis:17-3.5-alpine
+    build:
+      context: .
+      dockerfile: docker/postgres/Dockerfile
+    image: atlas-pulse-postgres:17-postgis3.5-pgvector0.8.6-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: atlas
@@ -105,6 +111,17 @@ services:
   projector:
     build: .
     command: ["atlas-pulse-project"]
+    restart: unless-stopped
+    environment: *atlas-environment
+    depends_on:
+      valkey:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  retrieval-indexer:
+    build: .
+    command: ["atlas-pulse-index"]
     restart: unless-stopped
     environment: *atlas-environment
     depends_on:

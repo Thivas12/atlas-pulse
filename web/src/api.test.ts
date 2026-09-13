@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchCurrentSignals, fetchIncidentCandidates, fetchLatest, fetchReplay } from "./api";
+import {
+  fetchCurrentSignals,
+  fetchHybridSearch,
+  fetchIncidentCandidates,
+  fetchLatest,
+  fetchReplay,
+} from "./api";
 import { makeEnvelope, makeIncident } from "./test/fixtures";
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -91,6 +97,66 @@ describe("AtlasPulse API client", () => {
     ).resolves.toEqual(body);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/incidents?limit=100&bbox=-10%2C-5%2C20%2C30",
+      expect.any(Object),
+    );
+  });
+
+  it("validates hybrid ranks and encodes source plus viewport filters", async () => {
+    const envelope = makeEnvelope({ source: "nws", eventId: "alert-1" });
+    const body = {
+      count: 1,
+      candidates_considered: 3,
+      items: [
+        {
+          ...envelope,
+          document_text: "Title: Severe thunderstorm warning",
+          distance_km: null,
+          ranking: {
+            lexical_rank: 1,
+            lexical_score: 0.8,
+            dense_rank: 2,
+            dense_similarity: 0.91,
+            rrf_score: 0.99,
+            exact_phrase_match: true,
+            token_coverage: 1,
+            rerank_score: 0.99,
+          },
+          citation: {
+            status: "traceable" as const,
+            url: "https://api.weather.gov/alerts/alert-1",
+            source_field: "source_url",
+            reasons: ["public_http_url"],
+          },
+        },
+      ],
+      embedding_model: "BAAI/bge-small-en-v1.5",
+      ranking_rule: "rrf60-transparent-rerank-v1",
+      caveat: "Ranked evidence only; no generated answer.",
+      parameters: {
+        query: "dangerous storm",
+        limit: 20,
+        candidate_limit: 100,
+        source: "nws" as const,
+        occurred_after: null,
+        occurred_before: null,
+        active_only: true,
+        bbox: [-10, -5, 20, 30] as [number, number, number, number],
+        near: null,
+        radius_km: null,
+      },
+    };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchHybridSearch({
+        query: "dangerous storm",
+        source: "nws",
+        bounds: { west: -10, south: -5, east: 20, north: 30 },
+      }),
+    ).resolves.toEqual(body);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/search?q=dangerous+storm&limit=20&candidate_limit=100&active_only=true&source=nws&bbox=-10%2C-5%2C20%2C30",
       expect.any(Object),
     );
   });

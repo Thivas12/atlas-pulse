@@ -7,16 +7,18 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — four-source disruption evidence graphs.** Independent workers
+> **Current milestone — evidence-first hybrid retrieval.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
 > validated, normalized, and atomically published to Valkey Streams. A restart-safe worker
 > transactionally projects every revision, current event pointer, and its checkpoint into
 > PostGIS. A bounded query-time correlation engine measures cross-source spatial and temporal
-> co-occurrence, constructs deterministic connected components, and exposes every source node and
-> measured edge in the dashboard. These components are candidates for investigation, never claims
-> of causation, corroboration, or a shared real-world incident.
+> co-occurrence. A separate restart-safe worker renders and locally embeds current evidence into
+> PostgreSQL full-text search plus pgvector. `/v1/search` applies the same source, time, expiry, and
+> PostGIS filters to both channels, fuses ranks with RRF, transparently reranks them, validates
+> credential-safe citations, and exposes every score in the dashboard. It returns evidence—not an
+> LLM answer or a claim of causation, corroboration, or truth.
 
 ## Why this is portfolio-grade
 
@@ -31,9 +33,11 @@ component can run without a paid API key.
 | Durable current state | Immutable PostgreSQL revisions plus atomic current pointers and restart-safe checkpoint |
 | Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
 | Transparent correlation | Versioned cross-source rules, exact geography distance/time evidence, stable graph IDs, hard result caps, and explicit non-causal semantics |
+| Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable reranking |
+| Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
-| Decision UI | Mixed-geometry map, measured graph edges, cluster inspection, four source filters, replay, evidence links, uncertainty labels |
-| Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS CI |
+| Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels |
+| Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI |
 | Supply-chain hygiene | Read-only workflow permissions, commit-pinned Actions, weekly dependency updates |
 
 ## Architecture
@@ -50,13 +54,17 @@ flowchart TD
     Contract --> Stream["Valkey Streams + atomic dedupe"]
     Stream --> Projector["Restart-safe projector"]
     Projector --> PostGIS["PostGIS revisions + current state"]
+    Stream --> Indexer["Independent retrieval indexer"]
+    Indexer --> Hybrid["PostgreSQL FTS + pgvector"]
     PostGIS --> Correlate["Bounded geography + time join"]
     Correlate --> Graph["Deterministic evidence graph"]
     PostGIS --> API["FastAPI current-state API"]
+    Hybrid --> Search["RRF + transparent rerank"]
+    Search --> API
     Graph --> API
     Stream --> API
     API --> Web["Viewport-driven command center"]
-    API --> Agents["RAG and agent consumers — next milestones"]
+    API --> Agents["Grounded RAG and agents — next milestones"]
 ```
 
 Each source is at-least-once and failure-isolated: a slow or unavailable source cannot stop the
@@ -95,8 +103,11 @@ docker compose up --build
 Do not commit `.env`; it is ignored by Git. The key lives only in the ingestor container and is
 removed from source metadata, raised errors, and OpenTelemetry URL attributes.
 
-Compose waits for PostGIS, applies Alembic migrations once, and starts the ingestor, projector,
-API, and web edge. After the first ingestion and projection cycles, open the command center at
+The first image build also downloads a commit-pinned copy of the free 67 MB BGE ONNX model; later
+builds use Docker's cache and runtime inference is offline. Compose waits for PostGIS plus
+pgvector, applies Alembic migrations once, and starts the
+ingestor, canonical projector, retrieval indexer, API, and web edge. After the first ingestion,
+projection, and indexing cycles, open the command center at
 <http://localhost:3000>. The API and its operational probes remain directly available:
 
 ```bash
@@ -109,11 +120,16 @@ curl -s 'http://localhost:8000/v1/signals?source=nws&min_severity=3&bbox=-125,24
 curl -s 'http://localhost:8000/v1/signals?source=firms&bbox=-120,33,-117,36'
 curl -s 'http://localhost:8000/v1/signals?source=gdelt&min_severity=3&bbox=-20,-40,60,60'
 curl -s 'http://localhost:8000/v1/incidents?bbox=-120,30,-110,40&radius_km=50'
+curl -s --get 'http://localhost:8000/v1/search' \
+  --data-urlencode 'q=residents ordered to shelter from a dangerous storm' \
+  --data-urlencode 'bbox=-125,24,-66,50'
 ```
 
 Switch between **Live** and **Replay**, then filter **All**, **Earthquakes**, **Weather**, or
 **Fires**, or **Conflict**. Open **Correlations** to inspect measured cross-source clusters and
-follow each node back to its public source evidence.
+follow each node back to its public source evidence. Open **Search** and try a paraphrase rather
+than copying a source headline. Every result shows its lexical rank, dense rank, fused/reranked
+score, and citation status.
 Live mode is served from current PostGIS state, omits expired alerts/detections, and refreshes the
 map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
 remain in the global feed without being falsely placed on the map. Replay starts
@@ -147,10 +163,19 @@ In a third terminal:
 
 ```bash
 ATLAS_VALKEY_URL=valkey://localhost:6379/0 \
+ATLAS_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
+  uv run atlas-pulse-index
+```
+
+In a fourth terminal:
+
+```bash
+ATLAS_VALKEY_URL=valkey://localhost:6379/0 \
+ATLAS_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
   uv run uvicorn atlas_pulse.asgi:app --reload --port 8000
 ```
 
-Run the dashboard with Vite in a fourth terminal. Its development proxy forwards `/api` to the
+Run the dashboard with Vite in a fifth terminal. Its development proxy forwards `/api` to the
 local FastAPI process:
 
 ```bash
@@ -190,6 +215,7 @@ ATLAS_TEST_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
 | `GET` | `/v1/events/replay?limit=100&after=<stream-id>` | Oldest-first page strictly after an optional cursor |
 | `GET` | `/v1/signals?limit=100&after=<stream-id>` | Newest-first, de-duplicated current signals with keyset pagination |
 | `GET` | `/v1/incidents?limit=50&radius_km=50` | Bounded deterministic cross-source evidence components |
+| `GET` | `/v1/search?q=dangerous+storm&limit=10` | Hybrid retrieval over current evidence with transparent ranks |
 
 `/v1/signals` accepts `source=usgs|nws|firms|gdelt`, `min_severity=0..4`, aware
 `occurred_after`/`occurred_before` timestamps, `active_only`, and a non-wrapping WGS84
@@ -213,6 +239,20 @@ Polygon evidence is preferred over a focus point for backend distance; UI lines 
 points only as a visual guide. A connected component is deliberately named an incident
 *candidate*: spatial and temporal proximity alone does not prove causation, corroboration, or a
 shared real-world incident.
+
+`/v1/search` runs the query through local `BAAI/bge-small-en-v1.5` embeddings and PostgreSQL
+English full-text search. It accepts `source`, aware `occurred_after`/`occurred_before`,
+`active_only`, `bbox`, and a `near=longitude,latitude` plus `radius_km` filter. Both channels use
+the same predicates. Each channel retrieves at most `candidate_limit` rows (default 50, maximum
+200), Reciprocal Rank Fusion combines their ranks with `k=60`, and an inspectable reranker adds
+exact-phrase and token-coverage features. Raw FTS/cosine scores, channel ranks, RRF score, final
+score, measured distance, model ID, rule ID, and exact query parameters are returned.
+
+Citation status `traceable` means only that AtlasPulse found a public HTTP(S) evidence URL without
+embedded credentials or credential-like query parameters and attached it to the exact source and
+event identity. It does not mean AtlasPulse fetched, endorsed, or independently verified the
+claim. `missing` and `rejected` fail closed. Search returns source events, never generated prose.
+See the [evaluation boundary](docs/retrieval-evaluation.md).
 
 Every event contains a stable source ID, an aware occurrence time, ingestion time, semantic
 type, optional WGS84 focus point, source name, schema version, and JSON-safe payload. USGS depth
@@ -269,6 +309,14 @@ deterministic for retained entries rather than an indefinite event archive.
 - Correlation reads only projected current state inside explicit time, distance, viewport, edge,
   and component bounds. Truncation is part of the response contract; widening a dense query can
   change component membership when the candidate-edge cap is reached.
+- The retrieval worker owns a separate checkpoint. Model download/load, embedding, or vector
+  transaction failure cannot block the canonical projector; the failed batch restarts from its
+  unchanged cursor.
+- Current retrieval rows update for a newer stream position, or for the same revision when its
+  derived document/model identity changes during an intentional rebuild. Generated text search,
+  vector data, and the retrieval checkpoint commit atomically.
+- Dense and lexical scores are never added directly. Deterministic RRF combines ranks, and the
+  response exposes all reranking features and hard candidate caps.
 
 See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision,
 [ADR 0002](docs/adr/0002-snapshot-before-validation.md) for the evidence boundary, and
@@ -280,7 +328,9 @@ identity, expiry, and credential boundaries, and
 [ADR 0007](docs/adr/0007-gdelt-material-conflict-ingestion.md) for GDELT integrity, selection,
 time, and uncertainty boundaries, and
 [ADR 0008](docs/adr/0008-deterministic-evidence-graph-correlation.md) for correlation rules,
-identity, query bounds, and non-causal semantics.
+identity, query bounds, and non-causal semantics, and
+[ADR 0009](docs/adr/0009-independent-hybrid-retrieval.md) for model, failure-isolation, fusion,
+filter, and citation decisions.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -298,6 +348,8 @@ credential solely for transaction metering.
 | API/contracts | Python, FastAPI, Pydantic | Open source |
 | Event stream | Valkey + `valkey-py` | Open source |
 | Durable geospatial state | PostgreSQL + PostGIS + SQLAlchemy/Alembic | Open source |
+| Dense retrieval | [FastEmbed](https://github.com/qdrant/fastembed) + [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) | Apache-2.0 tooling + MIT model; local CPU inference |
+| Sparse/vector retrieval | PostgreSQL full-text search + [pgvector](https://github.com/pgvector/pgvector) | Open source; self-hosted |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
 | Static serving | Caddy | Open source |
@@ -308,8 +360,8 @@ credential solely for transaction metering.
 
 ## Next milestones
 
-1. Hybrid sparse/dense/geospatial retrieval, reranking, temporal filtering, and citation
-   verification.
+1. Versioned human relevance judgments with Recall@k, MRR, nDCG, latency, and filter-selectivity
+   dashboards; evaluate a free local cross-encoder before adopting it.
 2. Separately versioned semantic corroboration and contradiction detection, evaluated against the
    deterministic evidence graph instead of rewriting its measured edges.
 3. A hierarchy of specialist agents for evidence triage, impact

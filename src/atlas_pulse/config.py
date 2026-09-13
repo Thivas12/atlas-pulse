@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     gdelt_max_rows: int = Field(default=100_000, ge=1, le=1_000_000)
     gdelt_max_events: int = Field(default=5_000, ge=1, le=100_000)
     source_user_agent: str = Field(
-        default="AtlasPulse/0.5 (+https://github.com/Thivas12/atlas-pulse)",
+        default="AtlasPulse/0.7 (+https://github.com/Thivas12/atlas-pulse)",
         min_length=10,
     )
     source_timeout_seconds: float = Field(default=15.0, gt=0)
@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     projection_name: str = Field(default="current-signals-v1", min_length=1)
     projection_batch_size: int = Field(default=500, ge=1, le=5_000)
     projection_poll_seconds: float = Field(default=1.0, gt=0)
+    retrieval_projection_name: str = Field(default="hybrid-retrieval-v1", min_length=1)
+    retrieval_batch_size: int = Field(default=64, ge=1, le=512)
+    retrieval_poll_seconds: float = Field(default=1.0, gt=0)
+    embedding_model: str = Field(default="BAAI/bge-small-en-v1.5", min_length=1)
+    embedding_dimensions: int = Field(default=384, ge=1, le=4_096)
+    embedding_cache_dir: Path = Path(".cache/fastembed")
+    embedding_model_path: Path | None = None
+    embedding_local_files_only: bool = False
+    embedding_threads: int = Field(default=2, ge=1, le=32)
     otel_service_name: str = "atlas-pulse"
     otel_exporter_otlp_endpoint: str | None = None
 

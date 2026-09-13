@@ -9,6 +9,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from atlas_pulse.projections import CorrelationQuery, GeoBounds, PostgresSignalStore, SignalQuery
+from atlas_pulse.retrieval import (
+    GeoRadius,
+    HybridSearchService,
+    IndexedDocument,
+    PostgresRetrievalStore,
+    SearchQuery,
+    document_hash,
+    render_event_document,
+)
+from atlas_pulse.retrieval.base import Embedding
 from atlas_pulse.streams import StreamMessage
 
 DATABASE_URL = os.getenv("ATLAS_TEST_DATABASE_URL")
@@ -24,16 +34,26 @@ _STREAM_IDS = (
     "9100006-0",
 )
 _PROJECTION = "day5-integration"
+_RETRIEVAL_PROJECTION = "day9-retrieval-integration"
 
 
 async def _clean(database_url: str) -> None:
     engine = create_async_engine(database_url)
     async with engine.begin() as connection:
+        await connection.execute(
+            text("DELETE FROM retrieval_documents WHERE event_id LIKE 'day5-%'")
+        )
         await connection.execute(text("DELETE FROM current_signals WHERE event_id LIKE 'day5-%'"))
         await connection.execute(text("DELETE FROM event_revisions WHERE stream_id LIKE '910000%'"))
         await connection.execute(
-            text("DELETE FROM projection_checkpoints WHERE projection_name = :projection_name"),
-            {"projection_name": _PROJECTION},
+            text(
+                "DELETE FROM projection_checkpoints "
+                "WHERE projection_name IN (:projection_name, :retrieval_projection_name)"
+            ),
+            {
+                "projection_name": _PROJECTION,
+                "retrieval_projection_name": _RETRIEVAL_PROJECTION,
+            },
         )
     await engine.dispose()
 
@@ -65,12 +85,34 @@ def _event(
     )
 
 
+def _embedding(index: int) -> Embedding:
+    values = [0.0] * 384
+    values[index] = 1.0
+    return tuple(values)
+
+
+class IntegrationQueryEmbedder:
+    model_name = "test/integration-384"
+    dimensions = 384
+
+    async def embed_documents(self, texts: tuple[str, ...]) -> tuple[Embedding, ...]:
+        return tuple(_embedding(0) for _text in texts)
+
+    async def embed_query(self, text: str) -> Embedding:
+        if "heat" in text or "thermal" in text:
+            return _embedding(5)
+        if "fight" in text:
+            return _embedding(6)
+        return _embedding(0)
+
+
 @pytest.mark.skipif(DATABASE_URL is None, reason="ATLAS_TEST_DATABASE_URL is not set")
 async def test_postgis_projection_is_durable_current_and_spatial() -> None:
     assert DATABASE_URL is not None
     await _clean(DATABASE_URL)
     engine = create_async_engine(DATABASE_URL)
     store = PostgresSignalStore(database_url=DATABASE_URL, engine=engine)
+    retrieval_store = PostgresRetrievalStore(database_url=DATABASE_URL, engine=engine)
     occurred = datetime.now(UTC)
     geometry = {
         "type": "Polygon",
@@ -151,6 +193,7 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
                     "confidence": "High",
                     "confidence_rank": 3,
                     "fire_radiative_power_mw": 18.4,
+                    "satellite": "N20",
                     "expires_at": "2099-01-01T00:00:00Z",
                     "title": "VIIRS thermal anomaly",
                 },
@@ -177,6 +220,24 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
     try:
         await store.project(projection_name=_PROJECTION, messages=messages)
         await store.project(projection_name=_PROJECTION, messages=messages)
+        retrieval_documents = tuple(
+            IndexedDocument(
+                message=message,
+                text=(rendered := render_event_document(message.event)),
+                document_hash=document_hash(rendered),
+                embedding_model="test/integration-384",
+                embedding=_embedding(index),
+            )
+            for index, message in enumerate(messages)
+        )
+        await retrieval_store.index(
+            projection_name=_RETRIEVAL_PROJECTION,
+            documents=retrieval_documents,
+        )
+        await retrieval_store.index(
+            projection_name=_RETRIEVAL_PROJECTION,
+            documents=retrieval_documents,
+        )
 
         assert await store.checkpoint(_PROJECTION) == _STREAM_IDS[-1]
         all_current = await store.query_current(SignalQuery(limit=10, active_only=False))
@@ -254,6 +315,49 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
                 text("SELECT count(*) FROM event_revisions WHERE stream_id LIKE '910000%'")
             )
         assert revision_count == 7
+
+        assert await retrieval_store.checkpoint(_RETRIEVAL_PROJECTION) == _STREAM_IDS[-1]
+        search = HybridSearchService(
+            store=retrieval_store,
+            embedder=IntegrationQueryEmbedder(),
+        )
+        thermal = await search.search(
+            SearchQuery(
+                text="satellite thermal anomaly",
+                limit=3,
+                candidate_limit=10,
+                source="firms",
+                bounds=GeoBounds(west=-120, south=33, east=-117, north=36),
+                near=GeoRadius(longitude=-118.5, latitude=34.1, radius_km=50),
+            )
+        )
+        assert [hit.message.event.event_id for hit in thermal.hits] == ["day5-fire"]
+        assert thermal.hits[0].ranking.lexical_rank == 1
+        assert thermal.hits[0].ranking.dense_rank == 1
+        assert thermal.hits[0].distance_km is not None
+        assert thermal.hits[0].distance_km < 10
+
+        conflict = await search.search(
+            SearchQuery(
+                text="fight between opposing groups",
+                limit=3,
+                candidate_limit=10,
+                source="gdelt",
+                bounds=GeoBounds(west=79, south=12, east=82, north=15),
+            )
+        )
+        assert [hit.message.event.event_id for hit in conflict.hits] == ["day5-gdelt"]
+        assert conflict.hits[0].ranking.dense_rank == 1
+
+        future = await search.search(
+            SearchQuery(
+                text="fight between opposing groups",
+                limit=3,
+                candidate_limit=10,
+                occurred_after=datetime(2099, 1, 2, tzinfo=UTC),
+            )
+        )
+        assert future.hits == ()
     finally:
         await engine.dispose()
         await _clean(DATABASE_URL)

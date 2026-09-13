@@ -6,7 +6,9 @@ import {
   incidentsResponseSchema,
   type ReplayResponse,
   replayResponseSchema,
+  type SearchResponse,
   type SignalsResponse,
+  searchResponseSchema,
   signalsResponseSchema,
   type ViewportBounds,
 } from "./types";
@@ -66,4 +68,28 @@ export function fetchIncidentCandidates(
     search.set("bbox", [west, south, east, north].join(","));
   }
   return fetchValidated(`/api/v1/incidents?${search}`, incidentsResponseSchema, signal);
+}
+
+export interface HybridSearchQuery {
+  query: string;
+  source?: "usgs" | "nws" | "firms" | "gdelt";
+  bounds?: ViewportBounds;
+}
+
+export function fetchHybridSearch(
+  query: HybridSearchQuery,
+  signal?: AbortSignal,
+): Promise<SearchResponse> {
+  const search = new URLSearchParams({
+    q: query.query,
+    limit: "20",
+    candidate_limit: "100",
+    active_only: "true",
+  });
+  if (query.source) search.set("source", query.source);
+  if (query.bounds) {
+    const { west, south, east, north } = query.bounds;
+    search.set("bbox", [west, south, east, north].join(","));
+  }
+  return fetchValidated(`/api/v1/search?${search}`, searchResponseSchema, signal);
 }

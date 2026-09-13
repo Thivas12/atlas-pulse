@@ -16,7 +16,7 @@ jobs:
   backend:
     name: Backend / lint, type-check, test
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     services:
       valkey:
         image: valkey/valkey:9.1.2-alpine
@@ -27,19 +27,6 @@ jobs:
           --health-interval 3s
           --health-timeout 2s
           --health-retries 10
-      postgres:
-        image: postgis/postgis:17-3.5-alpine
-        env:
-          POSTGRES_DB: atlas_test
-          POSTGRES_USER: atlas
-          POSTGRES_PASSWORD: atlas
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U atlas -d atlas_test"
-          --health-interval 3s
-          --health-timeout 3s
-          --health-retries 20
     env:
       ATLAS_TEST_VALKEY_URL: valkey://localhost:6379/0
       ATLAS_TEST_DATABASE_URL: postgresql+asyncpg://atlas:atlas@localhost:5432/atlas_test
@@ -47,6 +34,24 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build and start PostGIS plus pgvector
+        run: |
+          docker build --tag atlas-pulse-postgres-ci --file docker/postgres/Dockerfile .
+          docker run --detach --name atlas-pulse-postgres-ci \
+            --env POSTGRES_DB=atlas_test \
+            --env POSTGRES_USER=atlas \
+            --env POSTGRES_PASSWORD=atlas \
+            --publish 5432:5432 \
+            atlas-pulse-postgres-ci
+          for attempt in {1..30}; do
+            if docker exec atlas-pulse-postgres-ci pg_isready -U atlas -d atlas_test; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs atlas-pulse-postgres-ci
+          exit 1
 
       - name: Install uv and Python
         uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -71,6 +76,10 @@ jobs:
 
       - name: Test with branch coverage
         run: uv run pytest --cov=atlas_pulse --cov-branch --cov-report=term-missing
+
+      - name: Stop test database
+        if: always()
+        run: docker rm --force atlas-pulse-postgres-ci || true
 
   frontend:
     name: Frontend / lint, test, build
@@ -105,7 +114,7 @@ jobs:
   containers:
     name: Containers / build and smoke test
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -129,13 +138,19 @@ jobs:
       - name: Build production images
         run: docker compose build
 
-      - name: Start API, projector, and web edge
-        run: docker compose up -d --wait --wait-timeout 90 api projector web
+      - name: Start API, projectors, and web edge
+        run: docker compose up -d --wait --wait-timeout 120 api projector retrieval-indexer web
 
       - name: Smoke-test edge routing
         run: |
           curl --fail --silent --show-error http://localhost:3000/ | grep --fixed-strings '<title>AtlasPulse'
           curl --fail --silent --show-error http://localhost:3000/api/readyz | grep --fixed-strings '"status":"ready"'
+          curl --fail --silent --show-error \
+            'http://localhost:3000/api/v1/search?q=earthquake' | python3 -c '
+          import json, sys
+          response = json.load(sys.stdin)
+          assert response["embedding_model"] == "BAAI/bge-small-en-v1.5"
+          assert response["count"] == 0'
 
       - name: Stop containers
         if: always()

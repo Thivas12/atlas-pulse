@@ -19,7 +19,25 @@ curl -fsS 'http://localhost:8000/v1/signals?source=nws&min_severity=3&bbox=-125,
   | jq '{count, next_cursor, has_more, order}'
 ```
 
-## 18–35 seconds: prove explainable cross-source correlation
+## 18–33 seconds: prove evidence-first hybrid retrieval
+
+Open **Search** and enter a paraphrase such as “residents ordered to shelter from a dangerous
+storm.” Point out the independent FTS and vector ranks, final transparent rerank score, and
+traceable evidence link. Toggle viewport scope. State the boundary visible in the UI: these are
+ranked source events, not an LLM answer, and citation validation is structural rather than a truth
+claim.
+
+```bash
+curl -fsS --get 'http://localhost:8000/v1/search' \
+  --data-urlencode 'q=residents ordered to shelter from a dangerous storm' \
+  --data-urlencode 'candidate_limit=100' \
+  --data-urlencode 'limit=3' \
+  | jq '{count, candidates_considered, embedding_model, ranking_rule, caveat,
+         first: (.items[0] | {event_id: .event.event_id, source: .event.source,
+                              ranking, citation})}'
+```
+
+## 33–45 seconds: prove explainable cross-source correlation
 
 Select **Correlations**. Choose a cluster and trace its dashed map links. In the detail panel show
 the participating source nodes, direct evidence URLs, measured kilometres, time deltas, point or
@@ -43,7 +61,7 @@ curl -fsS --get 'http://localhost:8000/v1/incidents' \
                               max_distance_km, caveat})}'
 ```
 
-## 35–46 seconds: prove deterministic replay
+## 45–53 seconds: prove deterministic replay
 
 Select **Replay**. Explain that Valkey Streams are read oldest-first and that each page starts
 strictly after its cursor. Move the slider, press play, and change from 1× to 4×.
@@ -57,12 +75,13 @@ curl -fsS --get 'http://localhost:8000/v1/events/replay' \
   --data-urlencode "after=$cursor" | jq '{count, next_cursor, order}'
 ```
 
-## 46–55 seconds: prove recovery and auditability
+## 53–58 seconds: prove recovery and auditability
 
 Explain that identical polls are atomically deduplicated while a source correction becomes a new
-immutable revision. Raw HTTP bodies are stored by SHA-256 before parsing. The projector commits
-each revision, current pointer, and checkpoint together, so a restart safely resumes. The free
-FIRMS key exists only in the ingestor and is redacted from public evidence and telemetry.
+immutable revision. Raw HTTP bodies are stored by SHA-256 before parsing. The canonical projector
+and retrieval indexer have independent atomic checkpoints, so a cold or failed embedding model
+cannot stall live state. The free FIRMS key exists only in the ingestor and is redacted from
+public evidence and telemetry.
 
 ```bash
 docker compose exec ingestor sh -lc 'find /app/data/raw -type f | sort | head -n 6'
@@ -70,9 +89,9 @@ docker compose exec postgres psql -U atlas -d atlas -c \
   'select projection_name,last_stream_id,updated_at from projection_checkpoints;'
 ```
 
-## 55–60 seconds: close on engineering quality
+## 58–60 seconds: close on engineering quality
 
-Show CI: strict Ruff/mypy/pytest with real Valkey and PostGIS, TypeScript/Biome/Vitest plus a
-production build, and a container/edge smoke test. Close with the architectural boundary:
-AtlasPulse now delivers transparent measured evidence graphs; semantic retrieval, contradiction
-detection, and agents will be separately versioned layers rather than hidden claims.
+Show CI: strict Ruff/mypy/pytest with real Valkey, PostGIS, and pgvector; TypeScript/Biome/Vitest;
+a production build; and a container/edge smoke test. Close with the architectural boundary:
+AtlasPulse now delivers transparent evidence graphs and hybrid retrieval. Generation,
+contradiction detection, and agents remain separately versioned layers rather than hidden claims.

@@ -18,6 +18,7 @@ from atlas_pulse.correlation import (
 )
 from atlas_pulse.projections import CorrelationQuery, GeoBounds, SignalQuery, SignalStore
 from atlas_pulse.projections.base import SourceName
+from atlas_pulse.retrieval import GeoRadius, SearchQuery, SearchResult, SearchService
 from atlas_pulse.streams.base import EventBus
 
 
@@ -136,6 +137,66 @@ class IncidentsResponse(BaseModel):
     parameters: CorrelationParametersResponse
 
 
+class CitationResponse(BaseModel):
+    """Credential-safe source link with deliberately narrow validation semantics."""
+
+    status: Literal["traceable", "missing", "rejected"]
+    url: str | None
+    source_field: str | None
+    reasons: tuple[str, ...]
+
+
+class RankingResponse(BaseModel):
+    """Inspectable hybrid retrieval and reranking contributions."""
+
+    lexical_rank: int | None
+    lexical_score: float | None
+    dense_rank: int | None
+    dense_similarity: float | None
+    rrf_score: float
+    exact_phrase_match: bool
+    token_coverage: float
+    rerank_score: float
+
+
+class SearchHitResponse(BaseModel):
+    """One current source event returned by the retrieval system."""
+
+    stream_id: str
+    event: Event
+    document_text: str
+    distance_km: float | None
+    ranking: RankingResponse
+    citation: CitationResponse
+
+
+class SearchParametersResponse(BaseModel):
+    """Exact query filters used to reproduce a search."""
+
+    query: str
+    limit: int
+    candidate_limit: int
+    source: SourceName | None
+    occurred_after: datetime | None
+    occurred_before: datetime | None
+    active_only: bool
+    bbox: tuple[float, float, float, float] | None
+    near: tuple[float, float] | None
+    radius_km: float | None
+
+
+class SearchResponse(BaseModel):
+    """Evidence-first hybrid retrieval response; never a generated answer."""
+
+    count: int
+    candidates_considered: int
+    items: tuple[SearchHitResponse, ...]
+    embedding_model: str
+    ranking_rule: str
+    caveat: str
+    parameters: SearchParametersResponse
+
+
 def _incident_response(incident: IncidentCandidate) -> IncidentCandidateResponse:
     center = (
         IncidentCenterResponse(
@@ -229,7 +290,84 @@ def _validate_time_window(
         )
 
 
-def create_app(event_bus: EventBus, signal_store: SignalStore | None = None) -> FastAPI:
+def _near_from_query(near: str | None, radius_km: float) -> GeoRadius | None:
+    if near is None:
+        return None
+    try:
+        values = tuple(float(value.strip()) for value in near.split(","))
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="near must contain longitude,latitude",
+        ) from error
+    if len(values) != 2:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="near must contain longitude,latitude",
+        )
+    try:
+        return GeoRadius(longitude=values[0], latitude=values[1], radius_km=radius_km)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+
+
+def _search_response(result: SearchResult, query: SearchQuery) -> SearchResponse:
+    bounds = query.bounds
+    near = query.near
+    return SearchResponse(
+        count=len(result.hits),
+        candidates_considered=result.candidates_considered,
+        items=tuple(
+            SearchHitResponse(
+                stream_id=hit.message.stream_id,
+                event=hit.message.event,
+                document_text=hit.document_text,
+                distance_km=hit.distance_km,
+                ranking=RankingResponse(
+                    lexical_rank=hit.ranking.lexical_rank,
+                    lexical_score=hit.ranking.lexical_score,
+                    dense_rank=hit.ranking.dense_rank,
+                    dense_similarity=hit.ranking.dense_similarity,
+                    rrf_score=hit.ranking.rrf_score,
+                    exact_phrase_match=hit.ranking.exact_phrase_match,
+                    token_coverage=hit.ranking.token_coverage,
+                    rerank_score=hit.ranking.rerank_score,
+                ),
+                citation=CitationResponse(
+                    status=hit.citation.status,
+                    url=hit.citation.url,
+                    source_field=hit.citation.source_field,
+                    reasons=hit.citation.reasons,
+                ),
+            )
+            for hit in result.hits
+        ),
+        embedding_model=result.embedding_model,
+        ranking_rule=result.ranking_rule,
+        caveat=result.caveat,
+        parameters=SearchParametersResponse(
+            query=query.text,
+            limit=query.limit,
+            candidate_limit=query.candidate_limit,
+            source=query.source,
+            occurred_after=query.occurred_after,
+            occurred_before=query.occurred_before,
+            active_only=query.active_only,
+            bbox=(bounds.west, bounds.south, bounds.east, bounds.north) if bounds else None,
+            near=(near.longitude, near.latitude) if near else None,
+            radius_km=near.radius_km if near else None,
+        ),
+    )
+
+
+def create_app(
+    event_bus: EventBus,
+    signal_store: SignalStore | None = None,
+    search_service: SearchService | None = None,
+) -> FastAPI:
     """Create an application with an injected stream implementation."""
 
     @asynccontextmanager
@@ -240,8 +378,12 @@ def create_app(event_bus: EventBus, signal_store: SignalStore | None = None) -> 
             try:
                 await event_bus.close()
             finally:
-                if signal_store is not None:
-                    await signal_store.close()
+                try:
+                    if signal_store is not None:
+                        await signal_store.close()
+                finally:
+                    if search_service is not None:
+                        await search_service.close()
 
     app = FastAPI(
         title="AtlasPulse API",
@@ -265,6 +407,11 @@ def create_app(event_bus: EventBus, signal_store: SignalStore | None = None) -> 
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="signal projection unavailable",
+            )
+        if search_service is not None and not await search_service.is_ready():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="retrieval index unavailable",
             )
         return HealthResponse(status="ready", version=__version__)
 
@@ -388,5 +535,49 @@ def create_app(event_bus: EventBus, signal_store: SignalStore | None = None) -> 
                 bbox=(bounds.west, bounds.south, bounds.east, bounds.north) if bounds else None,
             ),
         )
+
+    @app.get("/v1/search", response_model=SearchResponse, tags=["retrieval"])
+    async def search_events(
+        q: str = Query(min_length=2, max_length=500),
+        limit: int = Query(default=10, ge=1, le=50),
+        candidate_limit: int = Query(default=50, ge=1, le=200),
+        source: SourceName | None = None,
+        occurred_after: datetime | None = None,
+        occurred_before: datetime | None = None,
+        bbox: str | None = Query(
+            default=None,
+            description="Optional non-wrapping WGS84 west,south,east,north viewport",
+        ),
+        near: str | None = Query(
+            default=None,
+            description="Optional WGS84 longitude,latitude radius origin",
+        ),
+        radius_km: float = Query(default=250.0, gt=0, le=2_000),
+        active_only: bool = Query(default=True),
+    ) -> SearchResponse:
+        if search_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="retrieval index unavailable",
+            )
+        _validate_time_window(occurred_after, occurred_before)
+        try:
+            query = SearchQuery(
+                text=q,
+                limit=limit,
+                candidate_limit=candidate_limit,
+                source=source,
+                occurred_after=occurred_after,
+                occurred_before=occurred_before,
+                bounds=_bounds_from_query(bbox),
+                near=_near_from_query(near, radius_km),
+                active_only=active_only,
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(error),
+            ) from error
+        return _search_response(await search_service.search(query), query)
 
     return app

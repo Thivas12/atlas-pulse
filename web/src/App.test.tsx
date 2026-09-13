@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { makeEnvelope, makeIncident } from "./test/fixtures";
-import type { EventEnvelope, IncidentCandidate, ViewportBounds } from "./types";
+import type { EventEnvelope, IncidentCandidate, SearchResponse, ViewportBounds } from "./types";
 
 vi.mock("./components/EventMap", () => ({
   EventMap: ({
@@ -65,6 +65,51 @@ function incidentsResponse(items: IncidentCandidate[]) {
       incident_limit: 100,
       active_only: true,
       bbox: [-10, -5, 20, 30] as [number, number, number, number],
+    },
+  };
+}
+
+function searchResponse(item: EventEnvelope): SearchResponse {
+  return {
+    count: 1,
+    candidates_considered: 3,
+    items: [
+      {
+        ...item,
+        document_text: "Title: Severe Thunderstorm Warning",
+        distance_km: null,
+        ranking: {
+          lexical_rank: 1,
+          lexical_score: 0.8,
+          dense_rank: 2,
+          dense_similarity: 0.91,
+          rrf_score: 0.98,
+          exact_phrase_match: false,
+          token_coverage: 0.5,
+          rerank_score: 0.91,
+        },
+        citation: {
+          status: "traceable",
+          url: String(item.event.payload.source_url),
+          source_field: "source_url",
+          reasons: ["public_http_url", "source_event_identity_attached"],
+        },
+      },
+    ],
+    embedding_model: "BAAI/bge-small-en-v1.5",
+    ranking_rule: "rrf60-transparent-rerank-v1",
+    caveat: "Ranked source events, not a generated answer.",
+    parameters: {
+      query: "residents shelter from violent storm",
+      limit: 20,
+      candidate_limit: 100,
+      source: null,
+      occurred_after: null,
+      occurred_before: null,
+      active_only: true,
+      bbox: [-10, -5, 20, 30],
+      near: null,
+      radius_km: null,
     },
   };
 }
@@ -248,6 +293,45 @@ describe("AtlasPulse dashboard", () => {
       "/api/v1/incidents?limit=100&bbox=-10%2C-5%2C20%2C30",
       expect.any(Object),
     );
+  });
+
+  it("runs viewport-bounded hybrid search and opens the ranked source event", async () => {
+    const user = userEvent.setup();
+    const alert = makeEnvelope({
+      streamId: "7000-0",
+      eventId: "search-alert",
+      source: "nws",
+      alertType: "Severe Thunderstorm Warning",
+      place: "Search County",
+    });
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/search")) return Promise.resolve(jsonResponse(searchResponse(alert)));
+      if (url.includes("/incidents")) return Promise.resolve(jsonResponse(incidentsResponse([])));
+      return Promise.resolve(jsonResponse(signalsResponse([])));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderApp(<App />);
+    await user.click(await screen.findByRole("button", { name: "Set test viewport" }));
+    await user.click(screen.getByRole("tab", { name: /Search/ }));
+    await user.type(screen.getByRole("searchbox"), "residents shelter from violent storm");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(await screen.findByText(/FTS #1 · VECTOR #2 · FINAL 0.910/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open source evidence/ })).toHaveAttribute(
+      "href",
+      "https://api.weather.gov/alerts/search-alert",
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/search?q=residents+shelter+from+violent+storm&limit=20&candidate_limit=100&active_only=true&bbox=-10%2C-5%2C20%2C30",
+      expect.any(Object),
+    );
+
+    await user.click(screen.getByRole("button", { name: /Severe Thunderstorm Warning/ }));
+    expect(
+      screen.getByRole("complementary", { name: "Selected signal details" }),
+    ).toBeInTheDocument();
   });
 
   it("filters and explains NASA FIRMS evidence without claiming confirmed wildfire", async () => {

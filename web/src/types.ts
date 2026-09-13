@@ -117,6 +117,54 @@ export const incidentsResponseSchema = z.object({
   }),
 });
 
+const citationSchema = z.object({
+  status: z.enum(["traceable", "missing", "rejected"]),
+  url: z.string().url().nullable(),
+  source_field: z.string().nullable(),
+  reasons: z.array(z.string().min(1)),
+});
+
+const rankingSchema = z.object({
+  lexical_rank: z.number().int().positive().nullable(),
+  lexical_score: z.number().nullable(),
+  dense_rank: z.number().int().positive().nullable(),
+  dense_similarity: z.number().nullable(),
+  rrf_score: z.number().nonnegative(),
+  exact_phrase_match: z.boolean(),
+  token_coverage: z.number().min(0).max(1),
+  rerank_score: z.number().nonnegative(),
+});
+
+export const searchHitSchema = z.object({
+  stream_id: z.string().regex(/^\d+-\d+$/),
+  event: eventSchema,
+  document_text: z.string().min(1),
+  distance_km: z.number().nonnegative().nullable(),
+  ranking: rankingSchema,
+  citation: citationSchema,
+});
+
+export const searchResponseSchema = z.object({
+  count: z.number().int().nonnegative(),
+  candidates_considered: z.number().int().nonnegative(),
+  items: z.array(searchHitSchema),
+  embedding_model: z.string().min(1),
+  ranking_rule: z.string().min(1),
+  caveat: z.string().min(1),
+  parameters: z.object({
+    query: z.string().min(2),
+    limit: z.number().int().positive(),
+    candidate_limit: z.number().int().positive(),
+    source: z.enum(["usgs", "nws", "firms", "gdelt"]).nullable(),
+    occurred_after: z.string().nullable(),
+    occurred_before: z.string().nullable(),
+    active_only: z.boolean(),
+    bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]).nullable(),
+    near: z.tuple([z.number(), z.number()]).nullable(),
+    radius_km: z.number().positive().nullable(),
+  }),
+});
+
 export interface ViewportBounds {
   west: number;
   south: number;
@@ -132,3 +180,5 @@ export type ReplayResponse = z.infer<typeof replayResponseSchema>;
 export type SignalsResponse = z.infer<typeof signalsResponseSchema>;
 export type IncidentCandidate = z.infer<typeof incidentCandidateSchema>;
 export type IncidentsResponse = z.infer<typeof incidentsResponseSchema>;
+export type SearchHit = z.infer<typeof searchHitSchema>;
+export type SearchResponse = z.infer<typeof searchResponseSchema>;

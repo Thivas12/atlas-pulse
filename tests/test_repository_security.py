@@ -59,8 +59,8 @@ def test_security_workflow_covers_source_and_dependency_changes() -> None:
     assert "- python" in content
     assert "- javascript-typescript" in content
     assert "queries: security-extended" in content
-    assert "fail-on-severity: moderate" in content
-    assert "fail-on-scopes: runtime, development" in content
+    assert "run: uv audit --frozen" in content
+    assert "run: npm audit --package-lock-only --audit-level=moderate" in content
 
 
 def test_default_code_owner_is_explicit() -> None:

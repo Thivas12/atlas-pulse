@@ -16,9 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  dependency-review:
-    name: Dependency review
-    if: github.event_name == 'pull_request'
+  dependency-audit:
+    name: Dependency audit
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -27,14 +26,25 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Reject newly introduced vulnerable dependencies
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
-          fail-on-severity: moderate
-          fail-on-scopes: runtime, development
-          license-check: true
-          vulnerability-check: true
-          show-openssf-scorecard: true
+          version: "0.12.13"
+          enable-cache: true
+
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Audit locked Python dependencies
+        run: uv audit --frozen
+
+      - name: Audit locked npm dependencies
+        working-directory: web
+        run: npm audit --package-lock-only --audit-level=moderate
 
   codeql:
     name: CodeQL / ${{ matrix.language }}

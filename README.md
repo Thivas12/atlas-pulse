@@ -116,7 +116,7 @@ component can run without a paid API key.
 | Operational evidence | Declared-commit health, strict source-freshness probes, verified public TLS, bounded resource capture, read-only restart/source-recovery drill bindings, and conservative 30-day sampled reports |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels, a source-operations beacon, and a credential-free recovery timeline |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI, static repository-policy tests |
-| Security governance | Explicit code ownership, private-reporting guidance, a versioned threat model, CodeQL for Python and TypeScript, and pull-request dependency review |
+| Security governance | Explicit code ownership, private-reporting guidance, a versioned threat model, CodeQL for Python and TypeScript, and locked Python/npm vulnerability audits |
 | Supply-chain hygiene | Read-only workflow permissions, credential-free checkout, commit-pinned Actions, weekly dependency updates |
 
 ## Architecture
@@ -728,7 +728,7 @@ credential solely for transaction metering.
 | Public reference host | OCI Ampere A1 Always Free allocation, subject to provider eligibility and capacity | No paid fallback in the documented path |
 | Public HTTPS | Pinned Caddy edge plus user DNS or optional `sslip.io` hostname | Open source/free path; provider terms still apply |
 | CI | GitHub Actions on this public repository | Free hosted runners for public repos |
-| Security analysis | GitHub CodeQL and dependency review | Free for this public repository |
+| Security analysis | GitHub CodeQL, `uv audit`, and `npm audit` | Free for this public repository |
 
 ## Next milestones
 

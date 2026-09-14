@@ -9,6 +9,7 @@ x-atlas-environment: &atlas-environment
   ATLAS_EMBEDDING_CACHE_DIR: /opt/atlas-models
   ATLAS_EMBEDDING_MODEL_PATH: /opt/atlas-models/bge-small-en-v1.5
   ATLAS_EMBEDDING_LOCAL_FILES_ONLY: "true"
+  ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS: ${ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS:-[]}
 
 services:
   valkey:

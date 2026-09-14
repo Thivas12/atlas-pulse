@@ -3,12 +3,17 @@
 import copy
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 from agent_rag_core import Event, GeoPoint
 
+from atlas_pulse.agent_governance import (
+    Ed25519LedgerSigner,
+    InMemoryAgentRunLedger,
+    build_agent_approval,
+)
 from atlas_pulse.agent_runs import (
     AGENT_AUTHORIZATION_POLICY_VERSION,
     AGENT_RUN_CAVEAT,
@@ -795,7 +800,7 @@ async def test_agent_run_preflight_chains_pack_and_manifest_without_executing() 
     duplicate_check["manifest"]["authorization"]["checks"][-1] = duplicate_check["manifest"][
         "authorization"
     ]["checks"][0]
-    with pytest.raises(ValueError, match="each v1 check exactly once"):
+    with pytest.raises(ValueError, match="each v2 check exactly once"):
         AgentRunPreflightResponse.model_validate(duplicate_check)
 
     invalid_reason = copy.deepcopy(body)
@@ -805,10 +810,105 @@ async def test_agent_run_preflight_chains_pack_and_manifest_without_executing() 
     with pytest.raises(ValueError, match="passed checks cannot have a blocking reason"):
         AgentRunPreflightResponse.model_validate(invalid_reason)
 
+    invalid_approval = copy.deepcopy(body)
+    invalid_approval["manifest"]["approval"]["approval_id"] = f"approval-{'a' * 64}"
+    with pytest.raises(ValueError, match="not_supplied approval state"):
+        AgentRunPreflightResponse.model_validate(invalid_approval)
+
     mismatched_pack = copy.deepcopy(body)
     mismatched_pack["manifest"]["evidence"]["pack_id"] = f"pack-{'f' * 64}"
     with pytest.raises(ValueError, match="manifest is not bound to the returned pack"):
         AgentRunPreflightResponse.model_validate(mismatched_pack)
+
+
+async def test_agent_run_preflight_resolves_a_trusted_approval_but_stays_blocked() -> None:
+    event = Event(
+        event_id="alert-approved",
+        event_type="weather.alert",
+        source="nws",
+        occurred_at=datetime(2026, 9, 14, 8, tzinfo=UTC),
+        ingested_at=datetime(2026, 9, 14, 8, 1, tzinfo=UTC),
+        payload={
+            "title": "Severe thunderstorm warning",
+            "source_url": "https://api.weather.gov/alerts/alert-approved",
+        },
+    )
+    candidate = ChannelCandidate(
+        message=StreamMessage(stream_id="300-1", event=event),
+        document_text="Title: Severe thunderstorm warning",
+        rank=1,
+        score=0.91,
+    )
+    search = StubSearchService(
+        result=SearchResult(
+            hits=fuse_and_rerank(
+                CandidateBatch(lexical=(candidate,), dense=(candidate,)),
+                query_text="severe thunderstorm",
+                limit=5,
+            ),
+            candidates_considered=1,
+            embedding_model="BAAI/bge-small-en-v1.5",
+            ranking_mode="hybrid",
+            ranking_rule=RANKING_RULE,
+            caveat=RETRIEVAL_CAVEAT,
+        )
+    )
+    params: dict[str, str | int] = {
+        "q": "severe thunderstorm",
+        "retrieval_limit": 5,
+        "candidate_limit": 25,
+    }
+    initial_transport = httpx.ASGITransport(
+        app=create_app(InMemoryEventBus(), StubSignalStore(), search)
+    )
+    async with httpx.AsyncClient(transport=initial_transport, base_url="http://test") as client:
+        initial = (await client.get("/v1/agent-runs/preflight", params=params)).json()["manifest"]
+
+    signer = Ed25519LedgerSigner.generate()
+    ledger = InMemoryAgentRunLedger(trusted_key_ids={signer.key_id})
+    issued_at = datetime.now(UTC) - timedelta(minutes=1)
+    approval = build_agent_approval(
+        proposal_id=initial["proposal_id"],
+        source_manifest_id=initial["manifest_id"],
+        approver_id="github:12345",
+        issued_at=issued_at,
+        expires_at=issued_at + timedelta(hours=1),
+        reason="Reviewed the exact evidence-bound proposal.",
+    )
+    await ledger.append(approval, signer=signer)
+    approved_transport = httpx.ASGITransport(
+        app=create_app(InMemoryEventBus(), StubSignalStore(), search, ledger)
+    )
+    params["approval_id"] = approval.approval_id
+    async with httpx.AsyncClient(transport=approved_transport, base_url="http://test") as client:
+        response = await client.get("/v1/agent-runs/preflight", params=params)
+
+    assert response.status_code == 200
+    manifest = response.json()["manifest"]
+    assert manifest["approval"]["status"] == "active"
+    assert manifest["approval"]["approver_id"] == "github:12345"
+    assert manifest["authorization"]["passed_check_count"] == 4
+    assert manifest["authorization"]["blocked_check_count"] == 4
+    assert "human_release_not_granted" not in manifest["authorization"]["blocking_reasons"]
+    assert manifest["status"] == "blocked"
+    assert manifest["execution"]["status"] == "not_started"
+
+
+async def test_agent_run_preflight_fails_closed_when_approval_ledger_is_unavailable() -> None:
+    transport = httpx.ASGITransport(
+        app=create_app(InMemoryEventBus(), StubSignalStore(), StubSearchService())
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/v1/agent-runs/preflight",
+            params={"q": "earthquake", "approval_id": f"approval-{'a' * 64}"},
+        )
+
+    assert response.status_code == 200
+    manifest = response.json()["manifest"]
+    assert manifest["approval"]["status"] == "ledger_unavailable"
+    assert "approval_ledger_unavailable" in manifest["authorization"]["blocking_reasons"]
+    assert manifest["execution"]["status"] == "not_started"
 
 
 @pytest.mark.parametrize(

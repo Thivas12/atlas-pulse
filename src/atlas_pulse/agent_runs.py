@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from typing import Literal
 
 from atlas_pulse.evidence_packs import (
@@ -12,21 +13,35 @@ from atlas_pulse.evidence_packs import (
 )
 from atlas_pulse.identity import canonical_json_sha256
 
-AGENT_RUN_SCHEMA_VERSION = "1.0.0"
-AGENT_RUN_RULE_VERSION = "agent-run-manifest-v1"
-AGENT_AUTHORIZATION_POLICY_VERSION = "agent-authorization-v1"
+AGENT_RUN_SCHEMA_VERSION = "1.1.0"
+AGENT_RUN_RULE_VERSION = "agent-run-manifest-v2"
+AGENT_RUN_PROPOSAL_RULE_VERSION = "agent-run-proposal-v1"
+AGENT_AUTHORIZATION_POLICY_VERSION = "agent-authorization-v2"
 AGENT_RUN_IDENTITY_ALGORITHM = EVIDENCE_PACK_IDENTITY_ALGORITHM
 AGENT_RUN_CAVEAT = (
     "Preflight records a deterministic policy decision bound to one evidence-pack identity. "
-    "It may perform ordinary local retrieval to assemble that pack, but it does not start the "
-    "proposed agent, invoke a generative agent model, grant agent network or tool access, generate "
-    "an answer, or perform agent side effects."
+    "A trusted, active approval may satisfy only the human-release check. Preflight may perform "
+    "ordinary local retrieval to assemble the pack, but it does not start the proposed agent, "
+    "invoke a generative agent model, grant agent network or tool access, generate an answer, or "
+    "perform agent side effects."
 )
 
 AgentRunPurpose = Literal["evidence_triage"]
 AgentRunMode = Literal["read_only"]
 AgentRunOutput = Literal["grounded_evidence_brief"]
 AgentRunStatus = Literal["blocked"]
+AgentApprovalStatus = Literal[
+    "not_supplied",
+    "not_found",
+    "not_yet_valid",
+    "active",
+    "expired",
+    "revoked",
+    "scope_mismatch",
+    "untrusted_signer",
+    "ledger_invalid",
+    "ledger_unavailable",
+]
 AuthorizationCheckStatus = Literal["passed", "blocked"]
 AuthorizationCheckId = Literal[
     "evidence_pack_integrity",
@@ -44,6 +59,13 @@ AuthorizationBlockReason = Literal[
     "live_relationship_benchmark_incomplete",
     "grounded_answer_evaluation_missing",
     "human_release_not_granted",
+    "human_release_not_yet_valid",
+    "human_release_expired",
+    "human_release_revoked",
+    "human_release_scope_mismatch",
+    "human_release_untrusted",
+    "approval_ledger_invalid",
+    "approval_ledger_unavailable",
     "execution_disabled",
 ]
 
@@ -99,6 +121,33 @@ class AgentAuthorizationPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentApprovalObservation:
+    """Approval state resolved from the signed ledger for one exact proposal."""
+
+    status: AgentApprovalStatus = "not_supplied"
+    approval_id: str | None = None
+    approved_proposal_id: str | None = None
+    source_manifest_id: str | None = None
+    approver_id: str | None = None
+    signing_key_id: str | None = None
+    issued_at: datetime | None = None
+    expires_at: datetime | None = None
+    revocation_id: str | None = None
+    evaluated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunProposal:
+    """Stable approval scope independent of the time-varying authorization result."""
+
+    proposal_id: str
+    proposal_rule_version: str
+    request: AgentRunRequest
+    evidence: AgentRunEvidence
+    policy: AgentAuthorizationPolicy
+
+
+@dataclass(frozen=True, slots=True)
 class AuthorizationCheck:
     """One inspectable policy comparison with a machine-readable block reason."""
 
@@ -140,10 +189,12 @@ class AgentRunManifest:
     schema_version: str
     rule_version: str
     identity_algorithm: str
+    proposal_id: str
     status: AgentRunStatus
     request: AgentRunRequest
     evidence: AgentRunEvidence
     policy: AgentAuthorizationPolicy
+    approval: AgentApprovalObservation
     authorization: AgentAuthorization
     execution: AgentExecutionState
     caveat: str
@@ -176,7 +227,58 @@ def _check(
     )
 
 
-def _authorization_checks(pack: EvidencePack) -> tuple[AuthorizationCheck, ...]:
+def _human_release_blocking_reason(status: AgentApprovalStatus) -> AuthorizationBlockReason:
+    if status == "not_yet_valid":
+        return "human_release_not_yet_valid"
+    if status == "expired":
+        return "human_release_expired"
+    if status == "revoked":
+        return "human_release_revoked"
+    if status == "scope_mismatch":
+        return "human_release_scope_mismatch"
+    if status == "untrusted_signer":
+        return "human_release_untrusted"
+    if status == "ledger_invalid":
+        return "approval_ledger_invalid"
+    if status == "ledger_unavailable":
+        return "approval_ledger_unavailable"
+    return "human_release_not_granted"
+
+
+def _validate_active_approval(
+    approval: AgentApprovalObservation,
+    *,
+    proposal_id: str,
+) -> None:
+    if approval.status != "active":
+        return
+    required = (
+        approval.approval_id,
+        approval.approved_proposal_id,
+        approval.source_manifest_id,
+        approval.approver_id,
+        approval.signing_key_id,
+        approval.issued_at,
+        approval.expires_at,
+        approval.evaluated_at,
+    )
+    if any(value is None for value in required):
+        raise ValueError("active approval observation is incomplete")
+    if approval.approved_proposal_id != proposal_id:
+        raise ValueError("active approval does not match the run proposal")
+    if approval.revocation_id is not None:
+        raise ValueError("active approval cannot contain a revocation")
+    assert approval.issued_at is not None
+    assert approval.expires_at is not None
+    assert approval.evaluated_at is not None
+    if not approval.issued_at <= approval.evaluated_at < approval.expires_at:
+        raise ValueError("active approval observation is outside its lifetime")
+
+
+def _authorization_checks(
+    pack: EvidencePack,
+    approval: AgentApprovalObservation,
+) -> tuple[AuthorizationCheck, ...]:
     traceable_evidence = pack.status == "traceable_evidence_available" and bool(pack.items)
     return (
         _check(
@@ -221,10 +323,10 @@ def _authorization_checks(pack: EvidencePack) -> tuple[AuthorizationCheck, ...]:
         ),
         _check(
             "human_release",
-            passed=False,
-            observed="not_granted",
-            required="explicit_human_approval",
-            blocking_reason="human_release_not_granted",
+            passed=approval.status == "active",
+            observed=approval.status,
+            required="active_trusted_unrevoked_approval",
+            blocking_reason=_human_release_blocking_reason(approval.status),
         ),
         _check(
             "execution_release",
@@ -236,30 +338,25 @@ def _authorization_checks(pack: EvidencePack) -> tuple[AuthorizationCheck, ...]:
     )
 
 
-def _manifest_payload(
+def _proposal_payload(
     *,
     request: AgentRunRequest,
     evidence: AgentRunEvidence,
     policy: AgentAuthorizationPolicy,
-    authorization: AgentAuthorization,
-    execution: AgentExecutionState,
 ) -> dict[str, object]:
     return {
         "schema_version": AGENT_RUN_SCHEMA_VERSION,
-        "rule_version": AGENT_RUN_RULE_VERSION,
+        "manifest_rule_version": AGENT_RUN_RULE_VERSION,
+        "proposal_rule_version": AGENT_RUN_PROPOSAL_RULE_VERSION,
         "identity_algorithm": AGENT_RUN_IDENTITY_ALGORITHM,
-        "status": authorization.decision,
         "request": asdict(request),
         "evidence": asdict(evidence),
         "policy": asdict(policy),
-        "authorization": asdict(authorization),
-        "execution": asdict(execution),
-        "caveat": AGENT_RUN_CAVEAT,
     }
 
 
-def build_agent_run_manifest(pack: EvidencePack) -> AgentRunManifest:
-    """Build a deterministic no-execution manifest under the locked v1 policy."""
+def build_agent_run_proposal(pack: EvidencePack) -> AgentRunProposal:
+    """Build the stable, content-addressed scope that a human may approve."""
     request = AgentRunRequest()
     evidence = AgentRunEvidence(
         pack_id=pack.pack_id,
@@ -271,7 +368,56 @@ def build_agent_run_manifest(pack: EvidencePack) -> AgentRunManifest:
         evidence_ids=tuple(item.evidence_id for item in pack.items),
     )
     policy = AgentAuthorizationPolicy()
-    checks = _authorization_checks(pack)
+    payload = _proposal_payload(request=request, evidence=evidence, policy=policy)
+    return AgentRunProposal(
+        proposal_id=f"proposal-{canonical_json_sha256(payload)}",
+        proposal_rule_version=AGENT_RUN_PROPOSAL_RULE_VERSION,
+        request=request,
+        evidence=evidence,
+        policy=policy,
+    )
+
+
+def _manifest_payload(
+    *,
+    proposal_id: str,
+    request: AgentRunRequest,
+    evidence: AgentRunEvidence,
+    policy: AgentAuthorizationPolicy,
+    approval: AgentApprovalObservation,
+    authorization: AgentAuthorization,
+    execution: AgentExecutionState,
+) -> dict[str, object]:
+    return {
+        "schema_version": AGENT_RUN_SCHEMA_VERSION,
+        "rule_version": AGENT_RUN_RULE_VERSION,
+        "identity_algorithm": AGENT_RUN_IDENTITY_ALGORITHM,
+        "proposal_id": proposal_id,
+        "status": authorization.decision,
+        "request": asdict(request),
+        "evidence": asdict(evidence),
+        "policy": asdict(policy),
+        "approval": asdict(approval),
+        "authorization": asdict(authorization),
+        "execution": asdict(execution),
+        "caveat": AGENT_RUN_CAVEAT,
+    }
+
+
+def build_agent_run_manifest(
+    pack: EvidencePack,
+    *,
+    approval: AgentApprovalObservation | None = None,
+    proposal: AgentRunProposal | None = None,
+) -> AgentRunManifest:
+    """Build a no-execution manifest under the locked v2 policy."""
+    expected_proposal = build_agent_run_proposal(pack)
+    if proposal is not None and proposal != expected_proposal:
+        raise ValueError("agent run proposal does not match the evidence pack")
+    proposal = proposal or expected_proposal
+    approval = approval or AgentApprovalObservation()
+    _validate_active_approval(approval, proposal_id=proposal.proposal_id)
+    checks = _authorization_checks(pack, approval)
     blocking_reasons = tuple(
         check.blocking_reason
         for check in checks
@@ -286,9 +432,11 @@ def build_agent_run_manifest(pack: EvidencePack) -> AgentRunManifest:
     )
     execution = AgentExecutionState()
     payload = _manifest_payload(
-        request=request,
-        evidence=evidence,
-        policy=policy,
+        proposal_id=proposal.proposal_id,
+        request=proposal.request,
+        evidence=proposal.evidence,
+        policy=proposal.policy,
+        approval=approval,
         authorization=authorization,
         execution=execution,
     )
@@ -297,10 +445,12 @@ def build_agent_run_manifest(pack: EvidencePack) -> AgentRunManifest:
         schema_version=AGENT_RUN_SCHEMA_VERSION,
         rule_version=AGENT_RUN_RULE_VERSION,
         identity_algorithm=AGENT_RUN_IDENTITY_ALGORITHM,
+        proposal_id=proposal.proposal_id,
         status=authorization.decision,
-        request=request,
-        evidence=evidence,
-        policy=policy,
+        request=proposal.request,
+        evidence=proposal.evidence,
+        policy=proposal.policy,
+        approval=approval,
         authorization=authorization,
         execution=execution,
         caveat=AGENT_RUN_CAVEAT,

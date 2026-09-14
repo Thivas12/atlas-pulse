@@ -17,6 +17,8 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("ATLAS_FIRMS_ENABLED", "true")
     monkeypatch.setenv("ATLAS_FIRMS_MAP_KEY", "top-secret")
     monkeypatch.setenv("ATLAS_FIRMS_AREA", "-125,24,-66,50")
+    key_id = f"ed25519-{'a' * 64}"
+    monkeypatch.setenv("ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS", f'["{key_id}"]')
 
     settings = Settings()
 
@@ -29,6 +31,7 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.firms_map_key is not None
     assert settings.gdelt_enabled is True
     assert settings.gdelt_minimum_geo_precision == 3
+    assert settings.agent_approval_trusted_key_ids == (key_id,)
     assert "top-secret" not in repr(settings)
 
 
@@ -59,6 +62,19 @@ def test_settings_reject_inconsistent_gdelt_resource_limits(
 def test_settings_reject_invalid_firms_area(area: str) -> None:
     with pytest.raises(ValidationError, match="firms_area"):
         Settings(firms_area=area)
+
+
+@pytest.mark.parametrize(
+    "key_ids",
+    [
+        ("not-a-key",),
+        (f"ed25519-{'g' * 64}",),
+        (f"ed25519-{'a' * 64}", f"ed25519-{'a' * 64}"),
+    ],
+)
+def test_settings_reject_invalid_or_duplicate_governance_keys(key_ids: tuple[str, ...]) -> None:
+    with pytest.raises(ValidationError, match="approval"):
+        Settings(agent_approval_trusted_key_ids=key_ids)
 
 
 def test_get_settings_is_cached() -> None:

@@ -13,14 +13,18 @@ def _encode_extra(value: object) -> str:
     raise TypeError(f"cannot canonicalize {type(value).__name__}")
 
 
-def canonical_json_sha256(value: object) -> str:
-    """Return SHA-256 over sorted, compact, UTF-8 canonical JSON."""
-    payload = json.dumps(
+def canonical_json_bytes(value: object) -> bytes:
+    """Return sorted, compact, UTF-8 canonical JSON bytes."""
+    return json.dumps(
         value,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
         allow_nan=False,
         default=_encode_extra,
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()
+    ).encode()
+
+
+def canonical_json_sha256(value: object) -> str:
+    """Return SHA-256 over sorted, compact, UTF-8 canonical JSON."""
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()

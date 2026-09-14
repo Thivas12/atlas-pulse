@@ -58,7 +58,11 @@ component can run without a paid API key.
 > both review hashes and stays blocked. No live quality result is claimed. A second no-execution
 > boundary binds an exact pack into an immutable run manifest, evaluates eight explicit
 > default-deny authorization checks, reports every unmet release gate, and proves that no proposed
-> agent, generative model, agent network/tool access, answer, or side effect occurred.
+> agent, generative model, agent network/tool access, answer, or side effect occurred. Preflight
+> now separates a stable proposal identity from its time-varying decision. An operator-only
+> governance CLI can record proposal-scoped approvals and revocations in a PostgreSQL-enforced
+> append-only Ed25519 hash chain. Approvals expire within 24 hours, require a configured trusted key, and can
+> clear only the human gate; execution remains hard-disabled.
 
 ## Why this is portfolio-grade
 
@@ -80,7 +84,7 @@ component can run without a paid API key.
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
 | Agent handoff | Content-addressed evidence packs, exact retrieval provenance, hard source-text budgets, explicit exclusions, and an untrusted-data policy |
 | Grounded-answer evaluation | Gold-free live tasks, a revision-pinned local Qwen/llama.cpp runner, case-local citation schemas, tokenizer/context checks, dual model-blind reviews, per-field agreement, disagreement-only blind adjudication, descriptive metrics, and a closed promotion boundary |
-| Agent governance | Pack-bound immutable run manifests, default-deny policy snapshots, explicit human/evaluation gates, and zero-execution proof |
+| Agent governance | Stable proposal scopes, short-lived actor-identified approvals, immutable revocations, trusted Ed25519 signatures, a PostgreSQL append-only hash chain, default-deny checks, and zero-execution proof |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI |
@@ -129,8 +133,12 @@ flowchart TD
         ANSWER_REVIEW["Dual grounded brief review"]:::review
         ANSWER_ADJ["Blind field adjudication"]:::review
         PREFLIGHT["Default-deny preflight"]:::gate
+        PROPOSAL["Immutable proposal scope"]:::gate
         MANIFEST["Immutable run manifest"]:::gate
-        HUMAN["Explicit human release"]:::human
+        HUMAN["Verified human operator"]:::human
+        APPROVAL["Scoped approval · ≤24h"]:::human
+        REVOCATION["Immutable revocation"]:::human
+        LEDGER["Ed25519 append-only ledger"]:::audit
     end
 
     subgraph SERVE["05 · SERVE / OPERATOR SURFACE"]
@@ -146,7 +154,12 @@ flowchart TD
     CLAIMS --> RELATION_REVIEW --> CANDIDATE --> PREFLIGHT
     PACK --> ANSWER_RUNNER --> ANSWER_REVIEW --> ANSWER_ADJ
     ANSWER_ADJ -.-> PREFLIGHT
-    PACK --> PREFLIGHT --> MANIFEST
+    PACK --> PREFLIGHT --> PROPOSAL --> MANIFEST
+    HUMAN --> APPROVAL
+    PROPOSAL -.-> APPROVAL --> LEDGER
+    HUMAN --> REVOCATION --> LEDGER
+    MANIFEST -.-> LEDGER
+    LEDGER -.-> PREFLIGHT
     STREAM --> API
     POSTGIS --> API
     GRAPH --> API
@@ -154,9 +167,8 @@ flowchart TD
     SEARCH --> API
     PACK --> API
     MANIFEST --> API
-    MANIFEST -.-> HUMAN
     WEB -.-> HUMAN
-    HUMAN -.-> AGENTS
+    MANIFEST -.-> AGENTS
 
     classDef source fill:#082f49,stroke:#38bdf8,color:#e0f2fe,stroke-width:1px
     classDef ingest fill:#083344,stroke:#22d3ee,color:#cffafe,stroke-width:1.5px
@@ -167,6 +179,7 @@ flowchart TD
     classDef sandbox fill:#2a1838,stroke:#c084fc,color:#f3e8ff,stroke-width:1.5px
     classDef gate fill:#3a1d24,stroke:#fb7185,color:#ffe4e6,stroke-width:1.5px
     classDef human fill:#352a12,stroke:#facc15,color:#fef9c3,stroke-width:1.5px
+    classDef audit fill:#0b2f2f,stroke:#2dd4bf,color:#ccfbf1,stroke-width:1.5px
     classDef surface fill:#172554,stroke:#60a5fa,color:#dbeafe,stroke-width:1px
     classDef future fill:#171b24,stroke:#94a3b8,color:#cbd5e1,stroke-width:1px,stroke-dasharray:5 4
     style SENSE fill:#061521,stroke:#164e63,color:#bae6fd
@@ -179,10 +192,11 @@ flowchart TD
 
 Solid paths are operational tooling today; they do not imply that a live candidate run or human
 review has occurred. The violet candidate nodes are isolated local evaluation sandboxes, not
-production inference services. Dashed paths mark deliberately closed release connections: even an
-adjudicated grounded-answer report cannot satisfy preflight without representative evidence,
-approved thresholds, target-hardware reproduction, and explicit release, and no specialist agent
-can run until every evaluation, model, execution, and human-release gate passes.
+production inference services. Dashed paths mark deliberate human or release boundaries, including
+explicit CLI recording into the ledger. Even an adjudicated grounded-answer report cannot satisfy
+preflight without representative evidence, approved thresholds, target-hardware reproduction, and
+explicit release. The signed ledger makes human intent auditable, but no specialist agent can run
+until every evaluation, model, execution, and human-release gate passes.
 
 Each source is at-least-once and failure-isolated: a slow or unavailable source cannot stop the
 other pollers. Identical semantic content is idempotent for the configured seven-day dedupe
@@ -263,6 +277,9 @@ blocked authorization check, and the exact no-execution state. It does not start
 generative agent or grant approval. Ordinary local retrieval still uses the documented BGE
 embedding model. See
 [`docs/agent-run-preflight.md`](docs/agent-run-preflight.md).
+Approval key generation, blocked-preflight recording, grant/status/revoke commands, signature
+verification, and the database immutability boundary are in
+[`docs/agent-run-ledger.md`](docs/agent-run-ledger.md).
 Live mode is served from current PostGIS state, omits expired alerts/detections, and refreshes the
 map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
 remain in the global feed without being falsely placed on the map. Replay starts
@@ -457,10 +474,12 @@ See the [evaluation boundary](docs/retrieval-evaluation.md).
 
 `/v1/evidence-packs` preserves deployed retrieval order while admitting only traceable source-text
 prefixes under explicit item and character budgets. `/v1/agent-runs/preflight` returns a fresh pack
-beside a second content-addressed manifest. That manifest binds the pack, requested read-only
-capabilities, default-deny policy, all eight authorization checks, and an explicit `not_started`
-execution state. Under `agent-authorization-v1`, the result is always `blocked`; it is not an
-approval token or a hidden agent invocation.
+beside a stable proposal scope and a second content-addressed manifest. That manifest binds the
+pack, requested read-only capabilities, default-deny policy, optional signed-ledger approval
+observation, all eight authorization checks, and an explicit `not_started` execution state. Under
+`agent-authorization-v2`, the result is still always `blocked`: an active approval can satisfy only
+the human gate while model, benchmark, grounded-answer, and execution gates remain closed. A
+manifest is not an approval token or a hidden agent invocation.
 
 The separate grounded-answer evaluator captures `/v1/evidence-packs` responses but does not add an
 API answer surface. Its pinned local runner revalidates exact model/runtime identities and isolates
@@ -549,9 +568,9 @@ deterministic for retained entries rather than an indefinite event archive.
   starts only its owned authenticated loopback child in llama.cpp offline mode and never receives a
   review or report artifact.
 - Agent preflight evaluates every policy gate even when evidence is unavailable, binds the exact
-  pack identity into its manifest, and can only return `blocked` under the v1 policy. It never
-  starts the proposed agent, invokes a generative agent model, grants agent network/tool access,
-  generates an answer, or performs an agent side effect.
+  pack identity into its proposal and manifest, and can only return `blocked` under the v2 policy.
+  It never starts the proposed agent, invokes a generative agent model, grants agent network/tool
+  access, generates an answer, or performs an agent side effect.
 
 See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision,
 [ADR 0002](docs/adr/0002-snapshot-before-validation.md) for the evidence boundary, and
@@ -597,7 +616,9 @@ owned offline llama.cpp boundary, token preflight, case-local schemas, and block
 and
 [ADR 0023](docs/adr/0023-grounded-answer-independent-review-adjudication.md) for per-field
 independent-review agreement, reviewer-blind disagreement sheets, third-person adjudication, and
-the still-closed release boundary.
+the still-closed release boundary, and
+[ADR 0024](docs/adr/0024-signed-agent-approval-ledger.md) for stable approval scope, actor identity,
+expiry/revocation, Ed25519 trust anchors, and database-enforced append-only ledger semantics.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -621,7 +642,7 @@ credential solely for transaction metering.
 | Claim relationships | Versioned Python rules over source-backed fields | Open source/local; no model or API |
 | Relationship evaluation | Pydantic, human gold, ONNX Runtime, tokenizers, DeBERTa-v3-small NLI | Apache-2.0/local CPU; no judge or inference API |
 | Grounded-answer evaluation | Pydantic, Qwen3 1.7B Q8 GGUF, llama.cpp, dual protected CSV review, per-field agreement, human adjudication | Apache-2.0/open source/local; no inference or judge API |
-| Agent governance | Versioned Python policy checks + canonical JSON identities | Open source/local; no model or agent framework |
+| Agent governance | Versioned policy checks, canonical JSON, Ed25519 via `cryptography`, PostgreSQL ledger | Open source/local; no model or agent framework |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
 | Static serving | Caddy | Open source |
@@ -642,9 +663,8 @@ credential solely for transaction metering.
    two independent model-blind reviews, resolve disputed fields through the checked-in adjudication
    workflow, and populate the final descriptive report before proposing any threshold or preflight
    policy change.
-4. Add explicit approval identity, expiry/revocation, and an append-only signed run ledger before
-   enabling evidence triage, impact assessment, or forecasting agents.
-5. Add agent trajectory scoring, drift monitoring, and a fully free deployment path.
+4. Add agent trajectory scoring, drift monitoring, release-threshold policy, and a fully free
+   deployment path before enabling evidence triage, impact assessment, or forecasting agents.
 
 ## Data and attribution
 

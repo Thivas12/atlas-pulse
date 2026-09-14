@@ -814,8 +814,8 @@ export default function App() {
       </section>
 
       <footer>
-        <span>ATLASPULSE / GOVERNED AGENT PREFLIGHT / v0.7.0</span>
-        <span>Content-addressed evidence · default-deny policy · zero execution</span>
+        <span>ATLASPULSE / SIGNED RELEASE CONTROL / v0.7.0</span>
+        <span>Proposal-scoped approval · Ed25519 ledger · default deny · zero execution</span>
       </footer>
     </main>
   );

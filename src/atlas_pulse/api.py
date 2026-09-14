@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal, Self
 
 from agent_rag_core import Event
@@ -10,18 +10,22 @@ from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field, model_validator
 
 from atlas_pulse import __version__
+from atlas_pulse.agent_governance import AgentRunLedgerReader
 from atlas_pulse.agent_runs import (
     AGENT_AUTHORIZATION_POLICY_VERSION,
     AGENT_RUN_CAVEAT,
     AGENT_RUN_IDENTITY_ALGORITHM,
     AGENT_RUN_RULE_VERSION,
     AGENT_RUN_SCHEMA_VERSION,
+    AgentApprovalObservation,
+    AgentApprovalStatus,
     AgentRunManifest,
     AgentRunStatus,
     AuthorizationBlockReason,
     AuthorizationCheckId,
     AuthorizationCheckStatus,
     build_agent_run_manifest,
+    build_agent_run_proposal,
 )
 from atlas_pulse.correlation import (
     CORRELATION_CAVEAT,
@@ -444,6 +448,65 @@ class AgentAuthorizationPolicyResponse(BaseModel):
     external_side_effects_allowed: Literal[False]
 
 
+class AgentApprovalObservationResponse(BaseModel):
+    """Time-qualified approval state resolved from the signed ledger."""
+
+    status: AgentApprovalStatus
+    approval_id: str | None = Field(default=None, pattern=r"^approval-[0-9a-f]{64}$")
+    approved_proposal_id: str | None = Field(default=None, pattern=r"^proposal-[0-9a-f]{64}$")
+    source_manifest_id: str | None = Field(default=None, pattern=r"^manifest-[0-9a-f]{64}$")
+    approver_id: str | None = None
+    signing_key_id: str | None = Field(default=None, pattern=r"^ed25519-[0-9a-f]{64}$")
+    issued_at: datetime | None = None
+    expires_at: datetime | None = None
+    revocation_id: str | None = Field(default=None, pattern=r"^revocation-[0-9a-f]{64}$")
+    evaluated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_approval_state(self) -> Self:
+        if self.status == "not_supplied":
+            if any(
+                value is not None
+                for value in (
+                    self.approval_id,
+                    self.approved_proposal_id,
+                    self.source_manifest_id,
+                    self.approver_id,
+                    self.signing_key_id,
+                    self.issued_at,
+                    self.expires_at,
+                    self.revocation_id,
+                    self.evaluated_at,
+                )
+            ):
+                raise ValueError("not_supplied approval state cannot contain ledger fields")
+            return self
+        if self.approval_id is None or self.evaluated_at is None:
+            raise ValueError("resolved approval states require approval_id and evaluated_at")
+        detailed = self.status in {
+            "not_yet_valid",
+            "active",
+            "expired",
+            "revoked",
+            "scope_mismatch",
+        }
+        details = (
+            self.approved_proposal_id,
+            self.source_manifest_id,
+            self.approver_id,
+            self.signing_key_id,
+            self.issued_at,
+            self.expires_at,
+        )
+        if detailed and any(value is None for value in details):
+            raise ValueError("resolved approval artifact details are incomplete")
+        if self.status == "revoked" and self.revocation_id is None:
+            raise ValueError("revoked approval state requires revocation_id")
+        if self.status != "revoked" and self.revocation_id is not None:
+            raise ValueError("only revoked approval state may include revocation_id")
+        return self
+
+
 class AuthorizationCheckResponse(BaseModel):
     """One machine-readable comparison contributing to authorization."""
 
@@ -477,7 +540,7 @@ class AgentAuthorizationResponse(BaseModel):
         }
         observed_check_ids = {check.check_id for check in self.checks}
         if observed_check_ids != expected_check_ids or len(self.checks) != len(expected_check_ids):
-            raise ValueError("authorization checks must contain each v1 check exactly once")
+            raise ValueError("authorization checks must contain each v2 check exactly once")
         passed = tuple(check for check in self.checks if check.status == "passed")
         blocked = tuple(check for check in self.checks if check.status == "blocked")
         if self.passed_check_count != len(passed):
@@ -508,19 +571,35 @@ class AgentExecutionStateResponse(BaseModel):
 
 
 class AgentRunManifestResponse(BaseModel):
-    """Content-addressed proposed-run manifest under the locked v1 policy."""
+    """Content-addressed proposed-run manifest under the locked v2 policy."""
 
     manifest_id: str = Field(pattern=r"^manifest-[0-9a-f]{64}$")
     schema_version: str = AGENT_RUN_SCHEMA_VERSION
     rule_version: str = AGENT_RUN_RULE_VERSION
     identity_algorithm: str = AGENT_RUN_IDENTITY_ALGORITHM
+    proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{64}$")
     status: AgentRunStatus
     request: AgentRunRequestResponse
     evidence: AgentRunEvidenceResponse
     policy: AgentAuthorizationPolicyResponse
+    approval: AgentApprovalObservationResponse
     authorization: AgentAuthorizationResponse
     execution: AgentExecutionStateResponse
     caveat: str = AGENT_RUN_CAVEAT
+
+    @model_validator(mode="after")
+    def validate_human_release_binding(self) -> Self:
+        human_release = next(
+            check for check in self.authorization.checks if check.check_id == "human_release"
+        )
+        if (self.approval.status == "active") != (human_release.status == "passed"):
+            raise ValueError("human release check does not match approval status")
+        if (
+            self.approval.status == "active"
+            and self.approval.approved_proposal_id != self.proposal_id
+        ):
+            raise ValueError("active approval is not bound to the manifest proposal")
+        return self
 
 
 class AgentRunPreflightResponse(BaseModel):
@@ -906,6 +985,7 @@ def _agent_run_manifest_response(manifest: AgentRunManifest) -> AgentRunManifest
         schema_version=manifest.schema_version,
         rule_version=manifest.rule_version,
         identity_algorithm=manifest.identity_algorithm,
+        proposal_id=manifest.proposal_id,
         status=manifest.status,
         request=AgentRunRequestResponse(
             purpose=manifest.request.purpose,
@@ -940,6 +1020,18 @@ def _agent_run_manifest_response(manifest: AgentRunManifest) -> AgentRunManifest
             tool_access_allowed=policy.tool_access_allowed,
             external_side_effects_allowed=policy.external_side_effects_allowed,
         ),
+        approval=AgentApprovalObservationResponse(
+            status=manifest.approval.status,
+            approval_id=manifest.approval.approval_id,
+            approved_proposal_id=manifest.approval.approved_proposal_id,
+            source_manifest_id=manifest.approval.source_manifest_id,
+            approver_id=manifest.approval.approver_id,
+            signing_key_id=manifest.approval.signing_key_id,
+            issued_at=manifest.approval.issued_at,
+            expires_at=manifest.approval.expires_at,
+            revocation_id=manifest.approval.revocation_id,
+            evaluated_at=manifest.approval.evaluated_at,
+        ),
         authorization=AgentAuthorizationResponse(
             decision=authorization.decision,
             passed_check_count=authorization.passed_check_count,
@@ -972,6 +1064,7 @@ def create_app(
     event_bus: EventBus,
     signal_store: SignalStore | None = None,
     search_service: SearchService | None = None,
+    agent_run_ledger: AgentRunLedgerReader | None = None,
 ) -> FastAPI:
     """Create an application with an injected stream implementation."""
 
@@ -987,8 +1080,12 @@ def create_app(
                     if signal_store is not None:
                         await signal_store.close()
                 finally:
-                    if search_service is not None:
-                        await search_service.close()
+                    try:
+                        if search_service is not None:
+                            await search_service.close()
+                    finally:
+                        if agent_run_ledger is not None:
+                            await agent_run_ledger.close()
 
     app = FastAPI(
         title="AtlasPulse API",
@@ -1241,6 +1338,11 @@ def create_app(
     )
     async def agent_run_preflight(
         q: str = Query(min_length=2, max_length=500),
+        approval_id: str | None = Query(
+            default=None,
+            pattern=r"^approval-[0-9a-f]{64}$",
+            description="Optional signed-ledger approval to evaluate for this exact proposal",
+        ),
         retrieval_limit: int = Query(default=20, ge=1, le=50),
         candidate_limit: int = Query(default=100, ge=1, le=200),
         max_items: int = Query(default=8, ge=1, le=50),
@@ -1286,7 +1388,24 @@ def create_app(
         )
         result = await search_service.search(query)
         pack = build_evidence_pack(result, query, budget=budget)
-        manifest = build_agent_run_manifest(pack)
+        proposal = build_agent_run_proposal(pack)
+        approval = AgentApprovalObservation()
+        if approval_id is not None:
+            evaluated_at = datetime.now(UTC)
+            approval = (
+                await agent_run_ledger.resolve_approval(
+                    approval_id=approval_id,
+                    proposal_id=proposal.proposal_id,
+                    evaluated_at=evaluated_at,
+                )
+                if agent_run_ledger is not None
+                else AgentApprovalObservation(
+                    status="ledger_unavailable",
+                    approval_id=approval_id,
+                    evaluated_at=evaluated_at,
+                )
+            )
+        manifest = build_agent_run_manifest(pack, approval=approval, proposal=proposal)
         return AgentRunPreflightResponse(
             evidence_pack=_evidence_pack_response(pack),
             manifest=_agent_run_manifest_response(manifest),

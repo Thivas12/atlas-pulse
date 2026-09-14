@@ -1328,6 +1328,10 @@ input:focus-visible {
   font-size: 7px;
 }
 
+.agent-run-approval-state {
+  color: #6fbdb4;
+}
+
 .agent-run-summary .blocking-reasons {
   color: #b28dc9;
 }

@@ -172,6 +172,10 @@ export function SearchPanel({
                 <div className="agent-run-summary">
                   <span className="agent-run-state blocked">Blocked · no execution</span>
                   <code>{agentRunManifest.manifest_id}</code>
+                  <small className="agent-run-approval-state">
+                    Approval: {policyLabel(agentRunManifest.approval.status)} · proposal{" "}
+                    {agentRunManifest.proposal_id.slice(0, 21)}…
+                  </small>
                   <p>
                     {agentRunManifest.authorization.passed_check_count} checks passed ·{" "}
                     {agentRunManifest.authorization.blocked_check_count} blocking gates

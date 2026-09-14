@@ -1,0 +1,14 @@
+# AtlasPulse is currently maintained by one repository owner. This default keeps
+# ownership explicit without implying that self-review is independent review.
+* @Thivas12
+
+# Security-sensitive control planes are listed separately so ownership remains
+# visible if more specific product-area rules are added later.
+/.github/ @Thivas12
+/compose.yaml @Thivas12
+/deploy/ @Thivas12
+/docker/ @Thivas12
+/migrations/ @Thivas12
+/src/atlas_pulse/agent_governance.py @Thivas12
+/src/atlas_pulse/agent_ledger.py @Thivas12
+/src/atlas_pulse/agent_runs.py @Thivas12

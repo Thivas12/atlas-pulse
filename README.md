@@ -1,6 +1,7 @@
 # AtlasPulse
 
 [![CI](https://github.com/Thivas12/atlas-pulse/actions/workflows/ci.yml/badge.svg)](https://github.com/Thivas12/atlas-pulse/actions/workflows/ci.yml)
+[![Security](https://github.com/Thivas12/atlas-pulse/actions/workflows/security.yml/badge.svg)](https://github.com/Thivas12/atlas-pulse/actions/workflows/security.yml)
 
 Real-time, evidence-grounded global disruption intelligence built from authoritative public
 data. AtlasPulse is designed as a production system, not a notebook: source bytes remain
@@ -114,8 +115,9 @@ component can run without a paid API key.
 | Free-tier deployment | Resource-capped ARM Compose overlay, loopback-only internal ports, pinned Caddy HTTPS edge, cost guardrails, validation, backup, and rollback runbook |
 | Operational evidence | Declared-commit health, strict source-freshness probes, verified public TLS, bounded resource capture, read-only restart/source-recovery drill bindings, and conservative 30-day sampled reports |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels, a source-operations beacon, and a credential-free recovery timeline |
-| Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI |
-| Supply-chain hygiene | Read-only workflow permissions, commit-pinned Actions, weekly dependency updates |
+| Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI, static repository-policy tests |
+| Security governance | Explicit code ownership, private-reporting guidance, a versioned threat model, CodeQL for Python and TypeScript, and pull-request dependency review |
+| Supply-chain hygiene | Read-only workflow permissions, credential-free checkout, commit-pinned Actions, weekly dependency updates |
 
 ## Architecture
 
@@ -688,6 +690,9 @@ transition history, newest-first exclusive cursors, and its separation from read
 campaign evidence, and
 [ADR 0030](docs/adr/0030-content-addressed-source-poll-recovery-drill.md) for exact fault-window,
 probe, and transition binding without giving the recorder mutation authority or inferring causality.
+A repository-level [security policy](SECURITY.md) and versioned
+[threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current
+controls, residual risks, and owner-configured branch protections.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -723,6 +728,7 @@ credential solely for transaction metering.
 | Public reference host | OCI Ampere A1 Always Free allocation, subject to provider eligibility and capacity | No paid fallback in the documented path |
 | Public HTTPS | Pinned Caddy edge plus user DNS or optional `sslip.io` hostname | Open source/free path; provider terms still apply |
 | CI | GitHub Actions on this public repository | Free hosted runners for public repos |
+| Security analysis | GitHub CodeQL and dependency review | Free for this public repository |
 
 ## Next milestones
 

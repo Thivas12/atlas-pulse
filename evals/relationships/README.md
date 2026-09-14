@@ -165,7 +165,39 @@ reviewer identity, deployed label, extracted claim, rule basis, or system ration
 protected output template. An external offline runner must fill `predicted_label` and
 `latency_ms` for every row without changing the task, case, predicate, or source-pair columns.
 
-Record the exact candidate system in a separate JSON file:
+The repository includes one predeclared free local candidate. First provision only its pinned
+model/tokenizer files while online:
+
+```bash
+uv run atlas-pulse-cache-relationship-nli \
+  --candidate-config \
+    evals/relationships/candidates/deberta-v3-small-predicate-nli-v1.json \
+  --output artifacts/models/nli-deberta-v3-small
+```
+
+Then run inference locally. This command performs no model discovery or download and accepts only
+the exact blank sheet paired with the task:
+
+```bash
+uv run atlas-pulse-run-relationship-nli \
+  --task artifacts/relationship-evaluation/candidate-task.json \
+  --predictions-template artifacts/relationship-evaluation/candidate-predictions.csv \
+  --candidate-config \
+    evals/relationships/candidates/deberta-v3-small-predicate-nli-v1.json \
+  --model-dir artifacts/models/nli-deberta-v3-small \
+  --output-predictions artifacts/relationship-evaluation/candidate-predictions.completed.csv \
+  --output-definition artifacts/relationship-evaluation/candidate-system.json \
+  --output-run artifacts/relationship-evaluation/candidate-run.json
+```
+
+`candidate-run.json` is a content-addressed gold-blind trace containing the two hypothesis
+probability distributions, source/token truncation flags, two-hypothesis latency, exact model
+artifact hash, template hash, runtime versions, and every fixed inference parameter. Its
+`promotion_status` is always `blocked`. General SNLI/MultiNLI performance from the upstream model
+card is not evidence of accuracy on AtlasPulse claims.
+
+The included runner writes the exact candidate system file automatically. Any different external
+runner must provide the same strict identity contract:
 
 ```jsonc
 {
@@ -196,7 +228,7 @@ Import and compare the predictions:
 uv run atlas-pulse-evaluate-relationships candidate-score \
   --pool artifacts/relationship-evaluation/gold-pool.json \
   --task artifacts/relationship-evaluation/candidate-task.json \
-  --predictions artifacts/relationship-evaluation/candidate-predictions.csv \
+  --predictions artifacts/relationship-evaluation/candidate-predictions.completed.csv \
   --candidate-definition artifacts/relationship-evaluation/candidate-system.json \
   --output-batch artifacts/relationship-evaluation/candidate-batch.json \
   --output-json artifacts/relationship-evaluation/candidate-report.json \
@@ -209,4 +241,6 @@ and regressions, and descriptive candidate latency. It always reports promotion 
 there is no checked-in quality policy, the rule has no equivalent isolated per-case timing, and a
 new version still needs regression verification plus explicit human approval. Running this command
 does not execute a model or modify the gold pool or production annotations. See
-[`docs/adr/0019-gold-blind-relationship-candidate-sandbox.md`](../../docs/adr/0019-gold-blind-relationship-candidate-sandbox.md).
+[`docs/adr/0019-gold-blind-relationship-candidate-sandbox.md`](../../docs/adr/0019-gold-blind-relationship-candidate-sandbox.md)
+and
+[`docs/adr/0020-pinned-local-relationship-nli-runner.md`](../../docs/adr/0020-pinned-local-relationship-nli-runner.md).

@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0.0",
+  "candidate_id": "deberta-v3-small-predicate-nli-v1",
+  "model_id": "cross-encoder/nli-deberta-v3-small",
+  "model_revision": "fa2804872c3b4bd748f38c0185cc85775361e735",
+  "model_license": "apache-2.0",
+  "model_file": "onnx/model_quint8_avx2.onnx",
+  "artifact_files": [
+    "added_tokens.json",
+    "config.json",
+    "onnx/model_quint8_avx2.onnx",
+    "special_tokens_map.json",
+    "spm.model",
+    "tokenizer.json",
+    "tokenizer_config.json"
+  ],
+  "adapter_version": "relationship-predicate-nli-v1",
+  "template_version": "relationship-predicate-nli-v1",
+  "label_ids": {
+    "contradiction": 0,
+    "entailment": 1,
+    "neutral": 2
+  },
+  "max_length": 384,
+  "document_character_budget": 640,
+  "pad_token_id": 0,
+  "decision_threshold": 0.7,
+  "minimum_margin": 0.1,
+  "warmup_runs": 1,
+  "intra_op_num_threads": 2
+}

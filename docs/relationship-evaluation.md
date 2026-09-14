@@ -132,6 +132,34 @@ per-case latency is not measured on the same basis, and an accountable human sti
 new relationship rule version after regression verification. The sandbox never executes a model,
 rewrites the gold pool, or changes production annotations.
 
+## Pinned local NLI runner
+
+The model executor remains separate from the evaluator. The checked-in
+`deberta-v3-small-predicate-nli-v1.json` configuration selects
+`cross-encoder/nli-deberta-v3-small` at exact revision
+`fa2804872c3b4bd748f38c0185cc85775361e735` and the quantized AVX2 ONNX artifact. Provisioning
+downloads only the declared inference files. Runtime exposes no network/model-discovery path,
+requires the exact blank task sheet, validates the model's three labels, pad token, and context
+window, and
+hashes the portable paths plus exact bytes of every model/tokenizer input.
+
+For each predicate case, the adapter creates one symmetric premise containing both different-
+source records and two explicit hypotheses: the records corroborate, or they make mutually
+exclusive claims. Each record receives the same 640-character head/tail budget before the
+tokenizer applies a 384-token `only_first` limit, preserving the short hypothesis. The run trace
+records both three-way probability distributions, character/token truncation, total two-
+hypothesis latency, the complete system identity, and the predeclared decision policy.
+
+The candidate decides only when the larger hypothesis-entailment score is at least `0.70` and its
+lead is at least `0.10`; otherwise it emits `insufficient_evidence`. These are candidate settings,
+not validated production thresholds. They are fixed before scoring against adjudicated gold and
+may be changed only as a newly identified candidate, never silently tuned on the same benchmark.
+
+The runner receives no gold pool, review file, human rationale, deployed prediction, or production
+write capability. Its output still enters `candidate-score`, and both artifacts remain blocked
+from promotion. See
+[ADR 0020](adr/0020-pinned-local-relationship-nli-runner.md) for the execution decision.
+
 ## Promotion boundary
 
 No quality floor is checked in before a representative pool completes independent review and
@@ -144,5 +172,6 @@ may never rewrite the measured graph.
 See [ADR 0014](adr/0014-human-reviewed-claim-pair-benchmark.md) for the benchmark decision,
 [ADR 0015](adr/0015-independent-review-adjudication.md) for gold-label finalization,
 [ADR 0019](adr/0019-gold-blind-relationship-candidate-sandbox.md) for candidate isolation and the
-non-promotion boundary, and
+non-promotion boundary,
+[ADR 0020](adr/0020-pinned-local-relationship-nli-runner.md) for local NLI execution, and
 [`evals/relationships/README.md`](../evals/relationships/README.md) for commands and the rubric.

@@ -137,13 +137,34 @@ jobs:
               -f deploy/release-assessment.compose.yaml \
               config --quiet
 
-      - name: Verify FIRMS credential is ingestor-only
+      - name: Verify polling policy parity and FIRMS credential scope
         run: |
           ATLAS_FIRMS_ENABLED=true ATLAS_FIRMS_MAP_KEY=ci-sentinel \
+          ATLAS_USGS_POLL_SECONDS=61 ATLAS_GDELT_SOURCE_STALE_SECONDS=3601 \
             docker compose config --format json | python3 -c '
           import json, sys
           services = json.load(sys.stdin)["services"]
           assert services["ingestor"]["environment"]["ATLAS_FIRMS_MAP_KEY"] == "ci-sentinel"
+          policy_keys = (
+              "ATLAS_USGS_POLL_SECONDS",
+              "ATLAS_USGS_SOURCE_STALE_SECONDS",
+              "ATLAS_NWS_POLL_SECONDS",
+              "ATLAS_NWS_SOURCE_STALE_SECONDS",
+              "ATLAS_FIRMS_ENABLED",
+              "ATLAS_FIRMS_POLL_SECONDS",
+              "ATLAS_FIRMS_SOURCE_STALE_SECONDS",
+              "ATLAS_GDELT_ENABLED",
+              "ATLAS_GDELT_POLL_SECONDS",
+              "ATLAS_GDELT_SOURCE_STALE_SECONDS",
+              "ATLAS_SOURCE_POLL_STALE_MULTIPLIER",
+              "ATLAS_SOURCE_POLL_HISTORY_STREAM",
+              "ATLAS_SOURCE_POLL_HISTORY_MAX_LENGTH",
+          )
+          assert all(
+              services["api"]["environment"][key]
+              == services["ingestor"]["environment"][key]
+              for key in policy_keys
+          )
           assert all(
               "ATLAS_FIRMS_MAP_KEY" not in service.get("environment", {})
               for name, service in services.items()
@@ -154,7 +175,13 @@ jobs:
         run: docker compose build
 
       - name: Start API, projectors, and web edge
-        run: docker compose up -d --wait --wait-timeout 120 api projector retrieval-indexer web
+        run: |
+          if ! docker compose up -d --wait --wait-timeout 120 \
+            api projector retrieval-indexer web; then
+            docker compose ps --all
+            docker compose logs --no-color migrate
+            exit 1
+          fi
 
       - name: Smoke-test edge routing
         run: |
@@ -164,9 +191,18 @@ jobs:
           response = json.load(sys.stdin)
           assert response == {
               "status": "ready",
-              "version": "0.9.0",
+              "version": "0.10.0",
               "commit_sha": os.environ["ATLAS_BUILD_COMMIT_SHA"],
           }'
+          curl --fail --silent --show-error \
+            http://localhost:3000/api/v1/source-freshness | python3 -c '
+          import json, sys
+          response = json.load(sys.stdin)
+          assert response["passed"] is False
+          assert response["execution_enabled"] is False
+          assert [item["source"] for item in response["items"]] == ["gdelt", "nws", "usgs"]
+          assert all(item["poll_status"] == "starting" for item in response["items"])
+          assert all(item["source_data_status"] == "not_reported" for item in response["items"])'
           curl --fail --silent --show-error \
             'http://localhost:3000/api/v1/search?q=earthquake' | python3 -c '
           import json, sys

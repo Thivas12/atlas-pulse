@@ -34,6 +34,13 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.gdelt_minimum_geo_precision == 3
     assert settings.agent_approval_trusted_key_ids == (key_id,)
     assert settings.build_commit_sha == "a" * 40
+    assert tuple(policy.source for policy in settings.source_poll_policies()) == (
+        "firms",
+        "gdelt",
+        "nws",
+        "usgs",
+    )
+    assert settings.source_poll_history_stream == "{atlas}:source-polls"
     assert "top-secret" not in repr(settings)
 
 
@@ -46,6 +53,11 @@ def test_firms_requires_a_key_only_when_enabled() -> None:
 def test_settings_reject_an_unpinned_build_commit() -> None:
     with pytest.raises(ValidationError, match="build_commit_sha"):
         Settings(build_commit_sha="main")
+
+
+def test_settings_rejects_source_freshness_threshold_at_or_below_poll_interval() -> None:
+    with pytest.raises(ValidationError, match="source stale threshold must exceed"):
+        Settings(usgs_poll_seconds=600, usgs_source_stale_seconds=600)
 
 
 @pytest.mark.parametrize(

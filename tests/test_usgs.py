@@ -107,6 +107,7 @@ async def test_client_retries_transient_server_failure(usgs_payload: bytes) -> N
 
     assert fetched.raw == usgs_payload
     assert fetched.content_type == "application/geo+json"
+    assert fetched.transport_attempts == 2
     assert calls == 2
     await source.close()
     assert not http_client.is_closed
@@ -146,8 +147,9 @@ async def test_client_exhausts_retryable_failures() -> None:
             max_attempts=1,
             client=http_client,
         )
-        with pytest.raises(RetryableSourceError, match="429"):
+        with pytest.raises(RetryableSourceError, match="429") as caught:
             await source.fetch()
+    assert caught.value.attempt_count == 1
 
 
 @pytest.mark.asyncio

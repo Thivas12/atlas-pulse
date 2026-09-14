@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, Self
@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Literal, Self
 from agent_rag_core import Event
 from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field, model_validator
+from valkey.exceptions import ValkeyError
 
 from atlas_pulse import __version__
 from atlas_pulse.agent_governance import AgentRunLedgerReader
@@ -68,6 +69,12 @@ from atlas_pulse.retrieval import (
     SearchQuery,
     SearchResult,
     SearchService,
+)
+from atlas_pulse.source_poll_store import SourcePollStore
+from atlas_pulse.source_polling import (
+    SourceFreshnessResponse,
+    SourcePollPolicy,
+    evaluate_source_freshness,
 )
 from atlas_pulse.streams.base import EventBus
 
@@ -1174,6 +1181,9 @@ def create_app(
     agent_run_ledger: AgentRunLedgerReader | None = None,
     agent_release_assessment: AgentReleaseAssessment | None = None,
     build_commit_sha: str = "unknown",
+    source_poll_store: SourcePollStore | None = None,
+    source_poll_policies: tuple[SourcePollPolicy, ...] = (),
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> FastAPI:
     """Create an application with an injected stream implementation."""
     if build_commit_sha != "unknown" and (
@@ -1200,8 +1210,12 @@ def create_app(
                         if search_service is not None:
                             await search_service.close()
                     finally:
-                        if agent_run_ledger is not None:
-                            await agent_run_ledger.close()
+                        try:
+                            if agent_run_ledger is not None:
+                                await agent_run_ledger.close()
+                        finally:
+                            if source_poll_store is not None:
+                                await source_poll_store.close()
 
     app = FastAPI(
         title="AtlasPulse API",
@@ -1232,6 +1246,38 @@ def create_app(
                 detail="retrieval index unavailable",
             )
         return HealthResponse(status="ready", version=__version__, commit_sha=build_commit_sha)
+
+    @app.get(
+        "/v1/source-freshness",
+        response_model=SourceFreshnessResponse,
+        tags=["operations"],
+    )
+    async def source_freshness() -> SourceFreshnessResponse:
+        if source_poll_store is None or not source_poll_policies:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="source freshness unavailable",
+            )
+        sources = tuple(policy.source for policy in source_poll_policies)
+        try:
+            states = await source_poll_store.load_states(sources)
+            return evaluate_source_freshness(
+                source_poll_policies,
+                states,
+                generated_at=clock(),
+            )
+        except (
+            ConnectionError,
+            OSError,
+            TimeoutError,
+            TypeError,
+            ValueError,
+            ValkeyError,
+        ) as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="source freshness unavailable",
+            ) from error
 
     @app.get("/v1/events", response_model=EventsResponse, tags=["events"])
     async def latest_events(

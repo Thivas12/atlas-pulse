@@ -2,9 +2,11 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from agent_rag_core import Event
+
+from atlas_pulse.projections.base import SourceName
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +17,7 @@ class FetchedDocument:
     fetched_at: datetime
     source_url: str
     content_type: str | None
+    transport_attempts: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,13 +26,23 @@ class NormalizedBatch:
 
     generated_at: datetime
     events: tuple[Event, ...]
+    timestamp_basis: Literal["source_metadata", "latest_record", "fetch_fallback"] = (
+        "source_metadata"
+    )
 
 
 class SourceAdapter(Protocol):
     """Complete capability required by the source-neutral ingestion service."""
 
-    source_name: str
-    snapshot_extension: str
+    @property
+    def source_name(self) -> SourceName:
+        """Canonical source identifier."""
+        ...
+
+    @property
+    def snapshot_extension(self) -> str:
+        """Credential-free immutable snapshot suffix."""
+        ...
 
     async def fetch(self) -> FetchedDocument:
         """Fetch one immutable source document."""

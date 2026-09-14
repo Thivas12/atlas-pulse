@@ -814,7 +814,7 @@ export default function App() {
       </section>
 
       <footer>
-        <span>ATLASPULSE / OPERATIONAL EVIDENCE CONTROL / v0.9.0</span>
+        <span>ATLASPULSE / SOURCE FRESHNESS CONTROL / v0.10.0</span>
         <span>Proposal-scoped approval · Ed25519 ledger · default deny · zero execution</span>
       </footer>
     </main>

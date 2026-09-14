@@ -9,6 +9,7 @@ import structlog
 from atlas_pulse.config import get_settings
 from atlas_pulse.ingestion import IngestionService, RawSnapshotStore
 from atlas_pulse.logging import configure_logging
+from atlas_pulse.source_poll_store import ValkeySourcePollStore
 from atlas_pulse.sources import FIRMSClient, GDELTClient, NWSClient, SourceAdapter, USGSClient
 from atlas_pulse.streams import ValkeyEventBus
 from atlas_pulse.telemetry import configure_telemetry
@@ -51,6 +52,12 @@ async def run() -> None:
         max_length=settings.stream_max_length,
         dedupe_ttl_seconds=settings.dedupe_ttl_seconds,
     )
+    source_poll_store = ValkeySourcePollStore(
+        url=settings.valkey_url,
+        history_stream=settings.source_poll_history_stream,
+        history_max_length=settings.source_poll_history_max_length,
+    )
+    source_poll_policies = {policy.source: policy for policy in settings.source_poll_policies()}
     usgs = USGSClient(
         feed_url=str(settings.usgs_feed_url),
         timeout_seconds=settings.source_timeout_seconds,
@@ -106,6 +113,8 @@ async def run() -> None:
                     source=source,
                     snapshots=snapshots,
                     event_bus=event_bus,
+                    source_poll_store=source_poll_store,
+                    source_poll_policy=source_poll_policies[source.source_name],
                 ),
                 interval_seconds=interval,
                 stop=stop,
@@ -122,7 +131,7 @@ async def run() -> None:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.gather(*(source.close() for source, _interval in sources))
-        await event_bus.close()
+        await asyncio.gather(source_poll_store.close(), event_bus.close())
 
 
 def main() -> None:

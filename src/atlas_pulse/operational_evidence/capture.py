@@ -20,6 +20,7 @@ from typing import cast
 from urllib.parse import urlsplit
 
 import httpx
+from pydantic import ValidationError
 
 from atlas_pulse.operational_evidence.base import (
     PROBE_PATHS,
@@ -44,6 +45,7 @@ from atlas_pulse.operational_evidence.base import (
     build_resource_snapshot,
 )
 from atlas_pulse.projections.base import SourceName
+from atlas_pulse.source_polling import SourceFreshnessItem, SourceFreshnessResponse
 
 _MAX_RESPONSE_BYTES = 1_048_576
 _READ_CHUNK_BYTES = 1_048_576
@@ -253,6 +255,43 @@ def _parse_events(
     return exchange.observation("events", semantic_passed=True), count, count == 500, visibility
 
 
+def _parse_source_freshness(
+    exchange: _Exchange,
+    *,
+    target: DeploymentTarget,
+    observed_at: datetime,
+) -> tuple[EndpointObservation, datetime | None, tuple[SourceFreshnessItem, ...]]:
+    if exchange.failure_code is not None:
+        return exchange.observation("source_freshness", semantic_passed=False), None, ()
+    try:
+        response = SourceFreshnessResponse.model_validate_json(exchange.body)
+    except (ValidationError, ValueError):
+        return exchange.observation("source_freshness", semantic_passed=False), None, ()
+    if abs((observed_at - response.generated_at).total_seconds()) > 60:
+        return (
+            exchange.observation(
+                "source_freshness",
+                semantic_passed=False,
+                semantic_failure="unexpected_value",
+            ),
+            None,
+            (),
+        )
+    by_source = {item.source: item for item in response.items}
+    required_passed = all(
+        source in by_source and by_source[source].passed for source in target.required_sources
+    )
+    return (
+        exchange.observation(
+            "source_freshness",
+            semantic_passed=required_passed,
+            semantic_failure="unexpected_value",
+        ),
+        response.generated_at,
+        response.items,
+    )
+
+
 def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
@@ -399,6 +438,8 @@ def _unreachable_probe(
         events_returned=0,
         events_truncated=False,
         source_visibility=(),
+        source_freshness_generated_at=None,
+        source_freshness=(),
         execution_boundary=ExecutionBoundaryObservation(passed=False),
     )
 
@@ -414,6 +455,8 @@ def _build_probe(
     events_returned: int,
     events_truncated: bool,
     source_visibility: tuple[SourceVisibilityObservation, ...],
+    source_freshness_generated_at: datetime | None,
+    source_freshness: tuple[SourceFreshnessItem, ...],
     execution_boundary: ExecutionBoundaryObservation,
 ) -> DeploymentProbeEvidence:
     passed = (
@@ -438,6 +481,8 @@ def _build_probe(
         events_returned=events_returned,
         events_truncated=events_truncated,
         source_visibility=source_visibility,
+        source_freshness_generated_at=source_freshness_generated_at,
+        source_freshness=source_freshness,
         execution_boundary=execution_boundary,
         passed=passed,
     )
@@ -457,7 +502,7 @@ def capture_deployment_probe(
     transport: httpx.BaseTransport | None = None,
     certificate_loader: CertificateLoader = observe_certificate,
 ) -> DeploymentProbeEvidence:
-    """Capture four fixed public endpoints and TLS without following redirects."""
+    """Capture five fixed public endpoints and TLS without following redirects."""
     if not 0 < timeout_seconds <= 60:
         raise ValueError("probe timeout must be greater than zero and at most 60 seconds")
     timestamp = _require_utc(observed_at or datetime.now(UTC), "observed_at")
@@ -469,10 +514,11 @@ def capture_deployment_probe(
         follow_redirects=False,
         transport=transport,
         trust_env=False,
-        headers={"User-Agent": "AtlasPulse-Operational-Evidence/1.0"},
+        headers={"User-Agent": "AtlasPulse-Operational-Evidence/1.1"},
     ) as client:
         health_exchange = _exchange(client, "health")
         readiness_exchange = _exchange(client, "readiness")
+        freshness_exchange = _exchange(client, "source_freshness")
         events_exchange = _exchange(client, "events")
         preflight_exchange = _exchange(client, "agent_preflight")
     health, observed_version, observed_commit_sha = _parse_health(
@@ -486,6 +532,11 @@ def capture_deployment_probe(
         expected_version=target.application_version,
         expected_commit_sha=target.commit_sha,
     )
+    freshness, freshness_generated_at, source_freshness = _parse_source_freshness(
+        freshness_exchange,
+        target=target,
+        observed_at=timestamp,
+    )
     events, event_count, truncated, visibility = _parse_events(
         events_exchange,
         observed_at=timestamp,
@@ -495,13 +546,15 @@ def capture_deployment_probe(
     return _build_probe(
         target,
         observed_at=timestamp,
-        endpoints=(health, readiness, events, preflight),
+        endpoints=(health, readiness, freshness, events, preflight),
         certificate=certificate,
         observed_version=observed_version,
         observed_commit_sha=observed_commit_sha,
         events_returned=event_count,
         events_truncated=truncated,
         source_visibility=visibility,
+        source_freshness_generated_at=freshness_generated_at,
+        source_freshness=source_freshness,
         execution_boundary=boundary,
     )
 

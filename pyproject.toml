@@ -1,6 +1,6 @@
 [project]
 name = "atlas-pulse"
-version = "0.9.0"
+version = "0.10.0"
 description = "Real-time, evidence-grounded global disruption intelligence"
 readme = "README.md"
 authors = [

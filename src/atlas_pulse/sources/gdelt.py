@@ -9,7 +9,7 @@ import re
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Self
+from typing import Literal, Self
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -17,7 +17,11 @@ from agent_rag_core import Event, GeoPoint
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from atlas_pulse.sources.base import FetchedDocument, NormalizedBatch
-from atlas_pulse.sources.http import PermanentSourceError, RetryingHttpClient
+from atlas_pulse.sources.http import (
+    PermanentSourceError,
+    RetryableSourceError,
+    RetryingHttpClient,
+)
 
 _GDELT_HOST = "data.gdeltproject.org"
 _GDELT_DATA_URL = "https://www.gdeltproject.org/data.html"
@@ -453,7 +457,7 @@ class GDELTFeed:
 class GDELTClient:
     """Resolve, integrity-check, and normalize the latest GDELT Event export."""
 
-    source_name = "gdelt"
+    source_name: Literal["gdelt"] = "gdelt"
     snapshot_extension = "zip"
 
     def __init__(
@@ -502,9 +506,18 @@ class GDELTClient:
 
     async def fetch(self) -> FetchedDocument:
         manifest = await self._manifest.fetch()
-        pointer = GDELTExportPointer.from_bytes(manifest.raw)
+        try:
+            pointer = GDELTExportPointer.from_bytes(manifest.raw)
+        except ValueError:
+            raise PermanentSourceError(
+                "gdelt last-update manifest is invalid",
+                attempt_count=manifest.transport_attempts,
+            ) from None
         if pointer.expected_size > self._max_compressed_bytes:
-            raise PermanentSourceError("gdelt export exceeds the configured compressed byte limit")
+            raise PermanentSourceError(
+                "gdelt export exceeds the configured compressed byte limit",
+                attempt_count=manifest.transport_attempts,
+            )
         export_client = RetryingHttpClient(
             source_name=self.source_name,
             url=pointer.url,
@@ -515,15 +528,37 @@ class GDELTClient:
             max_response_bytes=self._max_compressed_bytes,
             client=self._client,
         )
-        document = await export_client.fetch()
+        try:
+            document = await export_client.fetch()
+        except RetryableSourceError as error:
+            raise RetryableSourceError(
+                str(error),
+                attempt_count=manifest.transport_attempts + error.attempt_count,
+            ) from None
+        except PermanentSourceError as error:
+            raise PermanentSourceError(
+                str(error),
+                attempt_count=manifest.transport_attempts + error.attempt_count,
+            ) from None
+        transport_attempts = manifest.transport_attempts + document.transport_attempts
         if len(document.raw) != pointer.expected_size:
-            raise PermanentSourceError("gdelt export size does not match the advertised manifest")
+            raise PermanentSourceError(
+                "gdelt export size does not match the advertised manifest",
+                attempt_count=transport_attempts,
+            )
         checksum = hashlib.md5(document.raw, usedforsecurity=False).hexdigest()
         if checksum != pointer.expected_md5:
             raise PermanentSourceError(
-                "gdelt export checksum does not match the advertised manifest"
+                "gdelt export checksum does not match the advertised manifest",
+                attempt_count=transport_attempts,
             )
-        return document
+        return FetchedDocument(
+            raw=document.raw,
+            fetched_at=document.fetched_at,
+            source_url=document.source_url,
+            content_type=document.content_type,
+            transport_attempts=transport_attempts,
+        )
 
     def normalize(self, raw: bytes, *, ingested_at: datetime) -> NormalizedBatch:
         feed = GDELTFeed.from_zip(
@@ -541,6 +576,7 @@ class GDELTClient:
                 minimum_mentions=self._minimum_mentions,
                 max_events=self._max_events,
             ),
+            timestamp_basis="source_metadata",
         )
 
     async def close(self) -> None:

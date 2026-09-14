@@ -214,7 +214,7 @@ _SEVERITY_RANK = {
 class NWSClient(RetryingHttpClient):
     """Official NWS active-alert adapter with the required identifiable User-Agent."""
 
-    source_name = "nws"
+    source_name: Literal["nws"] = "nws"
     snapshot_extension = "geojson"
 
     def __init__(
@@ -242,4 +242,5 @@ class NWSClient(RetryingHttpClient):
         return NormalizedBatch(
             generated_at=collection.updated,
             events=collection.to_events(ingested_at=ingested_at),
+            timestamp_basis="source_metadata",
         )

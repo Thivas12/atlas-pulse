@@ -55,7 +55,7 @@ input:focus-visible {
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-rows: auto auto auto auto minmax(560px, 1fr) auto;
+  grid-template-rows: auto auto auto auto auto minmax(560px, 1fr) auto;
 }
 
 .topbar {
@@ -502,6 +502,194 @@ input:focus-visible {
 }
 
 .freshness-message.error {
+  color: #ff9aa8;
+  border-color: rgba(255, 94, 114, 0.24);
+}
+
+.source-poll-history {
+  padding: 16px 28px 18px;
+  border-bottom: 1px solid var(--line);
+  background: #060e17;
+}
+
+.source-poll-history-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 12px;
+}
+
+.source-poll-history-eyebrow {
+  margin: 0 0 5px;
+  color: #7598ff;
+  font:
+    500 8px "DM Mono",
+    monospace;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.source-poll-history-heading h2 {
+  margin: 0;
+  color: #dce8ef;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.source-poll-history-heading p:not(.source-poll-history-eyebrow) {
+  margin: 4px 0 0;
+  color: #607887;
+  font-size: 9px;
+}
+
+.poll-history-summary {
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.poll-history-summary > span {
+  display: block;
+  color: #7598ff;
+  font:
+    500 9px "DM Mono",
+    monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.poll-history-summary > span.unknown {
+  color: var(--danger);
+}
+
+.poll-history-summary small {
+  display: block;
+  margin-top: 4px;
+  color: #4d6574;
+  font:
+    8px "DM Mono",
+    monospace;
+}
+
+.poll-transition-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.poll-transition {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr);
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid rgba(117, 152, 255, 0.14);
+  border-radius: 5px;
+  background: rgba(8, 17, 27, 0.82);
+}
+
+.poll-transition-marker {
+  width: 7px;
+  height: 7px;
+  margin-top: 3px;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 0 3px rgba(242, 193, 78, 0.08);
+}
+
+.poll-transition.succeeded .poll-transition-marker {
+  background: var(--pulse);
+  box-shadow: 0 0 0 3px rgba(53, 224, 161, 0.08);
+}
+
+.poll-transition.failed .poll-transition-marker {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(255, 94, 114, 0.08);
+}
+
+.poll-transition-main {
+  min-width: 0;
+}
+
+.poll-transition-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.poll-transition-title strong,
+.poll-transition-title b {
+  font:
+    500 9px "DM Mono",
+    monospace;
+}
+
+.poll-transition-title strong {
+  overflow: hidden;
+  color: #cddce4;
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.poll-transition-title b {
+  flex: 0 0 auto;
+  color: var(--warning);
+  font-weight: 500;
+}
+
+.poll-transition.succeeded .poll-transition-title b {
+  color: var(--pulse);
+}
+
+.poll-transition.failed .poll-transition-title b {
+  color: var(--danger);
+}
+
+.poll-transition-main p {
+  margin: 5px 0 0;
+  color: #597180;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.poll-transition-identity {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 7px;
+  color: #3f5867;
+  border-top: 1px solid var(--line);
+  font:
+    7px "DM Mono",
+    monospace;
+}
+
+.source-poll-history-caveat {
+  margin: 9px 0 0;
+  color: #405865;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.poll-history-message {
+  min-height: 68px;
+  display: grid;
+  place-items: center;
+  color: #718997;
+  border: 1px dashed var(--line);
+  border-radius: 5px;
+  font:
+    9px "DM Mono",
+    monospace;
+}
+
+.poll-history-message.error {
   color: #ff9aa8;
   border-color: rgba(255, 94, 114, 0.24);
 }
@@ -1895,6 +2083,7 @@ footer {
   .topbar,
   .control-strip,
   .source-freshness-panel,
+  .source-poll-history,
   footer {
     padding-right: 14px;
     padding-left: 14px;
@@ -1947,6 +2136,20 @@ footer {
   }
 
   .source-health-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .source-poll-history-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .poll-history-summary {
+    text-align: left;
+  }
+
+  .poll-transition-list {
     grid-template-columns: 1fr;
   }
 

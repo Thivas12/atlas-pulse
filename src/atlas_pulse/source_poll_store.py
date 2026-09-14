@@ -9,7 +9,13 @@ from typing import Protocol, cast
 from valkey.asyncio import Valkey
 
 from atlas_pulse.projections.base import SourceName
-from atlas_pulse.source_polling import SourcePollAttempt, SourcePollPolicy, SourcePollState
+from atlas_pulse.source_polling import (
+    SourcePollAttempt,
+    SourcePollPolicy,
+    SourcePollState,
+    SourcePollTransition,
+    SourcePollTransitionKind,
+)
 
 _RECORD_START = """
 local existing_started_at = redis.call('HGET', KEYS[1], 'current_started_at')
@@ -71,6 +77,10 @@ class SourcePollStore(Protocol):
 
     async def load_states(self, sources: tuple[SourceName, ...]) -> tuple[SourcePollState, ...]: ...
 
+    async def load_recent_transitions(
+        self, *, before: str | None, limit: int
+    ) -> tuple[SourcePollTransition, ...]: ...
+
     async def close(self) -> None: ...
 
 
@@ -79,7 +89,22 @@ class InMemorySourcePollStore:
 
     def __init__(self) -> None:
         self._states: dict[SourceName, SourcePollState] = {}
+        self._history: list[SourcePollTransition] = []
+        self._history_sequence = 0
         self._lock = asyncio.Lock()
+
+    def _append_transition(
+        self, transition: SourcePollTransitionKind, attempt: SourcePollAttempt
+    ) -> None:
+        self._history_sequence += 1
+        self._history.append(
+            SourcePollTransition(
+                stream_id=f"0-{self._history_sequence}",
+                source=attempt.source,
+                transition=transition,
+                attempt=attempt,
+            )
+        )
 
     async def record_started(self, attempt: SourcePollAttempt, policy: SourcePollPolicy) -> None:
         if attempt.outcome != "in_progress" or attempt.source != policy.source:
@@ -95,6 +120,7 @@ class InMemorySourcePollStore:
                 last_success=existing.last_success if existing else None,
                 consecutive_failures=existing.consecutive_failures if existing else 0,
             )
+            self._append_transition("started", attempt)
 
     async def record_completed(self, attempt: SourcePollAttempt) -> None:
         if attempt.outcome == "in_progress" or attempt.completed_at is None:
@@ -115,10 +141,32 @@ class InMemorySourcePollStore:
                 last_success=attempt if succeeded else existing.last_success,
                 consecutive_failures=0 if succeeded else existing.consecutive_failures + 1,
             )
+            self._append_transition("succeeded" if succeeded else "failed", attempt)
 
     async def load_states(self, sources: tuple[SourceName, ...]) -> tuple[SourcePollState, ...]:
         async with self._lock:
             return tuple(self._states[source] for source in sources if source in self._states)
+
+    async def load_recent_transitions(
+        self, *, before: str | None, limit: int
+    ) -> tuple[SourcePollTransition, ...]:
+        if limit < 1:
+            raise ValueError("source poll history limit must be positive")
+        before_position = _stream_position(before) if before is not None else None
+        async with self._lock:
+            newest_first = reversed(self._history)
+            visible = (
+                transition
+                for transition in newest_first
+                if before_position is None
+                or _stream_position(transition.stream_id) < before_position
+            )
+            result: list[SourcePollTransition] = []
+            for transition in visible:
+                result.append(transition)
+                if len(result) == limit:
+                    break
+            return tuple(result)
 
     async def close(self) -> None:
         return None
@@ -132,6 +180,14 @@ class AsyncValkeyClient(Protocol):
     ) -> object: ...
 
     async def hgetall(self, name: str) -> object: ...
+
+    async def xrevrange(
+        self,
+        name: str,
+        max: str = "+",
+        min: str = "-",
+        count: int | None = None,
+    ) -> object: ...
 
     async def aclose(self) -> None: ...
 
@@ -159,6 +215,13 @@ def _script_accepted(value: object) -> bool:
 
 def _mapping_value(fields: Mapping[object, object], key: str) -> object | None:
     return fields.get(key, fields.get(key.encode()))
+
+
+def _stream_position(value: str) -> tuple[int, int]:
+    parts = value.split("-", maxsplit=1)
+    if len(parts) != 2 or not all(part.isascii() and part.isdigit() for part in parts):
+        raise ValueError("source poll history cursor must be a Valkey stream ID")
+    return int(parts[0]), int(parts[1])
 
 
 class ValkeySourcePollStore:
@@ -255,6 +318,46 @@ class ValkeySourcePollStore:
                 )
             )
         return tuple(states)
+
+    async def load_recent_transitions(
+        self, *, before: str | None, limit: int
+    ) -> tuple[SourcePollTransition, ...]:
+        if limit < 1:
+            raise ValueError("source poll history limit must be positive")
+        if before is not None:
+            _stream_position(before)
+        maximum = f"({before}" if before is not None else "+"
+        raw_messages = await self._client.xrevrange(
+            self._history_stream,
+            max=maximum,
+            count=limit,
+        )
+        if not isinstance(raw_messages, Sequence) or isinstance(raw_messages, (str, bytes)):
+            raise TypeError("Valkey source-poll history returned an invalid response")
+
+        transitions: list[SourcePollTransition] = []
+        for raw_message in raw_messages:
+            if not isinstance(raw_message, Sequence) or len(raw_message) != 2:
+                raise TypeError("Valkey source-poll history entry has an invalid shape")
+            stream_id, raw_fields = raw_message
+            if not isinstance(raw_fields, Mapping):
+                raise TypeError("Valkey source-poll history fields have an invalid shape")
+            field_names = {_as_text(key) for key in raw_fields}
+            if field_names != {"source", "transition", "attempt"}:
+                raise ValueError("Valkey source-poll history fields are incomplete or extended")
+            source = _mapping_value(raw_fields, "source")
+            transition = _mapping_value(raw_fields, "transition")
+            attempt = _mapping_value(raw_fields, "attempt")
+            assert source is not None and transition is not None and attempt is not None
+            transitions.append(
+                SourcePollTransition(
+                    stream_id=_as_text(stream_id),
+                    source=cast(SourceName, _as_text(source)),
+                    transition=cast(SourcePollTransitionKind, _as_text(transition)),
+                    attempt=SourcePollAttempt.model_validate_json(_as_text(attempt)),
+                )
+            )
+        return tuple(transitions)
 
     async def close(self) -> None:
         if self._owns_client:

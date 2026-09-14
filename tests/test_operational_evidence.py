@@ -58,7 +58,7 @@ def _target(*, commit_sha: str = _COMMIT, deployed_at: datetime = _START) -> Dep
     return build_deployment_target(
         origin="https://atlas.example/",
         commit_sha=commit_sha,
-        application_version="0.11.0",
+        application_version="0.12.0",
         environment="free-tier-public",
         deployed_at=deployed_at,
     )
@@ -281,7 +281,7 @@ def test_target_rejects_non_public_or_noncanonical_origins(origin: str) -> None:
         build_deployment_target(
             origin=origin,
             commit_sha=_COMMIT,
-            application_version="0.11.0",
+            application_version="0.12.0",
             environment="free-tier-public",
             deployed_at=_START,
         )
@@ -980,7 +980,7 @@ def test_cli_target_resource_backup_restore_restart_and_report(
                 "--commit-sha",
                 _COMMIT,
                 "--application-version",
-                "0.11.0",
+                "0.12.0",
                 "--deployed-at",
                 "2026-09-14T12:00:00Z",
                 "--output",
@@ -1139,7 +1139,7 @@ def test_cli_target_resource_backup_restore_restart_and_report(
                 "--commit-sha",
                 _COMMIT,
                 "--application-version",
-                "0.11.0",
+                "0.12.0",
                 "--deployed-at",
                 "2026-09-14T12:00:00Z",
                 "--output",

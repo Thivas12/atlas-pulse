@@ -2,8 +2,12 @@ import {
   type EventEnvelope,
   type IncidentCandidate,
   SOURCE_FRESHNESS_CAVEAT,
+  SOURCE_POLL_HISTORY_CAVEAT,
   type SourceFreshnessItem,
   type SourceFreshnessResponse,
+  type SourcePollAttempt,
+  type SourcePollHistoryResponse,
+  type SourcePollTransition,
 } from "../types";
 
 interface EnvelopeOptions {
@@ -202,6 +206,64 @@ export function makeSourceFreshnessResponse(
     passed: items.every((item) => item.passed),
     execution_enabled: false,
     caveat: SOURCE_FRESHNESS_CAVEAT,
+    ...overrides,
+  };
+}
+
+export function makeSourcePollTransition({
+  streamId = "2000-0",
+  source = "usgs",
+  transition = "succeeded",
+  attemptOverrides = {},
+}: {
+  streamId?: string;
+  source?: SourcePollTransition["source"];
+  transition?: SourcePollTransition["transition"];
+  attemptOverrides?: Partial<Omit<SourcePollAttempt, "source">>;
+} = {}): SourcePollTransition {
+  const terminal = transition !== "started";
+  const succeeded = transition === "succeeded";
+  const attempt: SourcePollAttempt = {
+    schema_version: "1.0.0",
+    rule_version: "source-poll-freshness-v1",
+    attempt_id: `source-poll-${"a".repeat(32)}`,
+    source,
+    started_at: "2026-09-14T11:59:20Z",
+    completed_at: terminal ? "2026-09-14T11:59:30Z" : null,
+    outcome: transition === "started" ? "in_progress" : transition,
+    stage: succeeded ? "complete" : "fetch",
+    transport_attempts: succeeded ? 1 : transition === "failed" ? 3 : 0,
+    source_generated_at: succeeded ? "2026-09-14T11:59:00Z" : null,
+    timestamp_basis: succeeded ? "source_metadata" : null,
+    fetched_events: succeeded ? 2 : null,
+    published_events: succeeded ? 1 : null,
+    deduplicated_events: succeeded ? 1 : null,
+    failure_code: transition === "failed" ? "transport_exhausted" : null,
+    execution_enabled: false,
+    ...attemptOverrides,
+  };
+  return { stream_id: streamId, source, transition, attempt };
+}
+
+export function makeSourcePollHistoryResponse(
+  items: SourcePollTransition[] = [
+    makeSourcePollTransition(),
+    makeSourcePollTransition({ streamId: "1999-0", source: "gdelt", transition: "failed" }),
+    makeSourcePollTransition({ streamId: "1998-0", source: "gdelt", transition: "started" }),
+  ],
+  overrides: Partial<Omit<SourcePollHistoryResponse, "items">> = {},
+): SourcePollHistoryResponse {
+  return {
+    schema_version: "1.0.0",
+    rule_version: "source-poll-history-v1",
+    generated_at: "2026-09-14T12:00:00Z",
+    count: items.length,
+    items,
+    next_cursor: items.at(-1)?.stream_id ?? null,
+    has_more: false,
+    order: "newest_first",
+    execution_enabled: false,
+    caveat: SOURCE_POLL_HISTORY_CAVEAT,
     ...overrides,
   };
 }

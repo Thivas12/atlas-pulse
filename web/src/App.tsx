@@ -8,6 +8,7 @@ import {
   fetchIncidentCandidates,
   fetchReplay,
   fetchSourceFreshness,
+  fetchSourcePollHistory,
 } from "./api";
 import { EventFeed } from "./components/EventFeed";
 import { IncidentDetail } from "./components/IncidentDetail";
@@ -15,6 +16,7 @@ import { IncidentFeed } from "./components/IncidentFeed";
 import { ReplayControls } from "./components/ReplayControls";
 import { SearchPanel } from "./components/SearchPanel";
 import { SourceFreshnessPanel } from "./components/SourceFreshnessPanel";
+import { SourcePollHistory } from "./components/SourcePollHistory";
 import {
   cameoRootCodeOf,
   conflictPriorityOf,
@@ -374,6 +376,11 @@ export default function App() {
     queryFn: ({ signal }) => fetchSourceFreshness(signal),
     refetchInterval: 10_000,
   });
+  const sourcePollHistoryQuery = useQuery({
+    queryKey: ["source-poll-history"],
+    queryFn: ({ signal }) => fetchSourcePollHistory(signal),
+    refetchInterval: 10_000,
+  });
   const viewportQuery = useQuery({
     queryKey: ["signals", "viewport", sourceFilter, viewport],
     queryFn: ({ signal }) =>
@@ -700,6 +707,12 @@ export default function App() {
         error={sourceFreshnessQuery.error}
       />
 
+      <SourcePollHistory
+        response={sourcePollHistoryQuery.data}
+        loading={sourcePollHistoryQuery.isPending}
+        error={sourcePollHistoryQuery.error}
+      />
+
       <section className="command-grid">
         <div className="map-panel">
           <Suspense fallback={<div className="map-message">Loading spatial renderer…</div>}>
@@ -844,7 +857,7 @@ export default function App() {
       </section>
 
       <footer>
-        <span>ATLASPULSE / OPERATIONS BEACON / v0.11.0</span>
+        <span>ATLASPULSE / RECOVERY TIMELINE / v0.12.0</span>
         <span>Proposal-scoped approval · Ed25519 ledger · default deny · zero execution</span>
       </footer>
     </main>

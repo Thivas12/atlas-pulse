@@ -73,6 +73,7 @@ from atlas_pulse.retrieval import (
 from atlas_pulse.source_poll_store import SourcePollStore
 from atlas_pulse.source_polling import (
     SourceFreshnessResponse,
+    SourcePollHistoryResponse,
     SourcePollPolicy,
     evaluate_source_freshness,
 )
@@ -1277,6 +1278,47 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="source freshness unavailable",
+            ) from error
+
+    @app.get(
+        "/v1/source-polls",
+        response_model=SourcePollHistoryResponse,
+        tags=["operations"],
+    )
+    async def source_poll_history(
+        before: str | None = Query(default=None, pattern=r"^[0-9]+-[0-9]+$"),
+        limit: int = Query(default=24, ge=1, le=100),
+    ) -> SourcePollHistoryResponse:
+        if source_poll_store is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="source poll history unavailable",
+            )
+        try:
+            page = await source_poll_store.load_recent_transitions(
+                before=before,
+                limit=limit + 1,
+            )
+            has_more = len(page) > limit
+            visible = page[:limit]
+            return SourcePollHistoryResponse(
+                generated_at=clock(),
+                count=len(visible),
+                items=visible,
+                next_cursor=visible[-1].stream_id if visible else None,
+                has_more=has_more,
+            )
+        except (
+            ConnectionError,
+            OSError,
+            TimeoutError,
+            TypeError,
+            ValueError,
+            ValkeyError,
+        ) as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="source poll history unavailable",
             ) from error
 
     @app.get("/v1/events", response_model=EventsResponse, tags=["events"])

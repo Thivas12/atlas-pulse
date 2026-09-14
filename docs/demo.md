@@ -7,7 +7,10 @@ Start from a populated local stack with `docker compose up -d --build` and open
 
 Start with the **Operations beacon**. Point out that each source has separate poll-heartbeat and
 upstream-data states, while the metric below is labelled only as bounded visible-event age. A green
-event list is never substituted for missing freshness evidence. Then show earthquake points,
+event list is never substituted for missing freshness evidence. Directly below it, show the
+**Recovery evidence** timeline: each start and terminal outcome keeps one attempt identity, failed
+stages use bounded codes, and a later success is shown as a distinct observation rather than an
+inferred recovery claim. Then show earthquake points,
 severity-colored NWS polygons, confidence-colored NASA FIRMS points, and priority-colored GDELT
 observations. Switch among **Earthquakes**, **Weather**, **Fires**, and **Conflict**. Pan the map and
 show that the browser requests an indexed PostGIS viewport rather than downloading the full
@@ -20,6 +23,10 @@ verified ground truth.
 curl -fsS 'http://localhost:8000/v1/source-freshness' \
   | jq '{generated_at, passed, sources: [.items[] |
         {source, poll_status, source_data_status, source_age_seconds, passed}]}'
+curl -fsS 'http://localhost:8000/v1/source-polls?limit=6' \
+  | jq '{count, next_cursor, has_more, order, transitions: [.items[] |
+        {stream_id, source, transition, attempt_id: .attempt.attempt_id,
+         stage: .attempt.stage, failure_code: .attempt.failure_code}]}'
 curl -fsS 'http://localhost:8000/v1/signals?source=nws&min_severity=3&bbox=-125,24,-66,50' \
   | jq '{count, next_cursor, has_more, order}'
 ```

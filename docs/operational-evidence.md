@@ -1,6 +1,6 @@
 # Sampled operational evidence campaigns
 
-AtlasPulse v0.11 records deployment observations before making a public reliability statement. The
+AtlasPulse v0.12 records deployment observations before making a public reliability statement. The
 workflow is content-addressed, exact-commit-bound, and deliberately conservative. It does not run
 a model or agent, change an approval, restart a service, create a backup, restore data, or claim an
 SLA.
@@ -24,7 +24,9 @@ The probe success rate is a rate over collected samples, not continuous availabi
 daily observations. `/v1/source-freshness` reports worker poll state separately from upstream
 source timestamp age. Public event ages still show only what was visible in the bounded
 `/v1/events` response; unchanged source responses may be deduplicated without making a successful
-poll disappear. These limitations remain printed in every JSON and Markdown report.
+poll disappear. `/v1/source-polls` provides bounded retained transition diagnostics, but it is not
+an independent observation and does not count toward campaign completeness, probe success, or a
+recovery-drill result. These limitations remain printed in every JSON and Markdown report.
 
 ## Threat model and trust boundaries
 
@@ -67,7 +69,7 @@ mkdir -p artifacts/operations/evidence
 uv run atlas-pulse-operations target \
   --origin "https://$ATLAS_PUBLIC_HOST" \
   --commit-sha "$ATLAS_BUILD_COMMIT_SHA" \
-  --application-version 0.11.0 \
+  --application-version 0.12.0 \
   --environment free-tier-public \
   --deployed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --output artifacts/operations/target.json
@@ -100,8 +102,9 @@ exception messages never enter the poll ledger.
 
 The dashboard renders the same two dimensions through an independently strict browser contract.
 It shows `FRESHNESS UNKNOWN` when that contract or request fails and does not substitute event
-recency. The panel remains a first-party point-in-time view; only the content-addressed artifacts
-below count toward the sampled campaign.
+recency. Its recovery timeline separately renders the bounded `/v1/source-polls` history and fails
+closed when that contract is unavailable or malformed. Neither panel is an independent monitor;
+only the content-addressed artifacts below count toward the sampled campaign.
 
 ```bash
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"

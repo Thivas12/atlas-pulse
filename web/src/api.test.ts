@@ -8,12 +8,15 @@ import {
   fetchLatest,
   fetchReplay,
   fetchSourceFreshness,
+  fetchSourcePollHistory,
 } from "./api";
 import {
   makeEnvelope,
   makeIncident,
   makeSourceFreshnessItem,
   makeSourceFreshnessResponse,
+  makeSourcePollHistoryResponse,
+  makeSourcePollTransition,
 } from "./test/fixtures";
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -63,6 +66,52 @@ describe("AtlasPulse API client", () => {
     for (const payload of invalidPayloads) {
       vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(payload)));
       await expect(fetchSourceFreshness()).rejects.toThrow();
+    }
+  });
+
+  it("validates bounded newest-first source poll history", async () => {
+    const body = makeSourcePollHistoryResponse();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchSourcePollHistory()).resolves.toEqual(body);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/source-polls?limit=12",
+      expect.objectContaining({ headers: { Accept: "application/json" } }),
+    );
+  });
+
+  it("rejects inconsistent, reordered, or extended poll history", async () => {
+    const body = makeSourcePollHistoryResponse();
+    const invalidPayloads = [
+      { ...body, count: body.count + 1 },
+      { ...body, items: [...body.items].reverse(), next_cursor: body.items[0].stream_id },
+      {
+        ...body,
+        items: [{ ...body.items[0], transition: "failed" }, ...body.items.slice(1)],
+      },
+      {
+        ...body,
+        items: [
+          {
+            ...body.items[0],
+            attempt: { ...body.items[0].attempt, raw_url: "https://secret.example" },
+          },
+          ...body.items.slice(1),
+        ],
+      },
+      { ...body, next_cursor: "1-0" },
+      { ...body, generated_at: "2026-09-14T13:00:00+01:00" },
+      makeSourcePollHistoryResponse([
+        makeSourcePollTransition({
+          attemptOverrides: { completed_at: "2026-09-14T11:59:10Z" },
+        }),
+      ]),
+    ];
+
+    for (const payload of invalidPayloads) {
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(payload)));
+      await expect(fetchSourcePollHistory()).rejects.toThrow();
     }
   });
 

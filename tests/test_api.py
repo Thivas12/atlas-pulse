@@ -47,6 +47,7 @@ from atlas_pulse.source_polling import (
     SourcePollAttempt,
     SourcePollPolicy,
     SourcePollState,
+    SourcePollTransition,
     new_source_poll_attempt,
 )
 from atlas_pulse.streams import InMemoryEventBus
@@ -145,7 +146,7 @@ async def test_health_readiness_and_recent_events() -> None:
         events = await client.get("/v1/events", params={"limit": 1})
 
     assert health.status_code == 200
-    assert health.json() == {"status": "ok", "version": "0.11.0", "commit_sha": "unknown"}
+    assert health.json() == {"status": "ok", "version": "0.12.0", "commit_sha": "unknown"}
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
     assert events.status_code == 200
@@ -257,6 +258,110 @@ async def test_source_freshness_is_unavailable_without_a_valid_store() -> None:
     async with httpx.AsyncClient(transport=offline_transport, base_url="http://test") as client:
         response = await client.get("/v1/source-freshness")
     assert response.status_code == 503
+
+
+async def test_source_poll_history_is_newest_first_and_exclusively_paginated() -> None:
+    now = datetime(2026, 9, 14, 12, tzinfo=UTC)
+    policy = SourcePollPolicy(
+        source="usgs",
+        interval_seconds=60,
+        poll_stale_after_seconds=180,
+        source_stale_after_seconds=600,
+    )
+    store = InMemorySourcePollStore()
+    first = new_source_poll_attempt("usgs", started_at=now - timedelta(seconds=60))
+    await store.record_started(first, policy)
+    await store.record_completed(
+        SourcePollAttempt(
+            attempt_id=first.attempt_id,
+            source="usgs",
+            started_at=first.started_at,
+            completed_at=now - timedelta(seconds=55),
+            outcome="succeeded",
+            stage="complete",
+            transport_attempts=1,
+            source_generated_at=now - timedelta(seconds=90),
+            timestamp_basis="source_metadata",
+            fetched_events=2,
+            published_events=1,
+            deduplicated_events=1,
+        )
+    )
+    second = new_source_poll_attempt("usgs", started_at=now - timedelta(seconds=20))
+    await store.record_started(second, policy)
+    await store.record_completed(
+        SourcePollAttempt(
+            attempt_id=second.attempt_id,
+            source="usgs",
+            started_at=second.started_at,
+            completed_at=now - timedelta(seconds=10),
+            outcome="failed",
+            stage="fetch",
+            transport_attempts=3,
+            failure_code="transport_exhausted",
+        )
+    )
+    transport = httpx.ASGITransport(
+        app=create_app(InMemoryEventBus(), source_poll_store=store, clock=lambda: now)
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first_page = await client.get("/v1/source-polls", params={"limit": 3})
+        second_page = await client.get(
+            "/v1/source-polls",
+            params={"limit": 3, "before": first_page.json()["next_cursor"]},
+        )
+
+    assert first_page.status_code == 200
+    document = first_page.json()
+    assert document["generated_at"] == "2026-09-14T12:00:00Z"
+    assert document["count"] == 3
+    assert document["order"] == "newest_first"
+    assert document["has_more"] is True
+    assert document["next_cursor"] == "0-2"
+    assert [item["transition"] for item in document["items"]] == [
+        "failed",
+        "started",
+        "succeeded",
+    ]
+    assert document["items"][0]["attempt"]["failure_code"] == "transport_exhausted"
+    assert document["execution_enabled"] is False
+    assert "Retention can expire older entries" in document["caveat"]
+    assert second_page.status_code == 200
+    assert [item["transition"] for item in second_page.json()["items"]] == ["started"]
+    assert second_page.json()["has_more"] is False
+
+
+async def test_source_poll_history_rejects_bad_cursors_and_unavailable_state() -> None:
+    transport = httpx.ASGITransport(app=create_app(InMemoryEventBus()))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        unavailable = await client.get("/v1/source-polls")
+        bad_cursor = await client.get("/v1/source-polls", params={"before": "not-a-cursor"})
+        unicode_cursor = await client.get(
+            "/v1/source-polls",
+            params={"before": "\N{ARABIC-INDIC DIGIT ONE}-\N{ARABIC-INDIC DIGIT TWO}"},
+        )
+        excessive_limit = await client.get("/v1/source-polls", params={"limit": 101})
+
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"detail": "source poll history unavailable"}
+    assert bad_cursor.status_code == 422
+    assert unicode_cursor.status_code == 422
+    assert excessive_limit.status_code == 422
+
+    class InvalidHistoryStore(InMemorySourcePollStore):
+        async def load_recent_transitions(
+            self, *, before: str | None, limit: int
+        ) -> tuple[SourcePollTransition, ...]:
+            del before, limit
+            raise ValueError("corrupt history")
+
+    invalid_transport = httpx.ASGITransport(
+        app=create_app(InMemoryEventBus(), source_poll_store=InvalidHistoryStore())
+    )
+    async with httpx.AsyncClient(transport=invalid_transport, base_url="http://test") as client:
+        invalid = await client.get("/v1/source-polls")
+    assert invalid.status_code == 503
 
 
 def test_application_rejects_an_invalid_build_commit() -> None:

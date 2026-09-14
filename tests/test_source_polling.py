@@ -14,8 +14,10 @@ from atlas_pulse.source_poll_store import (
 )
 from atlas_pulse.source_polling import (
     SourcePollAttempt,
+    SourcePollHistoryResponse,
     SourcePollPolicy,
     SourcePollState,
+    SourcePollTransition,
     evaluate_source_freshness,
     new_source_poll_attempt,
 )
@@ -280,11 +282,78 @@ async def test_in_memory_store_preserves_success_and_rejects_stale_transitions()
     with pytest.raises(StaleSourcePollTransition, match="stale or duplicated"):
         await store.record_started(second, policy)
 
+    first_page = await store.load_recent_transitions(before=None, limit=3)
+    second_page = await store.load_recent_transitions(
+        before=first_page[-1].stream_id,
+        limit=3,
+    )
+    assert [item.transition for item in first_page] == ["failed", "started", "succeeded"]
+    assert [item.transition for item in second_page] == ["started"]
+    assert first_page[0].attempt == failure
+    with pytest.raises(ValueError, match="Valkey stream ID"):
+        await store.load_recent_transitions(
+            before="\N{ARABIC-INDIC DIGIT ONE}-\N{ARABIC-INDIC DIGIT TWO}",
+            limit=3,
+        )
+
+
+def test_poll_history_contract_rejects_mismatched_or_reordered_evidence() -> None:
+    started = new_source_poll_attempt("usgs", started_at=NOW)
+    record = SourcePollTransition(
+        stream_id="1-2",
+        source="usgs",
+        transition="started",
+        attempt=started,
+    )
+    with pytest.raises(ValidationError, match="must match its attempt outcome"):
+        SourcePollTransition(
+            stream_id="1-3",
+            source="usgs",
+            transition="failed",
+            attempt=started,
+        )
+    with pytest.raises(ValidationError, match="newest first"):
+        SourcePollHistoryResponse(
+            generated_at=NOW,
+            count=2,
+            items=(
+                record.model_copy(update={"stream_id": "1-1"}),
+                record,
+            ),
+            next_cursor="1-2",
+            has_more=False,
+        )
+    with pytest.raises(ValidationError, match="at most 100 items"):
+        SourcePollHistoryResponse(
+            generated_at=NOW,
+            count=101,
+            items=tuple(
+                record.model_copy(update={"stream_id": f"1-{sequence}"})
+                for sequence in range(101, 0, -1)
+            ),
+            next_cursor="1-1",
+            has_more=False,
+        )
+
 
 class FakeValkey:
     def __init__(self) -> None:
         self.hashes: dict[str, dict[bytes, bytes]] = {}
+        self.messages: list[tuple[bytes, dict[bytes, bytes]]] = []
         self.closed = False
+
+    def append_transition(self, source: object, transition: object, attempt: object) -> None:
+        stream_id = f"1-{len(self.messages) + 1}".encode()
+        self.messages.append(
+            (
+                stream_id,
+                {
+                    b"source": str(source).encode(),
+                    b"transition": str(transition).encode(),
+                    b"attempt": str(attempt).encode(),
+                },
+            )
+        )
 
     async def eval(self, script: str, _numkeys: int, *args: str | bytes | int) -> object:
         state_key = str(args[0])
@@ -304,6 +373,7 @@ class FakeValkey:
                     b"current_attempt_json": str(args[6]).encode(),
                 }
             )
+            self.append_transition(args[2], "started", args[6])
             return [1, b"started"]
         attempt_id = str(args[2])
         if (
@@ -321,10 +391,29 @@ class FakeValkey:
         else:
             failures = int(fields.get(b"consecutive_failures", b"0")) + 1
             fields[b"consecutive_failures"] = str(failures).encode()
+        self.append_transition(args[6], outcome, args[4])
         return [1, outcome.encode()]
 
     async def hgetall(self, name: str) -> Mapping[bytes, bytes]:
         return self.hashes.get(name, {})
+
+    async def xrevrange(
+        self,
+        _name: str,
+        max: str = "+",
+        min: str = "-",
+        count: int | None = None,
+    ) -> object:
+        del min
+        messages = list(reversed(self.messages))
+        if max.startswith("("):
+            cursor = tuple(int(part) for part in max[1:].split("-", maxsplit=1))
+            messages = [
+                message
+                for message in messages
+                if tuple(int(part) for part in message[0].decode().split("-", maxsplit=1)) < cursor
+            ]
+        return messages[:count]
 
     async def aclose(self) -> None:
         self.closed = True
@@ -346,12 +435,31 @@ async def test_valkey_store_round_trips_strict_state() -> None:
     await store.record_completed(success)
 
     state = (await store.load_states(("usgs",)))[0]
+    transitions = await store.load_recent_transitions(before=None, limit=10)
 
     assert state.current_attempt == success
     assert state.last_success == success
     assert state.consecutive_failures == 0
+    assert [item.transition for item in transitions] == ["succeeded", "started"]
+    assert transitions[0].attempt == success
     await store.close()
     assert client.closed is False
+
+
+async def test_valkey_store_rejects_extended_history_fields() -> None:
+    client = FakeValkey()
+    attempt = new_source_poll_attempt("usgs", started_at=NOW)
+    client.append_transition("usgs", "started", attempt.model_dump_json())
+    client.messages[0][1][b"raw_url"] = b"https://secret.example"
+    store = ValkeySourcePollStore(
+        url="valkey://unused",
+        history_stream="{atlas}:source-polls",
+        history_max_length=100,
+        client=client,
+    )
+
+    with pytest.raises(ValueError, match="incomplete or extended"):
+        await store.load_recent_transitions(before=None, limit=10)
 
 
 @pytest.mark.parametrize("reply", [None, [1], [2, b"invalid"]])

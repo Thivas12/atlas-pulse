@@ -57,5 +57,6 @@ app = create_app(
     search_service,
     agent_run_ledger,
     agent_release_assessment,
+    build_commit_sha=settings.build_commit_sha,
 )
 instrument_fastapi(app)

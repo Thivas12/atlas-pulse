@@ -19,6 +19,7 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("ATLAS_FIRMS_AREA", "-125,24,-66,50")
     key_id = f"ed25519-{'a' * 64}"
     monkeypatch.setenv("ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS", f'["{key_id}"]')
+    monkeypatch.setenv("ATLAS_BUILD_COMMIT_SHA", "a" * 40)
 
     settings = Settings()
 
@@ -32,6 +33,7 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.gdelt_enabled is True
     assert settings.gdelt_minimum_geo_precision == 3
     assert settings.agent_approval_trusted_key_ids == (key_id,)
+    assert settings.build_commit_sha == "a" * 40
     assert "top-secret" not in repr(settings)
 
 
@@ -39,6 +41,11 @@ def test_firms_requires_a_key_only_when_enabled() -> None:
     assert Settings(firms_enabled=False).firms_enabled is False
     with pytest.raises(ValidationError, match="ATLAS_FIRMS_MAP_KEY is required"):
         Settings(firms_enabled=True)
+
+
+def test_settings_reject_an_unpinned_build_commit() -> None:
+    with pytest.raises(ValidationError, match="build_commit_sha"):
+        Settings(build_commit_sha="main")
 
 
 @pytest.mark.parametrize(

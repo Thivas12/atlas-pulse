@@ -1,7 +1,12 @@
 name: atlas-pulse
 
+x-atlas-python-build: &atlas-python-build
+  context: .
+  args:
+    ATLAS_BUILD_COMMIT_SHA: ${ATLAS_BUILD_COMMIT_SHA:-unknown}
+
 x-atlas-environment: &atlas-environment
-  ATLAS_ENVIRONMENT: local-compose
+  ATLAS_ENVIRONMENT: ${ATLAS_ENVIRONMENT:-local-compose}
   ATLAS_LOG_LEVEL: INFO
   ATLAS_VALKEY_URL: valkey://valkey:6379/0
   ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:atlas@postgres:5432/atlas
@@ -47,7 +52,7 @@ services:
       retries: 20
 
   migrate:
-    build: .
+    build: *atlas-python-build
     command: ["alembic", "upgrade", "head"]
     restart: "no"
     environment: *atlas-environment
@@ -56,7 +61,7 @@ services:
         condition: service_healthy
 
   api:
-    build: .
+    build: *atlas-python-build
     restart: unless-stopped
     environment: *atlas-environment
     depends_on:
@@ -79,7 +84,7 @@ services:
       retries: 5
 
   ingestor:
-    build: .
+    build: *atlas-python-build
     command: ["atlas-pulse-ingest"]
     restart: unless-stopped
     environment:
@@ -110,7 +115,7 @@ services:
       - raw-snapshots:/app/data/raw
 
   projector:
-    build: .
+    build: *atlas-python-build
     command: ["atlas-pulse-project"]
     restart: unless-stopped
     environment: *atlas-environment
@@ -121,7 +126,7 @@ services:
         condition: service_completed_successfully
 
   retrieval-indexer:
-    build: .
+    build: *atlas-python-build
     command: ["atlas-pulse-index"]
     restart: unless-stopped
     environment: *atlas-environment

@@ -80,6 +80,7 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
+    commit_sha: str
 
 
 class EventEnvelope(BaseModel):
@@ -1172,8 +1173,16 @@ def create_app(
     search_service: SearchService | None = None,
     agent_run_ledger: AgentRunLedgerReader | None = None,
     agent_release_assessment: AgentReleaseAssessment | None = None,
+    build_commit_sha: str = "unknown",
 ) -> FastAPI:
     """Create an application with an injected stream implementation."""
+    if build_commit_sha != "unknown" and (
+        len(build_commit_sha) != 40
+        or any(character not in "0123456789abcdef" for character in build_commit_sha)
+    ):
+        raise ValueError(
+            "build commit SHA must be 'unknown' or 40 lowercase hexadecimal characters"
+        )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -1203,7 +1212,7 @@ def create_app(
 
     @app.get("/healthz", response_model=HealthResponse, tags=["operations"])
     async def health() -> HealthResponse:
-        return HealthResponse(status="ok", version=__version__)
+        return HealthResponse(status="ok", version=__version__, commit_sha=build_commit_sha)
 
     @app.get("/readyz", response_model=HealthResponse, tags=["operations"])
     async def readiness() -> HealthResponse:
@@ -1222,7 +1231,7 @@ def create_app(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="retrieval index unavailable",
             )
-        return HealthResponse(status="ready", version=__version__)
+        return HealthResponse(status="ready", version=__version__, commit_sha=build_commit_sha)
 
     @app.get("/v1/events", response_model=EventsResponse, tags=["events"])
     async def latest_events(

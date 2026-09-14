@@ -1,5 +1,7 @@
 """Production ASGI process entry point."""
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from atlas_pulse.agent_ledger import PostgresAgentRunLedger

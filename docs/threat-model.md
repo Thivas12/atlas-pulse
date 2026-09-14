@@ -72,7 +72,7 @@ flowchart TB
 | --- | --- |
 | Input and parser boundaries | Synthetic source fixtures, strict validation tests, retry/limit tests, and Hypothesis coverage |
 | Durable and replayable state | Memory/Valkey stream tests, PostGIS projection integration tests, checkpoint and duplicate tests |
-| Public contracts | API tests, browser schema tests, UI component tests, and container edge smoke tests |
+| Public contracts | API tests, browser schema tests, UI component tests, a deterministic Chromium smoke test of production assets, and container edge smoke tests |
 | Credential handling | FIRMS redaction and scoping tests plus credential-free source-poll contracts |
 | Model and agent containment | Gold-blind/offline runner tests, blocked promotion traces, signed-ledger tests, and default-deny preflight tests |
 | Operational claims | Content-addressed probe/resource samples and read-only restart, backup, restore, and source-recovery drill bindings |

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -61,6 +62,26 @@ def test_security_workflow_covers_source_and_dependency_changes() -> None:
     assert "queries: security-extended" in content
     assert "run: uv audit --frozen" in content
     assert "run: npm audit --package-lock-only --audit-level=moderate" in content
+
+
+def test_frontend_ci_smoke_tests_the_production_bundle() -> None:
+    workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")
+    build_step = "run: npm run build"
+    browser_step = "run: npm run test:e2e"
+
+    assert "npx playwright install --with-deps chromium" in workflow
+    assert "run: npm run typecheck:e2e" in workflow
+    assert build_step in workflow
+    assert browser_step in workflow
+    assert workflow.index(build_step) < workflow.index(browser_step)
+
+    package = json.loads((ROOT / "web" / "package.json").read_text(encoding="utf-8"))
+    assert package["scripts"]["typecheck:e2e"].startswith("tsc --noEmit")
+    assert package["scripts"]["test:e2e"] == "playwright test"
+
+    config = (ROOT / "web" / "playwright.config.ts").read_text(encoding="utf-8")
+    assert 'command: "npm run preview ' in config
+    assert "npm run dev" not in config
 
 
 def test_default_code_owner_is_explicit() -> None:

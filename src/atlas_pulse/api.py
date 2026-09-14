@@ -1,9 +1,11 @@
 """FastAPI read surface for immutable history and projected current signals."""
 
+from __future__ import annotations
+
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 from agent_rag_core import Event
 from fastapi import FastAPI, HTTPException, Query, status
@@ -19,11 +21,14 @@ from atlas_pulse.agent_runs import (
     AGENT_RUN_SCHEMA_VERSION,
     AgentApprovalObservation,
     AgentApprovalStatus,
+    AgentReleaseObservation,
+    AgentReleaseStatus,
     AgentRunManifest,
     AgentRunStatus,
     AuthorizationBlockReason,
     AuthorizationCheckId,
     AuthorizationCheckStatus,
+    agent_release_observation,
     build_agent_run_manifest,
     build_agent_run_proposal,
 )
@@ -65,6 +70,9 @@ from atlas_pulse.retrieval import (
     SearchService,
 )
 from atlas_pulse.streams.base import EventBus
+
+if TYPE_CHECKING:
+    from atlas_pulse.agent_trajectory.release import AgentReleaseAssessment
 
 
 class HealthResponse(BaseModel):
@@ -443,6 +451,9 @@ class AgentAuthorizationPolicyResponse(BaseModel):
     evaluated_model_required: Literal[True]
     relationship_benchmark_required: Literal[True]
     grounded_answer_evaluation_required: Literal[True]
+    agent_trajectory_evaluation_required: Literal[True]
+    trajectory_drift_monitoring_required: Literal[True]
+    release_threshold_policy_required: Literal[True]
     network_access_allowed: Literal[False]
     tool_access_allowed: Literal[False]
     external_side_effects_allowed: Literal[False]
@@ -507,6 +518,64 @@ class AgentApprovalObservationResponse(BaseModel):
         return self
 
 
+class AgentReleaseObservationResponse(BaseModel):
+    """Content-addressed quality evidence selected for the proposal."""
+
+    status: AgentReleaseStatus
+    assessment_id: str | None = Field(default=None, pattern=r"^release-assessment-[0-9a-f]{20}$")
+    assessment_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    policy_id: str | None = Field(default=None, pattern=r"^release-policy-[0-9a-f]{20}$")
+    policy_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    agent_candidate_id: str | None = None
+    relationship_report_id: str | None = None
+    trajectory_report_ids: tuple[str, ...]
+    model_adapter_evaluated: bool
+    relationship_benchmark_passed: bool
+    grounded_answer_evaluation_passed: bool
+    agent_trajectory_evaluation_passed: bool
+    trajectory_drift_monitoring_passed: bool
+    release_threshold_policy_passed: bool
+    blocking_reasons: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def validate_release_state(self) -> Self:
+        identity = (
+            self.assessment_id,
+            self.assessment_sha256,
+            self.policy_id,
+            self.policy_sha256,
+            self.agent_candidate_id,
+            self.relationship_report_id,
+        )
+        flags = (
+            self.model_adapter_evaluated,
+            self.relationship_benchmark_passed,
+            self.grounded_answer_evaluation_passed,
+            self.agent_trajectory_evaluation_passed,
+            self.trajectory_drift_monitoring_passed,
+            self.release_threshold_policy_passed,
+        )
+        if self.status == "not_supplied":
+            if (
+                any(value is not None for value in identity)
+                or self.trajectory_report_ids
+                or any(flags)
+                or self.blocking_reasons
+            ):
+                raise ValueError("not_supplied release state cannot contain assessment fields")
+        elif any(value is None for value in identity) or not self.trajectory_report_ids:
+            raise ValueError("resolved release state requires complete assessment identity")
+        elif self.status == "eligible_for_human_review" and (
+            not all(flags) or self.blocking_reasons
+        ):
+            raise ValueError("eligible release state requires every quality gate to pass")
+        elif self.status == "blocked" and (
+            self.release_threshold_policy_passed or not self.blocking_reasons
+        ):
+            raise ValueError("blocked release state requires threshold blocking reasons")
+        return self
+
+
 class AuthorizationCheckResponse(BaseModel):
     """One machine-readable comparison contributing to authorization."""
 
@@ -535,12 +604,15 @@ class AgentAuthorizationResponse(BaseModel):
             "model_adapter",
             "live_relationship_benchmark",
             "grounded_answer_evaluation",
+            "agent_trajectory_evaluation",
+            "trajectory_drift_monitoring",
+            "release_threshold_policy",
             "human_release",
             "execution_release",
         }
         observed_check_ids = {check.check_id for check in self.checks}
         if observed_check_ids != expected_check_ids or len(self.checks) != len(expected_check_ids):
-            raise ValueError("authorization checks must contain each v2 check exactly once")
+            raise ValueError("authorization checks must contain each v3 check exactly once")
         passed = tuple(check for check in self.checks if check.status == "passed")
         blocked = tuple(check for check in self.checks if check.status == "blocked")
         if self.passed_check_count != len(passed):
@@ -571,7 +643,7 @@ class AgentExecutionStateResponse(BaseModel):
 
 
 class AgentRunManifestResponse(BaseModel):
-    """Content-addressed proposed-run manifest under the locked v2 policy."""
+    """Content-addressed proposed-run manifest under the locked v3 policy."""
 
     manifest_id: str = Field(pattern=r"^manifest-[0-9a-f]{64}$")
     schema_version: str = AGENT_RUN_SCHEMA_VERSION
@@ -582,6 +654,7 @@ class AgentRunManifestResponse(BaseModel):
     request: AgentRunRequestResponse
     evidence: AgentRunEvidenceResponse
     policy: AgentAuthorizationPolicyResponse
+    release: AgentReleaseObservationResponse
     approval: AgentApprovalObservationResponse
     authorization: AgentAuthorizationResponse
     execution: AgentExecutionStateResponse
@@ -599,6 +672,15 @@ class AgentRunManifestResponse(BaseModel):
             and self.approval.approved_proposal_id != self.proposal_id
         ):
             raise ValueError("active approval is not bound to the manifest proposal")
+        release_check = next(
+            check
+            for check in self.authorization.checks
+            if check.check_id == "release_threshold_policy"
+        )
+        if (self.release.status == "eligible_for_human_review") != (
+            release_check.status == "passed"
+        ):
+            raise ValueError("release threshold check does not match release assessment")
         return self
 
 
@@ -1016,9 +1098,33 @@ def _agent_run_manifest_response(manifest: AgentRunManifest) -> AgentRunManifest
             evaluated_model_required=policy.evaluated_model_required,
             relationship_benchmark_required=policy.relationship_benchmark_required,
             grounded_answer_evaluation_required=policy.grounded_answer_evaluation_required,
+            agent_trajectory_evaluation_required=policy.agent_trajectory_evaluation_required,
+            trajectory_drift_monitoring_required=policy.trajectory_drift_monitoring_required,
+            release_threshold_policy_required=policy.release_threshold_policy_required,
             network_access_allowed=policy.network_access_allowed,
             tool_access_allowed=policy.tool_access_allowed,
             external_side_effects_allowed=policy.external_side_effects_allowed,
+        ),
+        release=AgentReleaseObservationResponse(
+            status=manifest.release.status,
+            assessment_id=manifest.release.assessment_id,
+            assessment_sha256=manifest.release.assessment_sha256,
+            policy_id=manifest.release.policy_id,
+            policy_sha256=manifest.release.policy_sha256,
+            agent_candidate_id=manifest.release.agent_candidate_id,
+            relationship_report_id=manifest.release.relationship_report_id,
+            trajectory_report_ids=manifest.release.trajectory_report_ids,
+            model_adapter_evaluated=manifest.release.model_adapter_evaluated,
+            relationship_benchmark_passed=manifest.release.relationship_benchmark_passed,
+            grounded_answer_evaluation_passed=(manifest.release.grounded_answer_evaluation_passed),
+            agent_trajectory_evaluation_passed=(
+                manifest.release.agent_trajectory_evaluation_passed
+            ),
+            trajectory_drift_monitoring_passed=(
+                manifest.release.trajectory_drift_monitoring_passed
+            ),
+            release_threshold_policy_passed=(manifest.release.release_threshold_policy_passed),
+            blocking_reasons=manifest.release.blocking_reasons,
         ),
         approval=AgentApprovalObservationResponse(
             status=manifest.approval.status,
@@ -1065,6 +1171,7 @@ def create_app(
     signal_store: SignalStore | None = None,
     search_service: SearchService | None = None,
     agent_run_ledger: AgentRunLedgerReader | None = None,
+    agent_release_assessment: AgentReleaseAssessment | None = None,
 ) -> FastAPI:
     """Create an application with an injected stream implementation."""
 
@@ -1388,7 +1495,12 @@ def create_app(
         )
         result = await search_service.search(query)
         pack = build_evidence_pack(result, query, budget=budget)
-        proposal = build_agent_run_proposal(pack)
+        release = (
+            agent_release_observation(agent_release_assessment)
+            if agent_release_assessment is not None
+            else AgentReleaseObservation()
+        )
+        proposal = build_agent_run_proposal(pack, release=release)
         approval = AgentApprovalObservation()
         if approval_id is not None:
             evaluated_at = datetime.now(UTC)
@@ -1405,7 +1517,12 @@ def create_app(
                     evaluated_at=evaluated_at,
                 )
             )
-        manifest = build_agent_run_manifest(pack, approval=approval, proposal=proposal)
+        manifest = build_agent_run_manifest(
+            pack,
+            approval=approval,
+            proposal=proposal,
+            release=release,
+        )
         return AgentRunPreflightResponse(
             evidence_pack=_evidence_pack_response(pack),
             manifest=_agent_run_manifest_response(manifest),

@@ -122,6 +122,16 @@ jobs:
       - name: Validate Compose model
         run: docker compose config --quiet
 
+      - name: Validate free-tier HTTPS overlay
+        run: |
+          ATLAS_PUBLIC_HOST=atlas.203-0-113-10.sslip.io \
+            docker compose -f compose.yaml -f deploy/free-tier/compose.yaml config --quiet
+          ATLAS_AGENT_RELEASE_ASSESSMENT_HOST_PATH=/tmp/atlas-release-assessment.json \
+            docker compose \
+              -f compose.yaml \
+              -f deploy/release-assessment.compose.yaml \
+              config --quiet
+
       - name: Verify FIRMS credential is ingestor-only
         run: |
           ATLAS_FIRMS_ENABLED=true ATLAS_FIRMS_MAP_KEY=ci-sentinel \
@@ -171,6 +181,8 @@ jobs:
           assert manifest["manifest_id"].startswith("manifest-")
           assert manifest["status"] == "blocked"
           assert manifest["evidence"]["pack_id"] == pack["pack_id"]
+          assert manifest["release"]["status"] == "not_supplied"
+          assert len(manifest["authorization"]["checks"]) == 11
           assert manifest["authorization"]["blocking_reasons"][0] == "no_traceable_evidence"
           assert manifest["execution"] == {
               "status": "not_started",

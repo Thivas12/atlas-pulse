@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from atlas_pulse.evidence_packs import (
     EVIDENCE_PACK_IDENTITY_ALGORITHM,
@@ -13,17 +13,24 @@ from atlas_pulse.evidence_packs import (
 )
 from atlas_pulse.identity import canonical_json_sha256
 
-AGENT_RUN_SCHEMA_VERSION = "1.1.0"
-AGENT_RUN_RULE_VERSION = "agent-run-manifest-v2"
-AGENT_RUN_PROPOSAL_RULE_VERSION = "agent-run-proposal-v1"
-AGENT_AUTHORIZATION_POLICY_VERSION = "agent-authorization-v2"
+if TYPE_CHECKING:
+    from atlas_pulse.agent_trajectory.release import (
+        AgentReleaseAssessment,
+        ReleaseGateId,
+    )
+
+AGENT_RUN_SCHEMA_VERSION = "1.2.0"
+AGENT_RUN_RULE_VERSION = "agent-run-manifest-v3"
+AGENT_RUN_PROPOSAL_RULE_VERSION = "agent-run-proposal-v2"
+AGENT_AUTHORIZATION_POLICY_VERSION = "agent-authorization-v3"
 AGENT_RUN_IDENTITY_ALGORITHM = EVIDENCE_PACK_IDENTITY_ALGORITHM
 AGENT_RUN_CAVEAT = (
     "Preflight records a deterministic policy decision bound to one evidence-pack identity. "
-    "A trusted, active approval may satisfy only the human-release check. Preflight may perform "
-    "ordinary local retrieval to assemble the pack, but it does not start the proposed agent, "
-    "invoke a generative agent model, grant agent network or tool access, generate an answer, or "
-    "perform agent side effects."
+    "A validated release assessment may satisfy only its measured quality gates, and a trusted, "
+    "active approval may satisfy only the human-release check. Preflight may perform ordinary "
+    "local retrieval to assemble the pack, but it does not start the proposed agent, invoke a "
+    "generative agent model, grant agent network or tool access, generate an answer, or perform "
+    "agent side effects."
 )
 
 AgentRunPurpose = Literal["evidence_triage"]
@@ -42,6 +49,11 @@ AgentApprovalStatus = Literal[
     "ledger_invalid",
     "ledger_unavailable",
 ]
+AgentReleaseStatus = Literal[
+    "not_supplied",
+    "blocked",
+    "eligible_for_human_review",
+]
 AuthorizationCheckStatus = Literal["passed", "blocked"]
 AuthorizationCheckId = Literal[
     "evidence_pack_integrity",
@@ -50,6 +62,9 @@ AuthorizationCheckId = Literal[
     "model_adapter",
     "live_relationship_benchmark",
     "grounded_answer_evaluation",
+    "agent_trajectory_evaluation",
+    "trajectory_drift_monitoring",
+    "release_threshold_policy",
     "human_release",
     "execution_release",
 ]
@@ -58,6 +73,9 @@ AuthorizationBlockReason = Literal[
     "model_adapter_not_selected",
     "live_relationship_benchmark_incomplete",
     "grounded_answer_evaluation_missing",
+    "agent_trajectory_evaluation_missing",
+    "trajectory_drift_evidence_missing",
+    "release_thresholds_not_met",
     "human_release_not_granted",
     "human_release_not_yet_valid",
     "human_release_expired",
@@ -115,6 +133,9 @@ class AgentAuthorizationPolicy:
     evaluated_model_required: Literal[True] = True
     relationship_benchmark_required: Literal[True] = True
     grounded_answer_evaluation_required: Literal[True] = True
+    agent_trajectory_evaluation_required: Literal[True] = True
+    trajectory_drift_monitoring_required: Literal[True] = True
+    release_threshold_policy_required: Literal[True] = True
     network_access_allowed: Literal[False] = False
     tool_access_allowed: Literal[False] = False
     external_side_effects_allowed: Literal[False] = False
@@ -137,6 +158,27 @@ class AgentApprovalObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentReleaseObservation:
+    """Validated quality evidence selected for this exact proposal scope."""
+
+    status: AgentReleaseStatus = "not_supplied"
+    assessment_id: str | None = None
+    assessment_sha256: str | None = None
+    policy_id: str | None = None
+    policy_sha256: str | None = None
+    agent_candidate_id: str | None = None
+    relationship_report_id: str | None = None
+    trajectory_report_ids: tuple[str, ...] = ()
+    model_adapter_evaluated: bool = False
+    relationship_benchmark_passed: bool = False
+    grounded_answer_evaluation_passed: bool = False
+    agent_trajectory_evaluation_passed: bool = False
+    trajectory_drift_monitoring_passed: bool = False
+    release_threshold_policy_passed: bool = False
+    blocking_reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class AgentRunProposal:
     """Stable approval scope independent of the time-varying authorization result."""
 
@@ -145,6 +187,7 @@ class AgentRunProposal:
     request: AgentRunRequest
     evidence: AgentRunEvidence
     policy: AgentAuthorizationPolicy
+    release: AgentReleaseObservation
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +237,7 @@ class AgentRunManifest:
     request: AgentRunRequest
     evidence: AgentRunEvidence
     policy: AgentAuthorizationPolicy
+    release: AgentReleaseObservation
     approval: AgentApprovalObservation
     authorization: AgentAuthorization
     execution: AgentExecutionState
@@ -245,6 +289,94 @@ def _human_release_blocking_reason(status: AgentApprovalStatus) -> Authorization
     return "human_release_not_granted"
 
 
+def agent_release_observation(assessment: AgentReleaseAssessment) -> AgentReleaseObservation:
+    """Reduce a validated assessment to the exact quality state bound into preflight."""
+    passed = {gate.gate_id: gate.passed for gate in assessment.gates}
+
+    def every(*gate_ids: ReleaseGateId) -> bool:
+        return all(passed.get(gate_id, False) for gate_id in gate_ids)
+
+    return AgentReleaseObservation(
+        status=assessment.status,
+        assessment_id=assessment.assessment_id,
+        assessment_sha256=assessment.assessment_sha256,
+        policy_id=assessment.policy.policy_id,
+        policy_sha256=assessment.policy.policy_sha256,
+        agent_candidate_id=assessment.agent_system.candidate_id,
+        relationship_report_id=assessment.relationship_evidence.report_id,
+        trajectory_report_ids=tuple(
+            evidence.report_id for evidence in assessment.trajectory_evidence
+        ),
+        model_adapter_evaluated=every("agent_candidate_identity"),
+        relationship_benchmark_passed=every(
+            "relationship_sample_size",
+            "relationship_macro_f1",
+            "relationship_accuracy_delta",
+            "relationship_regression_rate",
+        ),
+        grounded_answer_evaluation_passed=every(
+            "grounded_review_adjudication",
+            "grounded_answer_coverage",
+            "grounded_strict_pass",
+            "grounded_unsupported_claims",
+            "grounded_complete_citations",
+        ),
+        agent_trajectory_evaluation_passed=every(
+            "trajectory_capture_count",
+            "trajectory_total_cases",
+            "trajectory_capture_sample_size",
+            "trajectory_policy_compliance",
+            "trajectory_evidence_inspection",
+            "trajectory_claim_trace",
+            "trajectory_strict_pass",
+            "trajectory_end_to_end_pass",
+            "trajectory_step_budget",
+            "trajectory_latency_budget",
+        ),
+        trajectory_drift_monitoring_passed=every(
+            "trajectory_drift_chain",
+            "trajectory_drift_stability",
+        ),
+        release_threshold_policy_passed=assessment.status == "eligible_for_human_review",
+        blocking_reasons=assessment.blocking_reasons,
+    )
+
+
+def _validate_release_observation(release: AgentReleaseObservation) -> None:
+    identity_fields = (
+        release.assessment_id,
+        release.assessment_sha256,
+        release.policy_id,
+        release.policy_sha256,
+        release.agent_candidate_id,
+        release.relationship_report_id,
+    )
+    flags = (
+        release.model_adapter_evaluated,
+        release.relationship_benchmark_passed,
+        release.grounded_answer_evaluation_passed,
+        release.agent_trajectory_evaluation_passed,
+        release.trajectory_drift_monitoring_passed,
+        release.release_threshold_policy_passed,
+    )
+    if release.status == "not_supplied":
+        if (
+            any(value is not None for value in identity_fields)
+            or release.trajectory_report_ids
+            or any(flags)
+            or release.blocking_reasons
+        ):
+            raise ValueError("not_supplied release observation cannot contain assessment fields")
+        return
+    if any(value is None for value in identity_fields) or not release.trajectory_report_ids:
+        raise ValueError("resolved release observations require complete assessment identity")
+    if release.status == "eligible_for_human_review":
+        if not all(flags) or release.blocking_reasons:
+            raise ValueError("eligible release observations require every quality gate to pass")
+    elif release.release_threshold_policy_passed or not release.blocking_reasons:
+        raise ValueError("blocked release observations require threshold blocking reasons")
+
+
 def _validate_active_approval(
     approval: AgentApprovalObservation,
     *,
@@ -277,6 +409,7 @@ def _validate_active_approval(
 
 def _authorization_checks(
     pack: EvidencePack,
+    release: AgentReleaseObservation,
     approval: AgentApprovalObservation,
 ) -> tuple[AuthorizationCheck, ...]:
     traceable_evidence = pack.status == "traceable_evidence_available" and bool(pack.items)
@@ -302,24 +435,45 @@ def _authorization_checks(
         ),
         _check(
             "model_adapter",
-            passed=False,
-            observed="not_selected",
+            passed=release.model_adapter_evaluated,
+            observed=release.agent_candidate_id or release.status,
             required="evaluated_model_adapter",
             blocking_reason="model_adapter_not_selected",
         ),
         _check(
             "live_relationship_benchmark",
-            passed=False,
-            observed="awaiting_independent_adjudication",
+            passed=release.relationship_benchmark_passed,
+            observed=release.relationship_report_id or release.status,
             required="adjudicated_pass",
             blocking_reason="live_relationship_benchmark_incomplete",
         ),
         _check(
             "grounded_answer_evaluation",
-            passed=False,
-            observed="not_available",
+            passed=release.grounded_answer_evaluation_passed,
+            observed=release.assessment_id or release.status,
             required="evaluated_pass",
             blocking_reason="grounded_answer_evaluation_missing",
+        ),
+        _check(
+            "agent_trajectory_evaluation",
+            passed=release.agent_trajectory_evaluation_passed,
+            observed=release.assessment_id or release.status,
+            required="observable_trajectory_pass",
+            blocking_reason="agent_trajectory_evaluation_missing",
+        ),
+        _check(
+            "trajectory_drift_monitoring",
+            passed=release.trajectory_drift_monitoring_passed,
+            observed=release.assessment_id or release.status,
+            required="complete_stable_drift_chain",
+            blocking_reason="trajectory_drift_evidence_missing",
+        ),
+        _check(
+            "release_threshold_policy",
+            passed=release.release_threshold_policy_passed,
+            observed=release.status,
+            required="eligible_for_human_review",
+            blocking_reason="release_thresholds_not_met",
         ),
         _check(
             "human_release",
@@ -343,6 +497,7 @@ def _proposal_payload(
     request: AgentRunRequest,
     evidence: AgentRunEvidence,
     policy: AgentAuthorizationPolicy,
+    release: AgentReleaseObservation,
 ) -> dict[str, object]:
     return {
         "schema_version": AGENT_RUN_SCHEMA_VERSION,
@@ -352,11 +507,18 @@ def _proposal_payload(
         "request": asdict(request),
         "evidence": asdict(evidence),
         "policy": asdict(policy),
+        "release": asdict(release),
     }
 
 
-def build_agent_run_proposal(pack: EvidencePack) -> AgentRunProposal:
+def build_agent_run_proposal(
+    pack: EvidencePack,
+    *,
+    release: AgentReleaseObservation | None = None,
+) -> AgentRunProposal:
     """Build the stable, content-addressed scope that a human may approve."""
+    release = release or AgentReleaseObservation()
+    _validate_release_observation(release)
     request = AgentRunRequest()
     evidence = AgentRunEvidence(
         pack_id=pack.pack_id,
@@ -368,13 +530,19 @@ def build_agent_run_proposal(pack: EvidencePack) -> AgentRunProposal:
         evidence_ids=tuple(item.evidence_id for item in pack.items),
     )
     policy = AgentAuthorizationPolicy()
-    payload = _proposal_payload(request=request, evidence=evidence, policy=policy)
+    payload = _proposal_payload(
+        request=request,
+        evidence=evidence,
+        policy=policy,
+        release=release,
+    )
     return AgentRunProposal(
         proposal_id=f"proposal-{canonical_json_sha256(payload)}",
         proposal_rule_version=AGENT_RUN_PROPOSAL_RULE_VERSION,
         request=request,
         evidence=evidence,
         policy=policy,
+        release=release,
     )
 
 
@@ -384,6 +552,7 @@ def _manifest_payload(
     request: AgentRunRequest,
     evidence: AgentRunEvidence,
     policy: AgentAuthorizationPolicy,
+    release: AgentReleaseObservation,
     approval: AgentApprovalObservation,
     authorization: AgentAuthorization,
     execution: AgentExecutionState,
@@ -397,6 +566,7 @@ def _manifest_payload(
         "request": asdict(request),
         "evidence": asdict(evidence),
         "policy": asdict(policy),
+        "release": asdict(release),
         "approval": asdict(approval),
         "authorization": asdict(authorization),
         "execution": asdict(execution),
@@ -409,15 +579,18 @@ def build_agent_run_manifest(
     *,
     approval: AgentApprovalObservation | None = None,
     proposal: AgentRunProposal | None = None,
+    release: AgentReleaseObservation | None = None,
 ) -> AgentRunManifest:
-    """Build a no-execution manifest under the locked v2 policy."""
-    expected_proposal = build_agent_run_proposal(pack)
+    """Build a no-execution manifest under the locked v3 policy."""
+    release = release or AgentReleaseObservation()
+    _validate_release_observation(release)
+    expected_proposal = build_agent_run_proposal(pack, release=release)
     if proposal is not None and proposal != expected_proposal:
         raise ValueError("agent run proposal does not match the evidence pack")
     proposal = proposal or expected_proposal
     approval = approval or AgentApprovalObservation()
     _validate_active_approval(approval, proposal_id=proposal.proposal_id)
-    checks = _authorization_checks(pack, approval)
+    checks = _authorization_checks(pack, release, approval)
     blocking_reasons = tuple(
         check.blocking_reason
         for check in checks
@@ -436,6 +609,7 @@ def build_agent_run_manifest(
         request=proposal.request,
         evidence=proposal.evidence,
         policy=proposal.policy,
+        release=proposal.release,
         approval=approval,
         authorization=authorization,
         execution=execution,
@@ -450,6 +624,7 @@ def build_agent_run_manifest(
         request=proposal.request,
         evidence=proposal.evidence,
         policy=proposal.policy,
+        release=proposal.release,
         approval=approval,
         authorization=authorization,
         execution=execution,

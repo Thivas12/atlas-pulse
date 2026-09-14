@@ -79,6 +79,7 @@ def _manifest_reference(path: Path) -> _ManifestReference:
     request = _object(manifest.get("request"), "manifest.request")
     evidence = _object(manifest.get("evidence"), "manifest.evidence")
     policy = _object(manifest.get("policy"), "manifest.policy")
+    release = _object(manifest.get("release"), "manifest.release")
     proposal_id = _string(manifest.get("proposal_id"), "proposal_id")
     proposal_payload = {
         "schema_version": AGENT_RUN_SCHEMA_VERSION,
@@ -88,6 +89,7 @@ def _manifest_reference(path: Path) -> _ManifestReference:
         "request": request,
         "evidence": evidence,
         "policy": policy,
+        "release": release,
     }
     if proposal_id != f"proposal-{canonical_json_sha256(proposal_payload)}":
         raise ValueError("proposal identity does not match the manifest scope")

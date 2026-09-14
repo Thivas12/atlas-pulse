@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     gdelt_max_rows: int = Field(default=100_000, ge=1, le=1_000_000)
     gdelt_max_events: int = Field(default=5_000, ge=1, le=100_000)
     source_user_agent: str = Field(
-        default="AtlasPulse/0.7 (+https://github.com/Thivas12/atlas-pulse)",
+        default="AtlasPulse/0.8 (+https://github.com/Thivas12/atlas-pulse)",
         min_length=10,
     )
     source_timeout_seconds: float = Field(default=15.0, gt=0)
@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     retrieval_batch_size: int = Field(default=64, ge=1, le=512)
     retrieval_poll_seconds: float = Field(default=1.0, gt=0)
     agent_approval_trusted_key_ids: tuple[str, ...] = ()
+    agent_release_assessment_path: Path | None = None
     embedding_model: str = Field(default="BAAI/bge-small-en-v1.5", min_length=1)
     embedding_dimensions: int = Field(default=384, ge=1, le=4_096)
     embedding_cache_dir: Path = Path(".cache/fastembed")

@@ -16,6 +16,7 @@ from atlas_pulse.agent_runs import (
     AGENT_RUN_SCHEMA_VERSION,
     AgentApprovalObservation,
     AgentApprovalStatus,
+    AgentReleaseObservation,
     _check,
     build_agent_run_manifest,
     build_agent_run_proposal,
@@ -93,11 +94,15 @@ def test_manifest_binds_the_exact_pack_and_blocks_every_unmet_release_gate() -> 
     assert manifest.policy.default_decision == "deny"
     assert manifest.approval == AgentApprovalObservation()
     assert manifest.authorization.passed_check_count == 3
-    assert manifest.authorization.blocked_check_count == 5
+    assert manifest.release.status == "not_supplied"
+    assert manifest.authorization.blocked_check_count == 8
     assert manifest.authorization.blocking_reasons == (
         "model_adapter_not_selected",
         "live_relationship_benchmark_incomplete",
         "grounded_answer_evaluation_missing",
+        "agent_trajectory_evaluation_missing",
+        "trajectory_drift_evidence_missing",
+        "release_thresholds_not_met",
         "human_release_not_granted",
         "execution_disabled",
     )
@@ -144,7 +149,7 @@ def test_no_evidence_adds_an_explicit_block_without_changing_no_execution_state(
 
     assert manifest.evidence.pack_status == "no_traceable_evidence"
     assert manifest.authorization.passed_check_count == 2
-    assert manifest.authorization.blocked_check_count == 6
+    assert manifest.authorization.blocked_check_count == 9
     assert manifest.authorization.blocking_reasons[0] == "no_traceable_evidence"
     assert manifest.authorization.checks[1].status == "blocked"
     assert manifest.execution.status == "not_started"
@@ -177,10 +182,56 @@ def test_active_approval_clears_only_the_human_gate_and_never_execution() -> Non
     assert manifest.status == "blocked"
     assert human_release.status == "passed"
     assert manifest.authorization.passed_check_count == 4
-    assert manifest.authorization.blocked_check_count == 4
+    assert manifest.authorization.blocked_check_count == 7
     assert "human_release_not_granted" not in manifest.authorization.blocking_reasons
     assert manifest.authorization.blocking_reasons[-1] == "execution_disabled"
     assert manifest.execution.status == "not_started"
+
+
+def test_eligible_release_evidence_clears_only_quality_gates_and_changes_scope() -> None:
+    pack = build_evidence_pack(
+        _search_result(),
+        SearchQuery(text="dangerous storm", limit=5, candidate_limit=20),
+    )
+    release = AgentReleaseObservation(
+        status="eligible_for_human_review",
+        assessment_id=f"release-assessment-{'a' * 20}",
+        assessment_sha256="b" * 64,
+        policy_id=f"release-policy-{'c' * 20}",
+        policy_sha256="d" * 64,
+        agent_candidate_id="qwen-grounded-agent-v1",
+        relationship_report_id="relationship-live-v1-candidate",
+        trajectory_report_ids=(f"trajectory-report-{'e' * 20}",),
+        model_adapter_evaluated=True,
+        relationship_benchmark_passed=True,
+        grounded_answer_evaluation_passed=True,
+        agent_trajectory_evaluation_passed=True,
+        trajectory_drift_monitoring_passed=True,
+        release_threshold_policy_passed=True,
+    )
+
+    proposal = build_agent_run_proposal(pack, release=release)
+    manifest = build_agent_run_manifest(pack, proposal=proposal, release=release)
+    checks = {check.check_id: check for check in manifest.authorization.checks}
+
+    assert proposal.proposal_id != build_agent_run_proposal(pack).proposal_id
+    assert manifest.release == release
+    assert manifest.authorization.passed_check_count == 9
+    assert manifest.authorization.blocked_check_count == 2
+    assert checks["release_threshold_policy"].status == "passed"
+    assert checks["human_release"].status == "blocked"
+    assert checks["execution_release"].status == "blocked"
+    assert manifest.status == "blocked"
+    assert manifest.execution.status == "not_started"
+
+
+def test_release_observation_fails_closed_on_incomplete_eligibility() -> None:
+    pack = build_evidence_pack(_search_result(), SearchQuery(text="dangerous storm"))
+    with pytest.raises(ValueError, match="complete assessment identity"):
+        build_agent_run_proposal(
+            pack,
+            release=AgentReleaseObservation(status="eligible_for_human_review"),
+        )
 
 
 @pytest.mark.parametrize(

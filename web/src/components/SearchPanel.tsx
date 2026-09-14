@@ -176,6 +176,12 @@ export function SearchPanel({
                     Approval: {policyLabel(agentRunManifest.approval.status)} · proposal{" "}
                     {agentRunManifest.proposal_id.slice(0, 21)}…
                   </small>
+                  <small className="agent-run-release-state">
+                    Quality evidence: {policyLabel(agentRunManifest.release.status)}
+                    {agentRunManifest.release.assessment_id === null
+                      ? ""
+                      : ` · ${agentRunManifest.release.assessment_id.slice(0, 31)}…`}
+                  </small>
                   <p>
                     {agentRunManifest.authorization.passed_check_count} checks passed ·{" "}
                     {agentRunManifest.authorization.blocked_check_count} blocking gates
@@ -198,7 +204,8 @@ export function SearchPanel({
                     </ul>
                   </details>
                   <small className="agent-run-execution-note">
-                    Agent model not invoked · no agent network, tools, answer, or side effect
+                    Quality eligibility and human approval are separate · execution hard-disabled ·
+                    agent model not invoked
                   </small>
                 </div>
               )}

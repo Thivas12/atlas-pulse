@@ -118,8 +118,8 @@ function agentRunManifest(): AgentRunManifest {
   const pack = evidencePack();
   return {
     manifest_id: `manifest-${"d".repeat(64)}`,
-    schema_version: "1.1.0",
-    rule_version: "agent-run-manifest-v2",
+    schema_version: "1.2.0",
+    rule_version: "agent-run-manifest-v3",
     identity_algorithm: "sha256-canonical-json-v1",
     proposal_id: `proposal-${"e".repeat(64)}`,
     status: "blocked",
@@ -145,16 +145,36 @@ function agentRunManifest(): AgentRunManifest {
       evidence_ids: pack.items.map((item) => item.evidence_id),
     },
     policy: {
-      policy_version: "agent-authorization-v2",
+      policy_version: "agent-authorization-v3",
       default_decision: "deny",
       execution_enabled: false,
       human_release_required: true,
       evaluated_model_required: true,
       relationship_benchmark_required: true,
       grounded_answer_evaluation_required: true,
+      agent_trajectory_evaluation_required: true,
+      trajectory_drift_monitoring_required: true,
+      release_threshold_policy_required: true,
       network_access_allowed: false,
       tool_access_allowed: false,
       external_side_effects_allowed: false,
+    },
+    release: {
+      status: "not_supplied",
+      assessment_id: null,
+      assessment_sha256: null,
+      policy_id: null,
+      policy_sha256: null,
+      agent_candidate_id: null,
+      relationship_report_id: null,
+      trajectory_report_ids: [],
+      model_adapter_evaluated: false,
+      relationship_benchmark_passed: false,
+      grounded_answer_evaluation_passed: false,
+      agent_trajectory_evaluation_passed: false,
+      trajectory_drift_monitoring_passed: false,
+      release_threshold_policy_passed: false,
+      blocking_reasons: [],
     },
     approval: {
       status: "not_supplied",
@@ -171,11 +191,14 @@ function agentRunManifest(): AgentRunManifest {
     authorization: {
       decision: "blocked",
       passed_check_count: 3,
-      blocked_check_count: 5,
+      blocked_check_count: 8,
       blocking_reasons: [
         "model_adapter_not_selected",
         "live_relationship_benchmark_incomplete",
         "grounded_answer_evaluation_missing",
+        "agent_trajectory_evaluation_missing",
+        "trajectory_drift_evidence_missing",
+        "release_thresholds_not_met",
         "human_release_not_granted",
         "execution_disabled",
       ],
@@ -221,6 +244,27 @@ function agentRunManifest(): AgentRunManifest {
           observed: "not_available",
           required: "evaluated_pass",
           blocking_reason: "grounded_answer_evaluation_missing",
+        },
+        {
+          check_id: "agent_trajectory_evaluation",
+          status: "blocked",
+          observed: "not_supplied",
+          required: "observable_trajectory_pass",
+          blocking_reason: "agent_trajectory_evaluation_missing",
+        },
+        {
+          check_id: "trajectory_drift_monitoring",
+          status: "blocked",
+          observed: "not_supplied",
+          required: "complete_stable_drift_chain",
+          blocking_reason: "trajectory_drift_evidence_missing",
+        },
+        {
+          check_id: "release_threshold_policy",
+          status: "blocked",
+          observed: "not_supplied",
+          required: "eligible_for_human_review",
+          blocking_reason: "release_thresholds_not_met",
         },
         {
           check_id: "human_release",
@@ -393,9 +437,10 @@ describe("SearchPanel", () => {
     );
     expect(screen.getByText("Blocked · no execution")).toBeInTheDocument();
     expect(screen.getByText(`manifest-${"d".repeat(64)}`)).toBeInTheDocument();
-    expect(screen.getByText(/3 checks passed · 5 blocking gates/)).toBeInTheDocument();
+    expect(screen.getByText(/3 checks passed · 8 blocking gates/)).toBeInTheDocument();
+    expect(screen.getByText(/Quality evidence: not supplied/)).toBeInTheDocument();
     expect(screen.getByText(/model adapter not selected/)).toBeInTheDocument();
-    expect(screen.getByText(/Agent model not invoked/)).toBeInTheDocument();
+    expect(screen.getByText(/execution hard-disabled/)).toBeInTheDocument();
 
     await user.click(screen.getByText("Review authorization checks"));
     expect(screen.getByText("execution release")).toBeInTheDocument();

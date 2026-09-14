@@ -28,7 +28,8 @@ in the UI: these are ranked source events, not an LLM answer, and citation valid
 rather than a truth claim. Choose **Prepare agent pack**. Show the content-addressed pack ID, hard
 item/source-text limits, included and excluded counts, and the untrusted-source-text rule. The pack
 is an auditable handoff, not an answer. Choose **Check run policy**. Show the second content ID,
-the default-deny result, passed and blocked gate counts, and the expandable checks. Point out that
+the default-deny result, all 11 gate outcomes, the separate quality-evidence and approval states,
+and the expandable checks. Point out that
 the proposed agent model, agent network/tools, answer generation, and side effects all remain off;
 ordinary evidence retrieval still uses the local BGE embedding model.
 
@@ -53,7 +54,7 @@ curl -fsS --get 'http://localhost:8000/v1/agent-runs/preflight' \
   --data-urlencode 'retrieval_limit=20' \
   | jq '{pack_id: .evidence_pack.pack_id,
          manifest: (.manifest |
-           {manifest_id, proposal_id, approval, status, authorization, execution})}'
+           {manifest_id, proposal_id, release, approval, status, authorization, execution})}'
 ```
 
 ## 33–45 seconds: prove measured correlation and claim analysis stay separate
@@ -135,13 +136,17 @@ prediction-blind human benchmark rather than relying on synthetic examples or an
 Explain that public or promotion-oriented results require two exact first-pass reviews: AtlasPulse
 reports observed agreement and Cohen's kappa, sends only disagreements to a third system-blind
 adjudicator, and content-addresses the final gold pool with both review hashes. Close on the
-default-deny preflight and signed ledger: the proposal makes approval scope stable, Ed25519 and
+observable trajectory chain: it records action metadata rather than hidden reasoning, requires
+exact grounded adjudication, compares consecutive captures for drift, and can reach only human
+review eligibility under a content-addressed policy. Finish on the default-deny preflight and
+signed ledger: the proposal makes approval scope stable, Ed25519 and
 trusted key IDs make intent verifiable, expiry and revocation fail closed, and the remaining gates
 still prove that no agent ran.
 
 ```bash
 uv run atlas-pulse-evaluate --help
 uv run atlas-pulse-evaluate-relationships --help
+uv run atlas-pulse-evaluate-agent-trajectories --help
 jq '{query_set_id, pool_depth, modes, query_count: (.queries | length)}' \
   evals/retrieval/live-disruptions-v1.json
 jq '{benchmark_id, predicates, max_edges_per_source_pair, parameters}' \

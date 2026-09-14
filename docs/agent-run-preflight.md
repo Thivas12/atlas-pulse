@@ -9,7 +9,8 @@ agent or executing any of its requested capabilities.
 | Artifact | Identity | Bound content |
 | --- | --- | --- |
 | Evidence pack | `pack-<sha256>` | Query, filters, ranking, budgets, admitted text, exclusions, and trust policy |
-| Run proposal | `proposal-<sha256>` | Exact pack reference, run intent, capability request, and policy snapshot |
+| Release assessment (optional) | `release-assessment-<hash-prefix>` | Exact relationship, grounded, trajectory, drift, and threshold evidence |
+| Run proposal | `proposal-<sha256>` | Exact pack reference, run intent, capability request, policy, and release observation |
 | Approval (optional) | `approval-<sha256>` | Proposal, source manifest, actor, policy, issue/expiry, and rationale |
 | Run manifest | `manifest-<sha256>` | Proposal, approval observation, checks, decision, and execution state |
 
@@ -37,7 +38,7 @@ because active, expired, and revoked are time-qualified observations.
 
 ## Authorization checks
 
-The versioned `agent-authorization-v2` policy is default-deny and evaluates all checks every time.
+The versioned `agent-authorization-v3` policy is default-deny and evaluates all 11 checks every time.
 One failure cannot hide another.
 
 | Check | Current observation | Required state |
@@ -48,13 +49,17 @@ One failure cannot hide another.
 | Model adapter | Pinned local candidate runner available; not released | Evaluated model adapter |
 | Live relationship benchmark | Awaiting independent adjudication | Adjudicated pass |
 | Grounded-answer evaluation | Harness, pinned runner, and dual-review adjudication tooling available; no reviewed representative pass | Evaluated pass |
+| Agent trajectory evaluation | No assessment supplied by default | Observable trajectory pass |
+| Trajectory drift monitoring | No assessment supplied by default | Complete stable consecutive drift chain |
+| Release-threshold policy | No assessment supplied by default | Eligible for human review under the exact policy |
 | Human release | Signed-ledger state; not supplied by default | Active, trusted, exact-scope, unrevoked approval |
 | Execution release | Disabled | Enabled |
 
-The first three checks can pass today when evidence exists. A valid approval can pass only the human
-release check. The model, live relationship benchmark, grounded-answer evaluation, and execution
-release checks still keep the proposed run blocked. `agent-authorization-v2` does not treat a
-runner or unevaluated report as release evidence. An empty pack also adds `no_traceable_evidence`.
+The first three checks can pass today when evidence exists. A validated assessment can satisfy only
+the six measured quality checks represented by its exact gates. A valid approval can satisfy only
+the human-release check. `agent-authorization-v3` keeps execution release hard-disabled even if
+every other check passes. It does not treat a runner, test fixture, incomplete drift chain, or
+unevaluated report as release evidence. An empty pack also adds `no_traceable_evidence`.
 
 ## Inspect a preflight
 
@@ -69,7 +74,7 @@ curl -fsS --get 'http://localhost:8000/v1/agent-runs/preflight' \
   --data-urlencode 'max_total_characters=12000' \
   | jq '{pack: (.evidence_pack | {pack_id, status, item_count, exclusion_count}),
          manifest: (.manifest | {manifest_id, status, request, evidence, policy,
-           proposal_id, approval, authorization, execution, caveat})}'
+           proposal_id, release, approval, authorization, execution, caveat})}'
 ```
 
 The endpoint performs retrieval and deterministic policy evaluation only. Ordinary retrieval still
@@ -85,6 +90,8 @@ flag false. A consumer must never interpret the presence of a manifest as author
   ledger entry, and Ed25519 possession still does not independently prove a real-world identity.
 - GET preflight remains side-effect free. An operator must explicitly record it with the governance
   CLI when a durable receipt is required.
+- Quality eligibility, signed human approval, and execution release are independent. The first two
+  cannot turn on the third under the current policy.
 
 The evidence contract is documented in [`evidence-packs.md`](evidence-packs.md). The decision and
 rejected alternatives are recorded in
@@ -100,3 +107,6 @@ descriptive and do not alter any authorization observation. Approval identity, e
 and append-only signed persistence are documented in
 [`agent-run-ledger.md`](agent-run-ledger.md) and
 [`ADR 0024`](adr/0024-signed-agent-approval-ledger.md).
+Observable trajectory scoring, drift, the pinned release policy, and assessment attachment are
+documented in [`agent-trajectory-release.md`](agent-trajectory-release.md) and
+[`ADR 0025`](adr/0025-observable-agent-trajectory-release-policy.md).

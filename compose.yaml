@@ -65,7 +65,7 @@ services:
       migrate:
         condition: service_completed_successfully
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test:
         [
@@ -138,7 +138,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "3000:8080"
+      - "127.0.0.1:3000:8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
       interval: 10s

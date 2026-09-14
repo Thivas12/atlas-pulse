@@ -397,6 +397,7 @@ async def test_client_resolves_downloads_and_integrity_checks_latest_export() ->
     assert requests[1].url.scheme == "https"
     assert document.raw == export
     assert document.source_url == _EXPORT_URL
+    assert document.transport_attempts == 2
     assert batch.generated_at == datetime(2026, 9, 12, 14, 30, tzinfo=UTC)
     assert len(batch.events) == 2
     assert not http_client.is_closed

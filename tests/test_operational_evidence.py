@@ -40,6 +40,7 @@ from atlas_pulse.operational_evidence import (
 )
 from atlas_pulse.operational_evidence.base import PROBE_PATHS, RESTORE_CHECKS
 from atlas_pulse.operational_evidence.cli import run_cli
+from atlas_pulse.source_polling import SourceFreshnessItem, SourceFreshnessResponse
 
 _COMMIT = "a" * 40
 _START = datetime(2026, 9, 14, 12, tzinfo=UTC)
@@ -50,13 +51,14 @@ class _HandlerOptions(TypedDict, total=False):
     readiness_status: str
     boundary_overrides: dict[str, object] | None
     invalid_events: bool
+    invalid_freshness: bool
 
 
 def _target(*, commit_sha: str = _COMMIT, deployed_at: datetime = _START) -> DeploymentTarget:
     return build_deployment_target(
         origin="https://atlas.example/",
         commit_sha=commit_sha,
-        application_version="0.9.0",
+        application_version="0.10.0",
         environment="free-tier-public",
         deployed_at=deployed_at,
     )
@@ -87,6 +89,7 @@ def _handler(
     readiness_status: str = "ready",
     boundary_overrides: dict[str, object] | None = None,
     invalid_events: bool = False,
+    invalid_freshness: bool = False,
 ) -> httpx.MockTransport:
     def respond(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/healthz":
@@ -101,6 +104,39 @@ def _handler(
                 "version": target.application_version,
                 "commit_sha": commit_sha or target.commit_sha,
             }
+        elif request.url.path == "/api/v1/source-freshness":
+            payload = (
+                {"passed": True}
+                if invalid_freshness
+                else SourceFreshnessResponse(
+                    generated_at=observed_at,
+                    items=tuple(
+                        SourceFreshnessItem(
+                            source=source,
+                            interval_seconds=900 if source == "gdelt" else 60,
+                            poll_stale_after_seconds=2700 if source == "gdelt" else 180,
+                            source_stale_after_seconds=3600 if source == "gdelt" else 600,
+                            poll_status="healthy",
+                            source_data_status="current",
+                            last_outcome="succeeded",
+                            last_stage="complete",
+                            last_attempt_at=observed_at - timedelta(seconds=30),
+                            last_success_at=observed_at - timedelta(seconds=20),
+                            last_source_generated_at=(
+                                observed_at - timedelta(seconds=120 if source == "gdelt" else 60)
+                            ),
+                            last_success_age_seconds=20,
+                            source_age_seconds=120 if source == "gdelt" else 60,
+                            consecutive_failures=0,
+                            transport_attempts=1,
+                            timestamp_basis="source_metadata",
+                            passed=True,
+                        )
+                        for source in ("gdelt", "usgs")
+                    ),
+                    passed=True,
+                ).model_dump(mode="json")
+            )
         elif request.url.path == "/api/v1/events":
             payload = (
                 {"count": 1, "items": [{"event": {"source": "unknown"}}]}
@@ -245,7 +281,7 @@ def test_target_rejects_non_public_or_noncanonical_origins(origin: str) -> None:
         build_deployment_target(
             origin=origin,
             commit_sha=_COMMIT,
-            application_version="0.9.0",
+            application_version="0.10.0",
             environment="free-tier-public",
             deployed_at=_START,
         )
@@ -288,6 +324,8 @@ def test_successful_probe_binds_commit_tls_sources_and_default_deny() -> None:
     assert probe.execution_boundary.agent_model_invoked is False
     assert tuple(item.source for item in probe.source_visibility) == ("gdelt", "usgs")
     assert tuple(item.age_seconds for item in probe.source_visibility) == (120.0, 60.0)
+    assert tuple(item.source for item in probe.source_freshness) == ("gdelt", "usgs")
+    assert all(item.passed for item in probe.source_freshness)
     assert probe.evidence_id == f"deployment-probe-{probe.evidence_sha256[:20]}"
     serialized = probe.model_dump_json()
     assert "operational boundary" not in serialized
@@ -301,6 +339,7 @@ def test_successful_probe_binds_commit_tls_sources_and_default_deny() -> None:
         ({"readiness_status": "starting"}, "readiness"),
         ({"boundary_overrides": {"agent_tools_invoked": True}}, "agent_preflight"),
         ({"invalid_events": True}, "events"),
+        ({"invalid_freshness": True}, "source_freshness"),
     ],
 )
 def test_probe_records_semantic_failures_without_fabricating_passes(
@@ -734,6 +773,9 @@ def test_complete_campaign_means_minimum_samples_not_sla(tmp_path: Path) -> None
     assert report.aligned_probe_resource_days == 30
     assert report.longest_aligned_sample_streak_days == 30
     assert report.sampled_probe_success_rate == 1
+    assert tuple(item.source for item in report.source_freshness) == ("gdelt", "usgs")
+    assert all(item.longest_passing_streak_days == 30 for item in report.source_freshness)
+    assert all(item.passing_observation_count == 30 for item in report.source_freshness)
     assert report.claim_scope == "sampled_observations_not_an_sla"
     assert report.execution_enabled is False
     assert all(item.p95_passed_latency_ms is not None for item in report.endpoint_latency)
@@ -741,7 +783,34 @@ def test_complete_campaign_means_minimum_samples_not_sla(tmp_path: Path) -> None
     markdown = render_operational_report(target, report)
     assert "MINIMUM OBSERVATION SET COMPLETE" in markdown
     assert "not an SLA" in markdown
+    assert "Source poll and upstream freshness" in markdown
     assert _COMMIT in markdown
+
+
+def test_one_missing_freshness_day_breaks_the_required_source_streak(tmp_path: Path) -> None:
+    target = _target()
+    evidence, _ = _complete_campaign(target, tmp_path)
+    victim = next(
+        item
+        for item in evidence
+        if isinstance(item, DeploymentProbeEvidence)
+        and item.observed_at.date() == (_START + timedelta(days=15)).date()
+    )
+    replacement = _probe(target, victim.observed_at, invalid_freshness=True)
+    report = evaluate_operational_campaign(
+        target,
+        tuple(replacement if item is victim else item for item in evidence),
+        generated_at=_START + timedelta(days=30),
+    )
+
+    freshness_gate = next(
+        item
+        for item in report.requirements
+        if item.requirement_id == "required_sources_fresh_30_days"
+    )
+    assert freshness_gate.passed is False
+    assert all(item.longest_passing_streak_days == 15 for item in report.source_freshness)
+    assert report.status == "insufficient_evidence"
 
 
 def test_incomplete_campaign_reports_every_missing_requirement() -> None:
@@ -911,7 +980,7 @@ def test_cli_target_resource_backup_restore_restart_and_report(
                 "--commit-sha",
                 _COMMIT,
                 "--application-version",
-                "0.9.0",
+                "0.10.0",
                 "--deployed-at",
                 "2026-09-14T12:00:00Z",
                 "--output",
@@ -1070,7 +1139,7 @@ def test_cli_target_resource_backup_restore_restart_and_report(
                 "--commit-sha",
                 _COMMIT,
                 "--application-version",
-                "0.9.0",
+                "0.10.0",
                 "--deployed-at",
                 "2026-09-14T12:00:00Z",
                 "--output",

@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 from agent_rag_core import Event, GeoPoint
+from valkey.exceptions import ValkeyError
 
 from atlas_pulse.agent_governance import (
     Ed25519LedgerSigner,
@@ -31,6 +32,7 @@ from atlas_pulse.evidence_packs import (
     EVIDENCE_PACK_TRUST_BOUNDARY,
 )
 from atlas_pulse.projections import CorrelationQuery, SignalPage, SignalQuery
+from atlas_pulse.projections.base import SourceName
 from atlas_pulse.retrieval import (
     CandidateBatch,
     ChannelCandidate,
@@ -40,6 +42,13 @@ from atlas_pulse.retrieval import (
     fuse_and_rerank,
 )
 from atlas_pulse.retrieval.ranking import RANKING_RULE, RETRIEVAL_CAVEAT
+from atlas_pulse.source_poll_store import InMemorySourcePollStore
+from atlas_pulse.source_polling import (
+    SourcePollAttempt,
+    SourcePollPolicy,
+    SourcePollState,
+    new_source_poll_attempt,
+)
 from atlas_pulse.streams import InMemoryEventBus
 from atlas_pulse.streams.base import StreamMessage
 
@@ -136,7 +145,7 @@ async def test_health_readiness_and_recent_events() -> None:
         events = await client.get("/v1/events", params={"limit": 1})
 
     assert health.status_code == 200
-    assert health.json() == {"status": "ok", "version": "0.9.0", "commit_sha": "unknown"}
+    assert health.json() == {"status": "ok", "version": "0.10.0", "commit_sha": "unknown"}
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
     assert events.status_code == 200
@@ -153,6 +162,101 @@ async def test_health_binds_a_reviewed_build_commit() -> None:
 
     assert health.json()["commit_sha"] == commit_sha
     assert ready.json()["commit_sha"] == commit_sha
+
+
+async def test_source_freshness_reports_poll_and_upstream_age_separately() -> None:
+    now = datetime(2026, 9, 14, 12, tzinfo=UTC)
+    policy = SourcePollPolicy(
+        source="usgs",
+        interval_seconds=60,
+        poll_stale_after_seconds=180,
+        source_stale_after_seconds=600,
+    )
+    store = InMemorySourcePollStore()
+    started = new_source_poll_attempt("usgs", started_at=now - timedelta(seconds=15))
+    await store.record_started(started, policy)
+    await store.record_completed(
+        SourcePollAttempt(
+            attempt_id=started.attempt_id,
+            source="usgs",
+            started_at=started.started_at,
+            completed_at=now - timedelta(seconds=10),
+            outcome="succeeded",
+            stage="complete",
+            transport_attempts=1,
+            source_generated_at=now - timedelta(seconds=30),
+            timestamp_basis="source_metadata",
+            fetched_events=2,
+            published_events=2,
+            deduplicated_events=0,
+        )
+    )
+    transport = httpx.ASGITransport(
+        app=create_app(
+            InMemoryEventBus(),
+            source_poll_store=store,
+            source_poll_policies=(policy,),
+            clock=lambda: now,
+        )
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/source-freshness")
+
+    assert response.status_code == 200
+    document = response.json()
+    assert document["passed"] is True
+    assert document["execution_enabled"] is False
+    assert document["items"][0]["poll_status"] == "healthy"
+    assert document["items"][0]["source_data_status"] == "current"
+    assert document["items"][0]["last_success_age_seconds"] == 10
+    assert document["items"][0]["source_age_seconds"] == 30
+
+
+async def test_source_freshness_is_unavailable_without_a_valid_store() -> None:
+    transport = httpx.ASGITransport(app=create_app(InMemoryEventBus()))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/source-freshness")
+    assert response.status_code == 503
+    assert response.json() == {"detail": "source freshness unavailable"}
+
+    class InvalidStore(InMemorySourcePollStore):
+        async def load_states(self, sources: tuple[SourceName, ...]) -> tuple[SourcePollState, ...]:
+            del sources
+            raise ValueError("corrupt state")
+
+    policy = SourcePollPolicy(
+        source="usgs",
+        interval_seconds=60,
+        poll_stale_after_seconds=180,
+        source_stale_after_seconds=600,
+    )
+    invalid_transport = httpx.ASGITransport(
+        app=create_app(
+            InMemoryEventBus(),
+            source_poll_store=InvalidStore(),
+            source_poll_policies=(policy,),
+        )
+    )
+    async with httpx.AsyncClient(transport=invalid_transport, base_url="http://test") as client:
+        response = await client.get("/v1/source-freshness")
+    assert response.status_code == 503
+
+    class OfflineStore(InMemorySourcePollStore):
+        async def load_states(self, sources: tuple[SourceName, ...]) -> tuple[SourcePollState, ...]:
+            del sources
+            raise ValkeyError("offline")
+
+    offline_transport = httpx.ASGITransport(
+        app=create_app(
+            InMemoryEventBus(),
+            source_poll_store=OfflineStore(),
+            source_poll_policies=(policy,),
+        )
+    )
+    async with httpx.AsyncClient(transport=offline_transport, base_url="http://test") as client:
+        response = await client.get("/v1/source-freshness")
+    assert response.status_code == 503
 
 
 def test_application_rejects_an_invalid_build_commit() -> None:

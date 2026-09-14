@@ -22,7 +22,7 @@ from atlas_pulse.operational_evidence.base import (
 )
 from atlas_pulse.projections.base import SourceName
 
-OPERATIONAL_CAMPAIGN_RULE_VERSION = "sampled-30-day-operational-campaign-v1"
+OPERATIONAL_CAMPAIGN_RULE_VERSION = "sampled-30-day-operational-campaign-v2"
 OPERATIONAL_REPORT_CAVEATS = (
     "The success rate describes only collected samples. It is not continuous monitoring, an SLA, "
     "or proof of availability between observations.",
@@ -30,8 +30,10 @@ OPERATIONAL_REPORT_CAVEATS = (
     "between samples or proof of production-scale capacity.",
     "The checked revision is operator-supplied image build metadata, not an independent "
     "reproducible-build or hardware attestation.",
-    "Event visibility ages do not prove upstream polling freshness because unchanged source "
-    "responses may be deduplicated before publication.",
+    "Source freshness is sampled from worker-written Valkey state using the API host clock; it "
+    "is not independent uptime monitoring or proof of upstream completeness.",
+    "Bounded event visibility is reported separately from polling freshness because unchanged "
+    "source responses may be deduplicated before publication.",
     "Off-host and encryption labels are operator assertions; a successful isolated restore binds "
     "the tested bytes but is not an independent disaster-recovery certification.",
     "Operational evidence cannot authorize model or agent execution. Human approval and the "
@@ -43,7 +45,7 @@ RequirementId = Literal[
     "passing_probe_30_days",
     "certificate_probe_30_days",
     "resource_snapshot_30_days",
-    "required_sources_observed",
+    "required_sources_fresh_30_days",
     "restart_recovery_passed",
     "encrypted_off_host_backup",
     "restore_drill_passed",
@@ -53,7 +55,7 @@ REQUIREMENT_IDS: tuple[RequirementId, ...] = (
     "certificate_probe_30_days",
     "encrypted_off_host_backup",
     "passing_probe_30_days",
-    "required_sources_observed",
+    "required_sources_fresh_30_days",
     "resource_snapshot_30_days",
     "restart_recovery_passed",
     "restore_drill_passed",
@@ -88,7 +90,7 @@ class EvidenceReference(StrictModel):
 class EndpointLatencySummary(StrictModel):
     """Descriptive successful-sample latency for one fixed endpoint."""
 
-    name: Literal["health", "readiness", "events", "agent_preflight"]
+    name: Literal["health", "readiness", "source_freshness", "events", "agent_preflight"]
     observation_count: int = Field(ge=0)
     passed_count: int = Field(ge=0)
     p95_passed_latency_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
@@ -127,6 +129,49 @@ class SourceVisibilitySummary(StrictModel):
         return self
 
 
+class SourceFreshnessSummary(StrictModel):
+    """Sampled worker-heartbeat and upstream-age evidence for one source."""
+
+    source: SourceName
+    probe_count: int = Field(ge=0)
+    observation_count: int = Field(ge=0)
+    passing_observation_count: int = Field(ge=0)
+    passing_day_count: int = Field(ge=0)
+    longest_passing_streak_days: int = Field(ge=0)
+    poll_healthy_count: int = Field(ge=0)
+    source_current_count: int = Field(ge=0)
+    maximum_consecutive_failures: int = Field(ge=0)
+    last_success_age_observation_count: int = Field(ge=0)
+    p95_last_success_age_seconds: float | None = Field(default=None, allow_inf_nan=False)
+    source_age_observation_count: int = Field(ge=0)
+    p95_source_age_seconds: float | None = Field(default=None, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_summary(self) -> SourceFreshnessSummary:
+        if self.observation_count > self.probe_count:
+            raise ValueError("source freshness observations cannot exceed probes")
+        if any(
+            value > self.observation_count
+            for value in (
+                self.passing_observation_count,
+                self.poll_healthy_count,
+                self.source_current_count,
+                self.last_success_age_observation_count,
+                self.source_age_observation_count,
+            )
+        ):
+            raise ValueError("source freshness aggregates cannot exceed observations")
+        if self.longest_passing_streak_days > self.passing_day_count:
+            raise ValueError("source freshness streak cannot exceed passing days")
+        if (self.last_success_age_observation_count == 0) != (
+            self.p95_last_success_age_seconds is None
+        ):
+            raise ValueError("last-success p95 exists exactly when an age sample exists")
+        if (self.source_age_observation_count == 0) != (self.p95_source_age_seconds is None):
+            raise ValueError("source-age p95 exists exactly when an age sample exists")
+        return self
+
+
 class OperationalRequirement(StrictModel):
     """One exact minimum-evidence check without a reliability interpretation."""
 
@@ -146,9 +191,9 @@ class OperationalRequirement(StrictModel):
 class OperationalEvidenceReport(StrictModel):
     """Content-addressed sampled campaign summary with an explicitly limited claim."""
 
-    schema_version: Literal["1.0.0"] = "1.0.0"
-    rule_version: Literal["sampled-30-day-operational-campaign-v1"] = (
-        "sampled-30-day-operational-campaign-v1"
+    schema_version: Literal["1.1.0"] = "1.1.0"
+    rule_version: Literal["sampled-30-day-operational-campaign-v2"] = (
+        "sampled-30-day-operational-campaign-v2"
     )
     identity_algorithm: Literal["sha256-canonical-json-v1"] = "sha256-canonical-json-v1"
     report_id: str = Field(pattern=r"^operational-report-[0-9a-f]{20}$")
@@ -178,8 +223,9 @@ class OperationalEvidenceReport(StrictModel):
     restore_drill_count: int = Field(ge=0)
     passing_restore_drill_count: int = Field(ge=0)
     minimum_certificate_remaining_seconds: float | None = Field(default=None, allow_inf_nan=False)
-    endpoint_latency: tuple[EndpointLatencySummary, ...] = Field(min_length=4, max_length=4)
+    endpoint_latency: tuple[EndpointLatencySummary, ...] = Field(min_length=5, max_length=5)
     source_visibility: tuple[SourceVisibilitySummary, ...]
+    source_freshness: tuple[SourceFreshnessSummary, ...]
     requirements: tuple[OperationalRequirement, ...] = Field(min_length=8, max_length=8)
     passed_requirement_count: int = Field(ge=0, le=8)
     blocked_requirement_count: int = Field(ge=0, le=8)
@@ -272,6 +318,11 @@ class OperationalEvidenceReport(StrictModel):
             raise ValueError("source summaries must be unique and ordered")
         if any(item.probe_count != self.probe_count for item in self.source_visibility):
             raise ValueError("source observations must match the report probe count")
+        freshness_order = tuple(item.source for item in self.source_freshness)
+        if freshness_order != tuple(sorted(set(freshness_order))):
+            raise ValueError("source freshness summaries must be unique and ordered")
+        if any(item.probe_count != self.probe_count for item in self.source_freshness):
+            raise ValueError("source freshness summaries must match the report probe count")
         if tuple(item.requirement_id for item in self.requirements) != REQUIREMENT_IDS:
             raise ValueError("operational requirements must use the complete canonical order")
         passed = sum(item.passed for item in self.requirements)
@@ -362,6 +413,21 @@ def _validate_evidence_links(
             or item.expected_commit_sha != target.commit_sha
         ):
             raise ValueError("deployment probe expectations must match exact target metadata")
+        if isinstance(item, DeploymentProbeEvidence):
+            freshness_endpoint = next(
+                endpoint for endpoint in item.endpoints if endpoint.name == "source_freshness"
+            )
+            freshness_by_source = {
+                observation.source: observation for observation in item.source_freshness
+            }
+            required_fresh = all(
+                source in freshness_by_source and freshness_by_source[source].passed
+                for source in target.required_sources
+            )
+            if freshness_endpoint.passed != required_fresh:
+                raise ValueError(
+                    "source-freshness endpoint must match the target's required sources"
+                )
         if (
             isinstance(item, ResourceSnapshotEvidence)
             and item.required_services != target.required_services
@@ -469,9 +535,61 @@ def evaluate_operational_campaign(
             )
         )
 
-    source_counts = {item.source: item.visible_probe_count for item in source_summaries}
+    freshness_sources = {item.source for probe in probes for item in probe.source_freshness} | set(
+        target.required_sources
+    )
+    source_freshness_summaries: list[SourceFreshnessSummary] = []
+    source_freshness_streaks: dict[SourceName, int] = {}
+    probes_by_date: dict[date, list[DeploymentProbeEvidence]] = {}
+    for probe in probes:
+        probes_by_date.setdefault(probe.observed_at.date(), []).append(probe)
+    for source in sorted(freshness_sources):
+        freshness_samples = [
+            item for probe in probes for item in probe.source_freshness if item.source == source
+        ]
+        passing_dates = {
+            observed_date
+            for observed_date, dated_probes in probes_by_date.items()
+            if all(
+                any(item.source == source and item.passed for item in probe.source_freshness)
+                for probe in dated_probes
+            )
+        }
+        streak = _longest_streak(passing_dates)
+        source_freshness_streaks[source] = streak
+        last_success_ages = [
+            item.last_success_age_seconds
+            for item in freshness_samples
+            if item.last_success_age_seconds is not None
+        ]
+        source_ages = [
+            item.source_age_seconds
+            for item in freshness_samples
+            if item.source_age_seconds is not None
+        ]
+        source_freshness_summaries.append(
+            SourceFreshnessSummary(
+                source=source,
+                probe_count=len(probes),
+                observation_count=len(freshness_samples),
+                passing_observation_count=sum(item.passed for item in freshness_samples),
+                passing_day_count=len(passing_dates),
+                longest_passing_streak_days=streak,
+                poll_healthy_count=sum(item.poll_status == "healthy" for item in freshness_samples),
+                source_current_count=sum(
+                    item.source_data_status == "current" for item in freshness_samples
+                ),
+                maximum_consecutive_failures=max(
+                    (item.consecutive_failures for item in freshness_samples), default=0
+                ),
+                last_success_age_observation_count=len(last_success_ages),
+                p95_last_success_age_seconds=_p95(last_success_ages),
+                source_age_observation_count=len(source_ages),
+                p95_source_age_seconds=_p95(source_ages),
+            )
+        )
     required_sources_passed = all(
-        source_counts.get(source, 0) > 0 for source in target.required_sources
+        source_freshness_streaks.get(source, 0) >= 30 for source in target.required_sources
     )
     encrypted_off_host = tuple(
         item
@@ -525,16 +643,16 @@ def evaluate_operational_campaign(
                     blocking_reason="no aligned 30-day probe/TLS/resource streak is present",
                 ),
                 _requirement(
-                    "required_sources_observed",
+                    "required_sources_fresh_30_days",
                     observed=(
                         ", ".join(
-                            f"{source}={source_counts.get(source, 0)}"
+                            f"{source}={source_freshness_streaks.get(source, 0)} day(s)"
                             for source in target.required_sources
                         )
                     ),
-                    required="every configured required source visible at least once",
+                    required="every required source fresh on 30 consecutive UTC dates",
                     passed=required_sources_passed,
-                    blocking_reason="one or more configured sources were never visible",
+                    blocking_reason=("one or more required sources lack a 30-day freshness streak"),
                 ),
                 _requirement(
                     "restart_recovery_passed",
@@ -604,6 +722,7 @@ def evaluate_operational_campaign(
         ),
         endpoint_latency=endpoint_summaries,
         source_visibility=tuple(source_summaries),
+        source_freshness=tuple(source_freshness_summaries),
         requirements=requirements,
         passed_requirement_count=passed_requirement_count,
         blocked_requirement_count=8 - passed_requirement_count,

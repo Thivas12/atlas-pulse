@@ -7,11 +7,13 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — exact-deployment operational evidence.** Independent workers
+> **Current milestone — explicit source freshness and deployment evidence.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
-> observations every 15 minutes. Every unmodified source response is preserved, strictly
-> validated, normalized, and atomically published to Valkey Streams. A restart-safe worker
+> observations every 15 minutes. Every poll now records an atomic, credential-free heartbeat,
+> bounded outcome, actual transport attempts, and upstream timestamp basis in Valkey—separately
+> from event publication. Every unmodified source response is preserved, strictly validated,
+> normalized, and atomically published to Valkey Streams. A restart-safe worker
 > transactionally projects every revision, current event pointer, and its checkpoint into
 > PostGIS. A bounded query-time correlation engine measures cross-source spatial and temporal
 > co-occurrence. A separate restart-safe worker renders and locally embeds current evidence into
@@ -68,11 +70,12 @@ component can run without a paid API key.
 > assessment means only `eligible_for_human_review`; quality, human approval, and execution remain
 > separate gates, and execution is hard-disabled. A resource-capped Compose overlay and Caddy edge
 > now provide a reproducible free-tier HTTPS deployment path without manufacturing a live-service
-> or model-quality claim. v0.9 binds public liveness and readiness to the declared image commit and
+> or model-quality claim. v0.10 binds public liveness and readiness to the declared image commit and
 > adds content-addressed HTTPS, default-deny, resource, restart, backup, and isolated-restore
-> observations. A strict campaign report cross-validates those artifacts over 30 consecutive,
-> aligned, sampled UTC dates; its strongest result is a minimum observation set, never an SLA or
-> capacity claim.
+> observations. The public `/v1/source-freshness` surface distinguishes poller health from upstream
+> data age, and the strict campaign requires both dimensions for every required source over 30
+> consecutive aligned sampled UTC dates. Its strongest result is a minimum observation set, never
+> an SLA, completeness guarantee, or capacity claim.
 
 ## Why this is portfolio-grade
 
@@ -81,6 +84,7 @@ component can run without a paid API key.
 | Real public data | Independent USGS, NOAA/NWS, NASA FIRMS, and GDELT 2.0 near-real-time feeds |
 | Auditability | SHA-256 content-addressed raw snapshots are written before parsing |
 | Reliable delivery | Bounded HTTP retry plus pipelined, revision-aware atomic Lua deduplication |
+| Source freshness | Atomic poll transitions, actual retry counts, source timestamp provenance, separate heartbeat/data-age states, and stale/clock-skew detection |
 | Credential safety | Free FIRMS key is ingestor-only and redacted from events, errors, and spans |
 | Shared contracts | Immutable `Event` and `GeoPoint` models pinned to `agent-rag-core` commit `7732801` |
 | Deterministic replay | Exclusive Valkey Stream cursors page retained history oldest-first without boundary duplicates |
@@ -97,7 +101,7 @@ component can run without a paid API key.
 | Agent trajectory evaluation | Reasoning-free observable traces, exact candidate/evidence/claim bindings, capability-policy checks, joined adjudicated quality, chronological drift, and content-addressed release thresholds |
 | Agent governance | Stable proposal scopes, short-lived actor-identified approvals, immutable revocations, trusted Ed25519 signatures, a PostgreSQL append-only hash chain, default-deny checks, and zero-execution proof |
 | Free-tier deployment | Resource-capped ARM Compose overlay, loopback-only internal ports, pinned Caddy HTTPS edge, cost guardrails, validation, backup, and rollback runbook |
-| Operational evidence | Declared-commit health, verified public TLS, bounded resource capture, restart/backup/restore drill bindings, and conservative 30-day sampled reports |
+| Operational evidence | Declared-commit health, strict source-freshness probes, verified public TLS, bounded resource capture, drill bindings, and conservative 30-day sampled reports |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI |
 | Supply-chain hygiene | Read-only workflow permissions, commit-pinned Actions, weekly dependency updates |
@@ -112,7 +116,9 @@ flowchart TB
         ADAPTERS["Failure-isolated adapters"]:::pulse
         VAULT["SHA-256 raw vault"]:::trust
         BUS["Valkey pulse stream"]:::trust
+        HEARTBEAT["Atomic poll ledger"]:::freshness
         FEEDS --> ADAPTERS --> VAULT --> BUS
+        ADAPTERS --> HEARTBEAT
     end
 
     subgraph CONSTELLATION["⌖ 02 · EVIDENCE CONSTELLATION"]
@@ -159,10 +165,11 @@ flowchart TB
     subgraph BEACON["◎ 06 · OPERATIONS BEACON"]
         direction LR
         PUBLIC["Verified HTTPS · exact commit"]:::beacon
+        FRESH["Poll heartbeat · source age"]:::freshness
         SAMPLES["Probe + resource samples"]:::beacon
         DRILLS["Restart · backup · restore"]:::drill
         CAMPAIGN["30-day sampled report"]:::campaign
-        PUBLIC --> SAMPLES --> CAMPAIGN
+        PUBLIC --> FRESH --> SAMPLES --> CAMPAIGN
         DRILLS --> CAMPAIGN
     end
 
@@ -174,6 +181,7 @@ flowchart TB
     PACK --> PREFLIGHT
     RELEASE --> PREFLIGHT
     BUS --> API
+    HEARTBEAT --> API
     POSTGIS --> API
     GRAPH --> API
     SEARCH --> API
@@ -197,6 +205,7 @@ flowchart TB
     classDef audit fill:#0b2f2f,stroke:#2dd4bf,color:#ccfbf1,stroke-width:1.5px
     classDef surface fill:#172554,stroke:#60a5fa,color:#dbeafe,stroke-width:1.5px
     classDef beacon fill:#0b2f36,stroke:#22d3ee,color:#cffafe,stroke-width:1.5px
+    classDef freshness fill:#092f35,stroke:#5eead4,color:#ccfbf1,stroke-width:2.5px
     classDef drill fill:#30260f,stroke:#fbbf24,color:#fef3c7,stroke-width:1.5px
     classDef campaign fill:#123129,stroke:#34d399,color:#d1fae5,stroke-width:2.5px
     classDef future fill:#171b24,stroke:#94a3b8,color:#cbd5e1,stroke-width:1.5px,stroke-dasharray:6 4
@@ -213,9 +222,9 @@ Solid paths are operational tooling today; they do not imply that a live candida
 review has occurred. The observatory contains isolated local evaluation workflows, not production
 inference services. Dashed paths are deliberate authority boundaries. The red airlock stays closed:
 even a passing trajectory assessment and a valid signed human approval cannot satisfy the separate
-execution-release gate in v0.9. The operations beacon is also evidence-only: it verifies the
-public boundary and binds operator-run drills, but it cannot restart services, move backups,
-restore data, grant approval, or enable an agent.
+execution-release gate in v0.10. The operations beacon is also evidence-only: it samples the
+poll heartbeat and upstream age, verifies the public boundary, and binds operator-run drills, but
+it cannot restart services, move backups, restore data, grant approval, or enable an agent.
 
 Each source is at-least-once and failure-isolated: a slow or unavailable source cannot stop the
 other pollers. Identical semantic content is idempotent for the configured seven-day dedupe
@@ -263,6 +272,7 @@ projection, and indexing cycles, open the command center at
 ```bash
 curl -s http://localhost:8000/healthz
 curl -s http://localhost:8000/readyz
+curl -s http://localhost:8000/v1/source-freshness
 curl -s 'http://localhost:8000/v1/events?limit=5'
 curl -s 'http://localhost:8000/v1/events/replay?limit=5'
 curl -s 'http://localhost:8000/v1/signals?limit=5&active_only=true'
@@ -655,7 +665,9 @@ expiry/revocation, Ed25519 trust anchors, and database-enforced append-only ledg
 trajectory evidence, longitudinal drift, content-addressed thresholds, and the still-closed
 execution boundary, and
 [ADR 0026](docs/adr/0026-content-addressed-operational-evidence.md) for exact-deployment identity,
-bounded public/resource observations, drill bindings, and conservative campaign semantics.
+bounded public/resource observations, drill bindings, and conservative campaign semantics, and
+[ADR 0027](docs/adr/0027-explicit-source-poll-freshness.md) for atomic poll transitions, upstream
+timestamp provenance, independent heartbeat/data-age states, and the 30-day freshness gate.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -681,7 +693,7 @@ credential solely for transaction metering.
 | Grounded-answer evaluation | Pydantic, Qwen3 1.7B Q8 GGUF, llama.cpp, dual protected CSV review, per-field agreement, human adjudication | Apache-2.0/open source/local; no inference or judge API |
 | Agent governance | Versioned policy checks, canonical JSON, Ed25519 via `cryptography`, PostgreSQL ledger | Open source/local; no model or agent framework |
 | Trajectory release evidence | Strict Pydantic artifacts, observable metadata, deterministic metrics and drift | Open source/local; no telemetry or judge service |
-| Operational evidence | Strict Pydantic artifacts, verified TLS, Docker Compose state/stats, host `/proc` and filesystem metrics | Open source/local; no monitoring SaaS |
+| Operational evidence | Strict Pydantic artifacts, Valkey poll state, verified TLS, Docker Compose state/stats, host `/proc` and filesystem metrics | Open source/local; no monitoring SaaS |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
 | Static serving | Caddy | Open source |
@@ -706,9 +718,9 @@ credential solely for transaction metering.
    policy change.
 4. Deploy one reviewed exact commit through the resource-capped free-tier HTTPS slice, schedule the
    checked-in probe and resource collectors, then accumulate at least 30 consecutive aligned UTC
-   sample dates plus real restart, encrypted off-host backup, and isolated restore evidence.
-   Publish only the measurements actually observed; event visibility is not source-poll freshness
-   or an SLA.
+   sample dates with passing poll-heartbeat and upstream-age checks for every required source, plus
+   real restart, encrypted off-host backup, and isolated restore evidence. Publish only the
+   measurements actually observed; sampled freshness is not an SLA or completeness guarantee.
 5. Run at least three fresh grounded-answer/trajectory captures through independent review and the
    pinned release policy. Only after real evidence is eligible and an exact-scope approval exists,
    design a separately authenticated canary execution, kill switch, and rollback boundary; do not

@@ -74,7 +74,11 @@ Set at least these values in `.env`:
 ```dotenv
 ATLAS_ENVIRONMENT=free-tier-public
 ATLAS_BUILD_COMMIT_SHA=REPLACE_WITH_THE_FULL_40_CHARACTER_REVIEWED_COMMIT
-ATLAS_SOURCE_USER_AGENT=AtlasPulse/0.9 (+https://github.com/Thivas12/atlas-pulse)
+ATLAS_SOURCE_USER_AGENT=AtlasPulse/0.10 (+https://github.com/Thivas12/atlas-pulse)
+ATLAS_SOURCE_POLL_STALE_MULTIPLIER=3
+ATLAS_USGS_SOURCE_STALE_SECONDS=600
+ATLAS_NWS_SOURCE_STALE_SECONDS=900
+ATLAS_GDELT_SOURCE_STALE_SECONDS=3600
 ATLAS_PUBLIC_HOST=atlas.YOUR_PUBLIC_IP_WITH_DASHES.sslip.io
 ```
 
@@ -88,8 +92,10 @@ before Caddy can obtain a certificate. Caddy documents that
 [automatic HTTPS](https://caddyserver.com/docs/automatic-https) provisions and renews certificates
 and redirects HTTP to HTTPS.
 
-Leave FIRMS disabled or add only a free FIRMS MAP_KEY. Leave the release-assessment setting unset
-for the default-deny deployment. Do not put private approval keys on this public host.
+Leave FIRMS disabled or add only a free FIRMS MAP_KEY. If enabled, retain the documented
+`ATLAS_FIRMS_SOURCE_STALE_SECONDS=129600` bound unless a reviewed operating policy replaces it.
+Leave the release-assessment setting unset for the default-deny deployment. Do not put private
+approval keys on this public host.
 
 ## 3. Validate and start
 
@@ -109,6 +115,8 @@ Verify the public edge and the closed agent boundary:
 export ATLAS_PUBLIC_HOST='atlas.YOUR_PUBLIC_IP_WITH_DASHES.sslip.io'
 curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/" | grep '<title>AtlasPulse'
 curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/api/readyz"
+curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/api/v1/source-freshness" \
+  | jq '{passed, sources: [.items[] | {source, poll_status, source_data_status, source_age_seconds}]}'
 curl --fail --silent --show-error \
   "https://$ATLAS_PUBLIC_HOST/api/v1/agent-runs/preflight?q=earthquake" \
   | jq '{status: .manifest.status,

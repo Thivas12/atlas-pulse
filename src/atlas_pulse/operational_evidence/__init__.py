@@ -38,6 +38,7 @@ from atlas_pulse.operational_evidence.campaign import (
     EvidenceReference,
     OperationalEvidenceReport,
     OperationalRequirement,
+    SourceFreshnessSummary,
     SourceVisibilitySummary,
     evaluate_operational_campaign,
 )
@@ -80,6 +81,7 @@ __all__ = [
     "RestoreDrillEvidence",
     "RestoreDrillSubmission",
     "ServiceResourceObservation",
+    "SourceFreshnessSummary",
     "SourceVisibilityObservation",
     "SourceVisibilitySummary",
     "build_backup_evidence",

@@ -72,19 +72,38 @@ def render_operational_report(
     lines.extend(
         [
             "",
+            "## Source poll and upstream freshness",
+            "",
+            "| Source | Passing samples | Longest streak | Poll healthy | Upstream current | "
+            "Max failures | p95 poll-success age (s) | p95 source age (s) |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for freshness in report.source_freshness:
+        lines.append(
+            f"| {freshness.source} | {freshness.passing_observation_count}/"
+            f"{freshness.observation_count} | {freshness.longest_passing_streak_days} day(s) | "
+            f"{freshness.poll_healthy_count} | {freshness.source_current_count} | "
+            f"{freshness.maximum_consecutive_failures} | "
+            f"{_display_seconds(freshness.p95_last_success_age_seconds)} | "
+            f"{_display_seconds(freshness.p95_source_age_seconds)} |"
+        )
+    lines.extend(
+        [
+            "",
             "## Bounded event visibility",
             "",
             "| Source | Visible probes | Event observations | p95 age (s) | Maximum age (s) | Clock skew |",
             "| --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
-    for source in report.source_visibility:
+    for visibility in report.source_visibility:
         lines.append(
-            f"| {source.source} | {source.visible_probe_count}/{source.probe_count} | "
-            f"{source.event_observation_count} | "
-            f"{_display_seconds(source.p95_visibility_age_seconds)} | "
-            f"{_display_seconds(source.maximum_visibility_age_seconds)} | "
-            f"{source.future_clock_skew_count} |"
+            f"| {visibility.source} | {visibility.visible_probe_count}/"
+            f"{visibility.probe_count} | {visibility.event_observation_count} | "
+            f"{_display_seconds(visibility.p95_visibility_age_seconds)} | "
+            f"{_display_seconds(visibility.maximum_visibility_age_seconds)} | "
+            f"{visibility.future_clock_skew_count} |"
         )
     lines.extend(
         [

@@ -118,7 +118,7 @@ class USGSFeed(BaseModel):
 class USGSClient(RetryingHttpClient):
     """Bounded, retrying asynchronous client for the public USGS feed."""
 
-    source_name = "usgs"
+    source_name: Literal["usgs"] = "usgs"
     snapshot_extension = "geojson"
 
     def __init__(
@@ -127,7 +127,7 @@ class USGSClient(RetryingHttpClient):
         feed_url: str,
         timeout_seconds: float,
         max_attempts: int,
-        user_agent: str = "AtlasPulse/0.9 (+https://github.com/Thivas12/atlas-pulse)",
+        user_agent: str = "AtlasPulse/0.10 (+https://github.com/Thivas12/atlas-pulse)",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         super().__init__(
@@ -146,4 +146,5 @@ class USGSClient(RetryingHttpClient):
         return NormalizedBatch(
             generated_at=datetime.fromtimestamp(feed.metadata.generated / 1000, tz=UTC),
             events=feed.to_events(ingested_at=ingested_at),
+            timestamp_basis="source_metadata",
         )

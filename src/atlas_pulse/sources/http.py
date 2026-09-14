@@ -9,11 +9,21 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 from atlas_pulse.sources.base import FetchedDocument
 
 
-class RetryableSourceError(RuntimeError):
+class SourceFetchError(RuntimeError):
+    """Credential-safe source failure with the number of actual transport attempts."""
+
+    def __init__(self, message: str, *, attempt_count: int) -> None:
+        super().__init__(message)
+        if attempt_count < 1:
+            raise ValueError("source fetch attempt count must be positive")
+        self.attempt_count = attempt_count
+
+
+class RetryableSourceError(SourceFetchError):
     """A transient source failure that may succeed on another attempt."""
 
 
-class PermanentSourceError(RuntimeError):
+class PermanentSourceError(SourceFetchError):
     """A non-retryable source response reported without leaking its request URL."""
 
 
@@ -56,6 +66,7 @@ class RetryingHttpClient:
             reraise=True,
         )
         async for attempt in retrying:
+            attempt_number = attempt.retry_state.attempt_number
             with attempt:
                 try:
                     async with self._client.stream(
@@ -64,12 +75,14 @@ class RetryingHttpClient:
                         if response.status_code == 429 or response.status_code >= 500:
                             raise RetryableSourceError(
                                 f"{self._source_name} returned retryable HTTP "
-                                f"{response.status_code}"
+                                f"{response.status_code}",
+                                attempt_count=attempt_number,
                             )
                         if not 200 <= response.status_code < 300:
                             raise PermanentSourceError(
                                 f"{self._source_name} returned permanent HTTP "
-                                f"{response.status_code}"
+                                f"{response.status_code}",
+                                attempt_count=attempt_number,
                             )
                         raw = bytearray()
                         async for chunk in response.aiter_bytes():
@@ -78,20 +91,23 @@ class RetryingHttpClient:
                                 and len(raw) + len(chunk) > self._max_response_bytes
                             ):
                                 raise PermanentSourceError(
-                                    f"{self._source_name} response exceeded the configured byte limit"
+                                    f"{self._source_name} response exceeded the configured byte limit",
+                                    attempt_count=attempt_number,
                                 )
                             raw.extend(chunk)
                         source_url = self._public_source_url or str(response.url)
                         content_type = response.headers.get("content-type")
                 except httpx.TransportError as error:
                     raise RetryableSourceError(
-                        f"{self._source_name} transport failed ({type(error).__name__})"
+                        f"{self._source_name} transport failed ({type(error).__name__})",
+                        attempt_count=attempt_number,
                     ) from None
                 return FetchedDocument(
                     raw=bytes(raw),
                     fetched_at=datetime.now(UTC),
                     source_url=source_url,
                     content_type=content_type,
+                    transport_attempts=attempt_number,
                 )
         raise AssertionError("retry loop completed without a response")  # pragma: no cover
 

@@ -14,11 +14,12 @@ from pydantic import Field, field_validator, model_validator
 from atlas_pulse.evaluation.base import StrictModel
 from atlas_pulse.evaluation.metrics import canonical_sha256
 from atlas_pulse.projections.base import SourceName
+from atlas_pulse.source_polling import SourceFreshnessItem
 
-OPERATIONAL_EVIDENCE_SCHEMA_VERSION = "1.0.0"
+OPERATIONAL_EVIDENCE_SCHEMA_VERSION = "1.1.0"
 OPERATIONAL_EVIDENCE_IDENTITY_ALGORITHM = "sha256-canonical-json-v1"
 DEPLOYMENT_TARGET_RULE_VERSION = "public-deployment-target-v1"
-OPERATIONAL_OBSERVATION_RULE_VERSION = "operational-observation-v1"
+OPERATIONAL_OBSERVATION_RULE_VERSION = "operational-observation-v2"
 
 DEPLOYMENT_TARGET_CAVEATS = (
     "The target identifies one exact public origin, reviewed commit, and deployment profile; it "
@@ -33,8 +34,10 @@ PROBE_CAVEATS = (
     "or an independent availability monitor.",
     "The exact revision check matches operator-supplied image metadata reported by the API; it is "
     "not an independent software-supply-chain attestation.",
-    "Source visibility is derived from the bounded public event response. An absent source may "
-    "mean that no qualifying event was visible; it is not by itself proof of source failure.",
+    "Source-poll freshness is worker-written state evaluated with the API host clock. It is not "
+    "an independent monitor, upstream completeness proof, or availability SLA.",
+    "Event visibility remains a separate bounded publication observation; unchanged source "
+    "responses may be deduplicated without making the poll heartbeat stale.",
     "Response bodies are represented by SHA-256 plus minimal typed observations; source text and "
     "agent evidence are not copied into the operational artifact.",
     "The probe verifies the public default-deny boundary and never invokes a model, agent, tool, "
@@ -56,7 +59,7 @@ BACKUP_CAVEATS = (
     "successfully binds the same backup digest.",
 )
 
-ProbeName = Literal["health", "readiness", "events", "agent_preflight"]
+ProbeName = Literal["health", "readiness", "source_freshness", "events", "agent_preflight"]
 ProbeFailureCode = Literal[
     "dns_or_connect_error",
     "tls_error",
@@ -82,6 +85,7 @@ RestoreCheckName = Literal[
 PROBE_PATHS: dict[ProbeName, str] = {
     "health": "/api/healthz",
     "readiness": "/api/readyz",
+    "source_freshness": "/api/v1/source-freshness",
     "events": "/api/v1/events?limit=500",
     "agent_preflight": "/api/v1/agent-runs/preflight?q=operational%20boundary",
 }
@@ -158,7 +162,7 @@ def _validate_identity(
 class DeploymentTarget(StrictModel):
     """One immutable public deployment scope monitored by an evidence campaign."""
 
-    schema_version: Literal["1.0.0"] = "1.0.0"
+    schema_version: Literal["1.1.0"] = "1.1.0"
     rule_version: Literal["public-deployment-target-v1"] = "public-deployment-target-v1"
     identity_algorithm: Literal["sha256-canonical-json-v1"] = "sha256-canonical-json-v1"
     target_id: str = Field(pattern=r"^deployment-target-[0-9a-f]{20}$")
@@ -397,8 +401,8 @@ class DeploymentProbeEvidence(StrictModel):
     """One content-addressed public HTTPS and closed-boundary observation."""
 
     kind: Literal["deployment_probe"] = "deployment_probe"
-    schema_version: Literal["1.0.0"] = "1.0.0"
-    rule_version: Literal["operational-observation-v1"] = "operational-observation-v1"
+    schema_version: Literal["1.1.0"] = "1.1.0"
+    rule_version: Literal["operational-observation-v2"] = "operational-observation-v2"
     identity_algorithm: Literal["sha256-canonical-json-v1"] = "sha256-canonical-json-v1"
     evidence_id: str = Field(pattern=r"^deployment-probe-[0-9a-f]{20}$")
     evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -409,11 +413,13 @@ class DeploymentProbeEvidence(StrictModel):
     observed_version: str | None = Field(default=None, max_length=32)
     expected_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     observed_commit_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
-    endpoints: tuple[EndpointObservation, ...] = Field(min_length=4, max_length=4)
+    endpoints: tuple[EndpointObservation, ...] = Field(min_length=5, max_length=5)
     certificate: CertificateObservation
     events_returned: int = Field(ge=0, le=500)
     events_truncated: bool
     source_visibility: tuple[SourceVisibilityObservation, ...]
+    source_freshness_generated_at: datetime | None = None
+    source_freshness: tuple[SourceFreshnessItem, ...]
     execution_boundary: ExecutionBoundaryObservation
     passed: bool
     execution_enabled: Literal[False] = False
@@ -436,6 +442,41 @@ class DeploymentProbeEvidence(StrictModel):
             expected_age = (observed_at - item.latest_ingested_at).total_seconds()
             if abs(item.age_seconds - expected_age) > 1e-6:
                 raise ValueError("source visibility age must match the observation time")
+        freshness_sources = tuple(item.source for item in self.source_freshness)
+        if freshness_sources != tuple(sorted(set(freshness_sources))):
+            raise ValueError("source freshness must be unique and canonically ordered")
+        if (self.source_freshness_generated_at is None) != (not self.source_freshness):
+            raise ValueError("source freshness time and observations must be present together")
+        if self.source_freshness_generated_at is not None:
+            generated_at = _require_utc(
+                self.source_freshness_generated_at,
+                "source_freshness_generated_at",
+            )
+            if abs((observed_at - generated_at).total_seconds()) > 60:
+                raise ValueError("source freshness and probe clocks must be within 60 seconds")
+            for freshness_item in self.source_freshness:
+                if freshness_item.last_success_at is not None:
+                    assert freshness_item.last_success_age_seconds is not None
+                    assert freshness_item.last_source_generated_at is not None
+                    assert freshness_item.source_age_seconds is not None
+                    if (
+                        abs(
+                            freshness_item.last_success_age_seconds
+                            - (generated_at - freshness_item.last_success_at).total_seconds()
+                        )
+                        > 1e-6
+                    ):
+                        raise ValueError("source last-success age must match freshness time")
+                    if (
+                        abs(
+                            freshness_item.source_age_seconds
+                            - (
+                                generated_at - freshness_item.last_source_generated_at
+                            ).total_seconds()
+                        )
+                        > 1e-6
+                    ):
+                        raise ValueError("source data age must match freshness time")
         expected_pass = (
             all(endpoint.passed for endpoint in self.endpoints)
             and self.certificate.passed
@@ -505,7 +546,7 @@ class ServiceResourceObservation(StrictModel):
 class ResourceSnapshotSubmission(StrictModel):
     """Protected operator/collector input before deployment identity is attached."""
 
-    schema_version: Literal["1.0.0"] = "1.0.0"
+    schema_version: Literal["1.1.0"] = "1.1.0"
     observed_at: datetime
     host: HostResourceObservation
     services: tuple[ServiceResourceObservation, ...] = Field(min_length=1, max_length=64)
@@ -523,8 +564,8 @@ class ResourceSnapshotEvidence(StrictModel):
     """Content-addressed host/container resource observation for one deployment target."""
 
     kind: Literal["resource_snapshot"] = "resource_snapshot"
-    schema_version: Literal["1.0.0"] = "1.0.0"
-    rule_version: Literal["operational-observation-v1"] = "operational-observation-v1"
+    schema_version: Literal["1.1.0"] = "1.1.0"
+    rule_version: Literal["operational-observation-v2"] = "operational-observation-v2"
     identity_algorithm: Literal["sha256-canonical-json-v1"] = "sha256-canonical-json-v1"
     evidence_id: str = Field(pattern=r"^resource-snapshot-[0-9a-f]{20}$")
     evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -602,8 +643,8 @@ class RestartRecoveryEvidence(StrictModel):
     """Recovery timing bound to exact passing/failing probes before and after a restart."""
 
     kind: Literal["restart_recovery"] = "restart_recovery"
-    schema_version: Literal["1.0.0"] = "1.0.0"
-    rule_version: Literal["operational-observation-v1"] = "operational-observation-v1"
+    schema_version: Literal["1.1.0"] = "1.1.0"
+    rule_version: Literal["operational-observation-v2"] = "operational-observation-v2"
     identity_algorithm: Literal["sha256-canonical-json-v1"] = "sha256-canonical-json-v1"
     evidence_id: str = Field(pattern=r"^restart-recovery-[0-9a-f]{20}$")
     evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -697,8 +738,8 @@ class BackupEvidence(StrictModel):
     """Digest and bounded metadata for one PostgreSQL custom-format backup file."""
 
     kind: Literal["backup"] = "backup"
-    schema_version: Literal["1.0.0"] = "1.0.0"
-    rule_version: Literal["operational-observation-v1"] = "operational-observation-v1"
+    schema_version: Literal["1.1.0"] = "1.1.0"
+    rule_version: Literal["operational-observation-v2"] = "operational-observation-v2"
     identity_algorithm: Literal["sha256-canonical-json-v1"] = "sha256-canonical-json-v1"
     evidence_id: str = Field(pattern=r"^backup-evidence-[0-9a-f]{20}$")
     evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -742,7 +783,7 @@ class RestoreCheck(StrictModel):
 class RestoreDrillSubmission(StrictModel):
     """Operator-completed restore checks before exact backup/target binding."""
 
-    schema_version: Literal["1.0.0"] = "1.0.0"
+    schema_version: Literal["1.1.0"] = "1.1.0"
     environment_id: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
     started_at: datetime
     completed_at: datetime
@@ -765,8 +806,8 @@ class RestoreDrillEvidence(StrictModel):
     """Content-addressed isolated restore result bound to one exact backup digest."""
 
     kind: Literal["restore_drill"] = "restore_drill"
-    schema_version: Literal["1.0.0"] = "1.0.0"
-    rule_version: Literal["operational-observation-v1"] = "operational-observation-v1"
+    schema_version: Literal["1.1.0"] = "1.1.0"
+    rule_version: Literal["operational-observation-v2"] = "operational-observation-v2"
     identity_algorithm: Literal["sha256-canonical-json-v1"] = "sha256-canonical-json-v1"
     evidence_id: str = Field(pattern=r"^restore-drill-[0-9a-f]{20}$")
     evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

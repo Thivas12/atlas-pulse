@@ -1,6 +1,6 @@
 # Sampled operational evidence campaigns
 
-AtlasPulse v0.9 records deployment observations before making a public reliability statement. The
+AtlasPulse v0.10 records deployment observations before making a public reliability statement. The
 workflow is content-addressed, exact-commit-bound, and deliberately conservative. It does not run
 a model or agent, change an approval, restart a service, create a backup, restore data, or claim an
 SLA.
@@ -14,16 +14,17 @@ only that the checked-in v1 minimums are represented:
 2. 30 consecutive UTC dates contain a passing public probe;
 3. 30 consecutive UTC dates contain verified TLS evidence;
 4. those same 30 consecutive UTC dates contain a passing resource snapshot;
-5. every configured continuously emitting source was visible at least once;
+5. every required source passed both its worker-poll and upstream-data freshness checks on 30
+   consecutive UTC dates;
 6. one restart-recovery drill passed;
 7. one encrypted off-host backup was observed; and
 8. that same class of backup passed an isolated restore drill.
 
 The probe success rate is a rate over collected samples, not continuous availability between the
-daily observations. Public event
-ages show only what was visible in the bounded `/v1/events` response. Since unchanged source
-responses may be deduplicated, they do not prove poll freshness. Those limitations remain printed
-in every JSON and Markdown report.
+daily observations. `/v1/source-freshness` reports worker poll state separately from upstream
+source timestamp age. Public event ages still show only what was visible in the bounded
+`/v1/events` response; unchanged source responses may be deduplicated without making a successful
+poll disappear. These limitations remain printed in every JSON and Markdown report.
 
 ## Threat model and trust boundaries
 
@@ -66,28 +67,36 @@ mkdir -p artifacts/operations/evidence
 uv run atlas-pulse-operations target \
   --origin "https://$ATLAS_PUBLIC_HOST" \
   --commit-sha "$ATLAS_BUILD_COMMIT_SHA" \
-  --application-version 0.9.0 \
+  --application-version 0.10.0 \
   --environment free-tier-public \
   --deployed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --output artifacts/operations/target.json
 ```
 
-By default, `gdelt` and `usgs` are the required visibility sources because they emit continuously.
+By default, `gdelt` and `usgs` are the required freshness sources because they emit continuously.
 NWS can legitimately have no active alert, and FIRMS is opt-in. Add a source only when the deployed
-configuration makes its continued visibility a meaningful requirement.
+configuration and reviewed source-age threshold make its continuous freshness meaningful.
 
 ## 2. Capture public and resource evidence
 
-One public probe performs only four fixed, same-origin GET requests:
+One public probe performs only five fixed, same-origin GET requests:
 
 - `/api/healthz`;
 - `/api/readyz`;
+- `/api/v1/source-freshness`;
 - `/api/v1/events?limit=500`; and
 - `/api/v1/agent-runs/preflight?q=operational%20boundary`.
 
 It follows no redirect, accepts at most 1 MiB per response, verifies the hostname and public TLS
 certificate, records response hashes rather than source text, and requires the exact eleven-check
 default-deny execution state.
+
+The freshness endpoint is parsed through the same strict public API contract. `poll_status`
+measures the latest worker attempt against the configured cadence, while `source_data_status`
+compares the last successful source timestamp against a source-specific age bound. A recent failed
+poll is `degraded`; an overdue heartbeat is `stale`; missing first-success metadata is
+`not_reported`; and negative ages fail as clock skew. Raw bodies, request URLs, credentials, and
+exception messages never enter the poll ledger.
 
 ```bash
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -166,7 +175,7 @@ the checks, create a strict submission in this canonical order:
 
 ```json
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "environment_id": "disposable-restore-01",
   "started_at": "2026-09-15T10:00:00Z",
   "completed_at": "2026-09-15T10:08:30Z",
@@ -199,8 +208,8 @@ off-host backup in the same exact-target evidence set.
 
 Evidence files discovered from a directory must end in `.evidence.json`. The report command loads
 each file with no-follow, regular-file, stable-read, and 5 MiB bounds; verifies every content ID;
-cross-validates target, probe, restart, backup, restore, time, and commit links; then recomputes all
-eight gates.
+cross-validates target, probe, per-source freshness, restart, backup, restore, time, and commit
+links; then recomputes all eight gates.
 
 ```bash
 uv run atlas-pulse-operations report \

@@ -10,6 +10,7 @@ from atlas_pulse.config import get_settings
 from atlas_pulse.logging import configure_logging
 from atlas_pulse.projections import PostgresSignalStore
 from atlas_pulse.retrieval import FastEmbedProvider, HybridSearchService, PostgresRetrievalStore
+from atlas_pulse.source_poll_store import ValkeySourcePollStore
 from atlas_pulse.streams import ValkeyEventBus
 from atlas_pulse.telemetry import configure_telemetry, instrument_fastapi
 
@@ -50,6 +51,11 @@ agent_run_ledger = PostgresAgentRunLedger(
     database_url=settings.database_url,
     trusted_key_ids=settings.agent_approval_trusted_key_ids,
 )
+source_poll_store = ValkeySourcePollStore(
+    url=settings.valkey_url,
+    history_stream=settings.source_poll_history_stream,
+    history_max_length=settings.source_poll_history_max_length,
+)
 agent_release_assessment = _load_agent_release_assessment()
 app = create_app(
     event_bus,
@@ -58,5 +64,7 @@ app = create_app(
     agent_run_ledger,
     agent_release_assessment,
     build_commit_sha=settings.build_commit_sha,
+    source_poll_store=source_poll_store,
+    source_poll_policies=settings.source_poll_policies(),
 )
 instrument_fastapi(app)

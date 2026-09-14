@@ -7,6 +7,8 @@ from typing import Literal
 from pydantic import Field, HttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from atlas_pulse.source_polling import SourcePollPolicy
+
 
 class Settings(BaseSettings):
     """Runtime settings with safe local-development defaults."""
@@ -25,8 +27,10 @@ class Settings(BaseSettings):
         "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson"
     )
     usgs_poll_seconds: float = Field(default=60.0, gt=0)
+    usgs_source_stale_seconds: float = Field(default=600.0, gt=0)
     nws_alerts_url: HttpUrl = HttpUrl("https://api.weather.gov/alerts/active?status=actual")
     nws_poll_seconds: float = Field(default=120.0, gt=0)
+    nws_source_stale_seconds: float = Field(default=900.0, gt=0)
     firms_enabled: bool = False
     firms_api_base_url: HttpUrl = HttpUrl("https://firms.modaps.eosdis.nasa.gov/api/area/csv")
     firms_map_key: SecretStr | None = None
@@ -38,10 +42,12 @@ class Settings(BaseSettings):
     firms_area: str = "world"
     firms_day_range: int = Field(default=1, ge=1, le=5)
     firms_poll_seconds: float = Field(default=900.0, ge=300)
+    firms_source_stale_seconds: float = Field(default=129_600.0, gt=0)
     firms_active_window_hours: int = Field(default=24, ge=1, le=120)
     gdelt_enabled: bool = True
     gdelt_last_update_url: HttpUrl = HttpUrl("https://data.gdeltproject.org/gdeltv2/lastupdate.txt")
     gdelt_poll_seconds: float = Field(default=900.0, ge=300)
+    gdelt_source_stale_seconds: float = Field(default=3_600.0, gt=0)
     gdelt_active_window_hours: int = Field(default=24, ge=1, le=168)
     gdelt_only_root_events: bool = True
     gdelt_minimum_geo_precision: int = Field(default=3, ge=1, le=5)
@@ -51,11 +57,14 @@ class Settings(BaseSettings):
     gdelt_max_rows: int = Field(default=100_000, ge=1, le=1_000_000)
     gdelt_max_events: int = Field(default=5_000, ge=1, le=100_000)
     source_user_agent: str = Field(
-        default="AtlasPulse/0.9 (+https://github.com/Thivas12/atlas-pulse)",
+        default="AtlasPulse/0.10 (+https://github.com/Thivas12/atlas-pulse)",
         min_length=10,
     )
     source_timeout_seconds: float = Field(default=15.0, gt=0)
     source_max_attempts: int = Field(default=3, ge=1, le=10)
+    source_poll_stale_multiplier: float = Field(default=3.0, gt=1, le=10)
+    source_poll_history_stream: str = Field(default="{atlas}:source-polls", min_length=1)
+    source_poll_history_max_length: int = Field(default=50_000, ge=100)
     raw_data_dir: Path = Path("data/raw")
     valkey_url: str = "valkey://localhost:6379/0"
     event_stream: str = "{atlas}:events"
@@ -119,7 +128,52 @@ class Settings(BaseSettings):
             )
         if self.gdelt_max_events > self.gdelt_max_rows:
             raise ValueError("ATLAS_GDELT_MAX_EVENTS must not exceed ATLAS_GDELT_MAX_ROWS")
+        self.source_poll_policies()
         return self
+
+    def source_poll_policies(self) -> tuple[SourcePollPolicy, ...]:
+        """Return canonical freshness policies for exactly the enabled pollers."""
+        policies = [
+            SourcePollPolicy(
+                source="usgs",
+                interval_seconds=self.usgs_poll_seconds,
+                poll_stale_after_seconds=(
+                    self.usgs_poll_seconds * self.source_poll_stale_multiplier
+                ),
+                source_stale_after_seconds=self.usgs_source_stale_seconds,
+            ),
+            SourcePollPolicy(
+                source="nws",
+                interval_seconds=self.nws_poll_seconds,
+                poll_stale_after_seconds=(
+                    self.nws_poll_seconds * self.source_poll_stale_multiplier
+                ),
+                source_stale_after_seconds=self.nws_source_stale_seconds,
+            ),
+        ]
+        if self.firms_enabled:
+            policies.append(
+                SourcePollPolicy(
+                    source="firms",
+                    interval_seconds=self.firms_poll_seconds,
+                    poll_stale_after_seconds=(
+                        self.firms_poll_seconds * self.source_poll_stale_multiplier
+                    ),
+                    source_stale_after_seconds=self.firms_source_stale_seconds,
+                )
+            )
+        if self.gdelt_enabled:
+            policies.append(
+                SourcePollPolicy(
+                    source="gdelt",
+                    interval_seconds=self.gdelt_poll_seconds,
+                    poll_stale_after_seconds=(
+                        self.gdelt_poll_seconds * self.source_poll_stale_multiplier
+                    ),
+                    source_stale_after_seconds=self.gdelt_source_stale_seconds,
+                )
+            )
+        return tuple(sorted(policies, key=lambda policy: policy.source))
 
 
 @lru_cache

@@ -190,7 +190,7 @@ class FIRMSFeed:
 class FIRMSClient(RetryingHttpClient):
     """Credential-safe client for NASA FIRMS VIIRS near-real-time detections."""
 
-    source_name = "firms"
+    source_name: Literal["firms"] = "firms"
     snapshot_extension = "csv"
 
     def __init__(
@@ -242,4 +242,8 @@ class FIRMSClient(RetryingHttpClient):
             active_window_hours=self._active_window_hours,
         )
         generated_at = max((event.occurred_at for event in events), default=ingested_at)
-        return NormalizedBatch(generated_at=generated_at, events=events)
+        return NormalizedBatch(
+            generated_at=generated_at,
+            events=events,
+            timestamp_basis="latest_record" if events else "fetch_fallback",
+        )

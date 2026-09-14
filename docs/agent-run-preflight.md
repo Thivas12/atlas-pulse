@@ -41,15 +41,16 @@ One failure cannot hide another.
 | Evidence-pack integrity | Content-addressed and bounded | Content-addressed and bounded |
 | Traceable evidence | Depends on live pack | At least one admitted item |
 | Capability scope | Read-only; network/tools/side effects off | Same restricted scope |
-| Model adapter | Not selected | Evaluated model adapter |
+| Model adapter | Pinned local candidate runner available; not released | Evaluated model adapter |
 | Live relationship benchmark | Awaiting independent adjudication | Adjudicated pass |
-| Grounded-answer evaluation | First-pass harness available; no reviewed representative pass | Evaluated pass |
+| Grounded-answer evaluation | Harness and pinned runner available; no reviewed representative pass | Evaluated pass |
 | Human release | Not granted | Explicit human approval |
 | Execution release | Disabled | Enabled |
 
 The first three checks can pass today when evidence exists. The remaining five keep the proposed
-run blocked. `agent-authorization-v1` still records the grounded-answer observation as unavailable;
-the new harness is deliberately not wired into authorization. An empty pack also adds
+run blocked. `agent-authorization-v1` still records its model and grounded-answer observations as
+unavailable; neither the evaluator nor the local candidate runner is wired into authorization. An
+empty pack also adds
 `no_traceable_evidence`.
 
 ## Inspect a preflight
@@ -85,4 +86,6 @@ rejected alternatives are recorded in
 [`ADR 0017`](adr/0017-default-deny-agent-run-preflight.md). The separate non-promoting evaluator is
 documented in the
 [grounded-answer workflow](../evals/grounded-answers/README.md) and
-[`ADR 0021`](adr/0021-gold-free-grounded-answer-evaluation.md).
+[`ADR 0021`](adr/0021-gold-free-grounded-answer-evaluation.md). The isolated local candidate is
+documented in
+[`ADR 0022`](adr/0022-pinned-local-grounded-answer-runner.md).

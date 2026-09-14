@@ -35,7 +35,58 @@ Capture fails if the API changes a requested query, filter, budget, retrieval co
 citation identity, or pack identity. A task case with no admitted evidence is retained with
 `no_traceable_evidence`; it is not silently dropped.
 
-## 2. Run one external candidate
+## 2. Run the pinned local candidate
+
+The checked-in baseline is the official Apache-2.0
+[`Qwen/Qwen3-1.7B-GGUF`](https://huggingface.co/Qwen/Qwen3-1.7B-GGUF) Q8 artifact. Its identity is
+fixed before review:
+
+| Field | Pinned value |
+| --- | --- |
+| Candidate | `qwen3-1.7b-q8-grounded-brief-v1` |
+| Repository | `Qwen/Qwen3-1.7B-GGUF` |
+| Revision | `90862c4b9d2787eaed51d12237eafdfe7c5f6077` |
+| File | `Qwen3-1.7B-Q8_0.gguf` (about 1.8 GB) |
+| File SHA-256 | `061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a` |
+| Template | `grounded-brief-qwen3-v1` |
+| Context / output budget | 8,192 / 768 tokens |
+
+Build a local `llama-server` executable using the
+[`llama.cpp` server instructions](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md),
+then provision the exact model in a network-enabled step:
+
+```bash
+mkdir -p artifacts/models/qwen3-1.7b-q8
+uv run atlas-pulse-cache-grounded-answer-model \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v1.json \
+  --output artifacts/models/qwen3-1.7b-q8
+```
+
+The cache command requests only the declared file at the exact revision and independently verifies
+its SHA-256. The inference command does not download or discover a model. Run it with the captured
+task and the local executable:
+
+```bash
+uv run atlas-pulse-run-grounded-answer \
+  --task artifacts/grounded-answer-evaluation/task.json \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v1.json \
+  --model-dir artifacts/models/qwen3-1.7b-q8 \
+  --llama-server /absolute/path/to/llama-server \
+  --output-submission artifacts/grounded-answer-evaluation/submission.qwen3.json \
+  --output-definition artifacts/grounded-answer-evaluation/candidate.qwen3.json \
+  --output-run artifacts/grounded-answer-evaluation/run.qwen3.json
+```
+
+The runner hashes the exact model and `llama-server` bytes, records the runtime version and fixed
+parameters, starts an authenticated loopback-only CPU process in llama.cpp offline mode, disables
+agent tools and thinking, counts the exact rendered prompt before generation, constrains JSON to
+case-local evidence IDs, and reimports every result through the independent evaluator contracts.
+The content-addressed run trace remains `promotion_status: blocked`.
+
+No live candidate execution or quality result is checked into this repository. Run latency and
+answer quality remain unknown until the captured task is executed on target hardware and reviewed.
+
+### Alternate external candidate format
 
 Complete every case in `submission.json`. An answered response uses consecutive atomic claims and
 task-local evidence IDs:
@@ -59,7 +110,8 @@ An abstention has no claims and uses `no_traceable_evidence`, `insufficient_evid
 reason. Record the candidate tokenizer's measured `input_tokens`, generated `output_tokens`, and
 wall-clock `latency_ms` for every case.
 
-The evaluator does not choose or run a model. Describe the exact external system separately:
+The evaluator itself still does not choose or run a model. For a different external system,
+describe its exact identity separately:
 
 ```json
 {
@@ -81,13 +133,14 @@ The evaluator does not choose or run a model. Describe the exact external system
 }
 ```
 
-Import the completed submission and create the protected review sheet:
+Import the pinned runner's completed submission and definition—or equivalent outputs from another
+fully declared candidate—and create the protected review sheet:
 
 ```bash
 uv run atlas-pulse-evaluate-grounded-answers candidate-import \
   --task artifacts/grounded-answer-evaluation/task.json \
-  --submission artifacts/grounded-answer-evaluation/submission.json \
-  --candidate-definition artifacts/grounded-answer-evaluation/candidate.json \
+  --submission artifacts/grounded-answer-evaluation/submission.qwen3.json \
+  --candidate-definition artifacts/grounded-answer-evaluation/candidate.qwen3.json \
   --output-batch artifacts/grounded-answer-evaluation/batch.json \
   --output-review-sheet artifacts/grounded-answer-evaluation/review.csv
 ```
@@ -139,5 +192,7 @@ passes, declared slices, token counts, and mean/p95 latency. These are first-pas
 measurements. A second independent review, disagreement adjudication, representative evidence,
 approved thresholds, target-hardware reproduction, and explicit human release are still required.
 
-The design and rejected alternatives are recorded in
-[`ADR 0021`](../../docs/adr/0021-gold-free-grounded-answer-evaluation.md).
+The evaluator design and rejected alternatives are recorded in
+[`ADR 0021`](../../docs/adr/0021-gold-free-grounded-answer-evaluation.md). The separate pinned
+execution boundary is recorded in
+[`ADR 0022`](../../docs/adr/0022-pinned-local-grounded-answer-runner.md).

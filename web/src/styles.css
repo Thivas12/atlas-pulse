@@ -55,7 +55,7 @@ input:focus-visible {
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-rows: auto auto auto minmax(560px, 1fr) auto;
+  grid-template-rows: auto auto auto auto minmax(560px, 1fr) auto;
 }
 
 .topbar {
@@ -142,6 +142,11 @@ input:focus-visible {
 .live-dot.error {
   background: var(--danger);
   box-shadow: 0 0 0 4px rgba(255, 94, 114, 0.1);
+}
+
+.live-dot.pending {
+  background: var(--warning);
+  box-shadow: 0 0 0 4px rgba(242, 193, 78, 0.1);
 }
 
 @keyframes breathe {
@@ -270,6 +275,235 @@ input:focus-visible {
   font-size: 8px;
   letter-spacing: 0.05em;
   text-transform: none;
+}
+
+.source-freshness-panel {
+  padding: 18px 28px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(90deg, rgba(53, 224, 161, 0.045), transparent 35%), #07101a;
+}
+
+.source-freshness-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 14px;
+}
+
+.source-freshness-eyebrow {
+  margin: 0 0 5px;
+  color: var(--pulse);
+  font:
+    500 8px "DM Mono",
+    monospace;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.source-freshness-heading h2 {
+  margin: 0;
+  color: #dce8ef;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.source-freshness-heading p:not(.source-freshness-eyebrow) {
+  margin: 4px 0 0;
+  color: #607887;
+  font-size: 10px;
+}
+
+.freshness-summary {
+  flex: 0 0 auto;
+  text-align: right;
+}
+
+.freshness-summary > span {
+  display: block;
+  color: var(--warning);
+  font:
+    500 10px "DM Mono",
+    monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.freshness-summary > span.passed {
+  color: var(--pulse);
+}
+
+.freshness-summary > span.unknown {
+  color: var(--danger);
+}
+
+.freshness-summary small {
+  display: block;
+  margin-top: 4px;
+  color: #4d6574;
+  font:
+    8px "DM Mono",
+    monospace;
+}
+
+.source-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(235px, 1fr));
+  gap: 8px;
+}
+
+.source-health-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(53, 224, 161, 0.16);
+  border-radius: 6px;
+  background: rgba(5, 11, 18, 0.74);
+}
+
+.source-health-card.attention {
+  border-color: rgba(242, 193, 78, 0.26);
+}
+
+.source-health-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line);
+}
+
+.source-health-attempt {
+  display: block;
+  max-width: 190px;
+  margin-top: 3px;
+  overflow: hidden;
+  color: #526a79;
+  font:
+    7px "DM Mono",
+    monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-health-name {
+  color: #dbe9ef;
+  font:
+    500 11px "DM Mono",
+    monospace;
+  letter-spacing: 0.08em;
+}
+
+.source-health-result {
+  padding: 3px 5px;
+  color: var(--warning);
+  border: 1px solid rgba(242, 193, 78, 0.25);
+  border-radius: 3px;
+  background: rgba(242, 193, 78, 0.07);
+  font:
+    7px "DM Mono",
+    monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.source-health-result.passed {
+  color: var(--pulse);
+  border-color: rgba(53, 224, 161, 0.25);
+  background: var(--pulse-soft);
+}
+
+.freshness-dimensions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.freshness-dimensions > div + div {
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.freshness-dimension-label,
+.freshness-threshold {
+  display: block;
+  color: #536c7b;
+  font:
+    7px "DM Mono",
+    monospace;
+}
+
+.freshness-dimension-label {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.freshness-threshold {
+  margin-top: 3px;
+  line-height: 1.45;
+}
+
+.freshness-state {
+  display: block;
+  margin-top: 5px;
+  color: var(--warning);
+  font:
+    500 12px "DM Mono",
+    monospace;
+}
+
+.freshness-state.healthy,
+.freshness-state.current {
+  color: var(--pulse);
+}
+
+.freshness-state.degraded,
+.freshness-state.stale,
+.freshness-state.clock_skew,
+.freshness-state.future_clock_skew {
+  color: var(--danger);
+}
+
+.source-health-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  color: #465f6d;
+  border-top: 1px solid var(--line);
+  font:
+    7px "DM Mono",
+    monospace;
+  line-height: 1.4;
+}
+
+.source-health-attempts {
+  text-align: right;
+}
+
+.source-freshness-caveat {
+  margin: 10px 0 0;
+  color: #405865;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.freshness-message {
+  min-height: 90px;
+  display: grid;
+  place-items: center;
+  color: #718997;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  font:
+    9px "DM Mono",
+    monospace;
+}
+
+.freshness-message.error {
+  color: #ff9aa8;
+  border-color: rgba(255, 94, 114, 0.24);
 }
 
 .command-grid {
@@ -1660,6 +1894,7 @@ footer {
 @media (max-width: 620px) {
   .topbar,
   .control-strip,
+  .source-freshness-panel,
   footer {
     padding-right: 14px;
     padding-left: 14px;
@@ -1699,6 +1934,20 @@ footer {
 
   .metric-card {
     padding: 14px;
+  }
+
+  .source-freshness-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .freshness-summary {
+    text-align: left;
+  }
+
+  .source-health-grid {
+    grid-template-columns: 1fr;
   }
 
   .replay-controls {

@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     gdelt_max_rows: int = Field(default=100_000, ge=1, le=1_000_000)
     gdelt_max_events: int = Field(default=5_000, ge=1, le=100_000)
     source_user_agent: str = Field(
-        default="AtlasPulse/0.10 (+https://github.com/Thivas12/atlas-pulse)",
+        default="AtlasPulse/0.11 (+https://github.com/Thivas12/atlas-pulse)",
         min_length=10,
     )
     source_timeout_seconds: float = Field(default=15.0, gt=0)

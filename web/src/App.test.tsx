@@ -3,7 +3,12 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { makeEnvelope, makeIncident } from "./test/fixtures";
+import {
+  makeEnvelope,
+  makeIncident,
+  makeSourceFreshnessItem,
+  makeSourceFreshnessResponse,
+} from "./test/fixtures";
 import type {
   AgentRunPreflightResponse,
   EventEnvelope,
@@ -372,6 +377,42 @@ function renderApp(ui: ReactNode) {
 }
 
 describe("AtlasPulse dashboard", () => {
+  it("does not infer source health from visible event age", async () => {
+    const liveItems = [makeEnvelope({ place: "Freshly visible event" })];
+    const freshness = makeSourceFreshnessResponse([
+      makeSourceFreshnessItem("gdelt", {
+        poll_status: "degraded",
+        last_outcome: "failed",
+        last_stage: "fetch",
+        last_failure_code: "transport_exhausted",
+        consecutive_failures: 1,
+        passed: false,
+      }),
+      makeSourceFreshnessItem("usgs"),
+    ]);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn<typeof fetch>()
+        .mockImplementation((input) =>
+          Promise.resolve(
+            String(input).includes("/source-freshness")
+              ? jsonResponse(freshness)
+              : jsonResponse(signalsResponse(liveItems)),
+          ),
+        ),
+    );
+
+    renderApp(<App />);
+
+    expect(await screen.findByText("Freshly visible event")).toBeInTheDocument();
+    expect(await screen.findByText("SOURCE ATTENTION")).toBeInTheDocument();
+    expect(screen.getByText("Visible event age")).toBeInTheDocument();
+    const gdelt = screen.getByRole("article", { name: "GDELT freshness" });
+    expect(within(gdelt).getByText("Degraded")).toBeInTheDocument();
+    expect(within(gdelt).getByText("Current")).toBeInTheDocument();
+  });
+
   it("shows live revisions then switches to an oldest-first replay", async () => {
     const user = userEvent.setup();
     const liveItems = [
@@ -388,6 +429,9 @@ describe("AtlasPulse dashboard", () => {
     ];
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const url = String(input);
+      if (url.includes("/source-freshness")) {
+        return Promise.resolve(jsonResponse(makeSourceFreshnessResponse()));
+      }
       return Promise.resolve(
         url.includes("/replay")
           ? jsonResponse({
@@ -449,7 +493,13 @@ describe("AtlasPulse dashboard", () => {
       "fetch",
       vi
         .fn<typeof fetch>()
-        .mockImplementation(() => Promise.resolve(jsonResponse(signalsResponse(liveItems)))),
+        .mockImplementation((input) =>
+          Promise.resolve(
+            String(input).includes("/source-freshness")
+              ? jsonResponse(makeSourceFreshnessResponse())
+              : jsonResponse(signalsResponse(liveItems)),
+          ),
+        ),
     );
 
     renderApp(<App />);
@@ -483,6 +533,9 @@ describe("AtlasPulse dashboard", () => {
     ];
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const url = String(input);
+      if (url.includes("/source-freshness")) {
+        return Promise.resolve(jsonResponse(makeSourceFreshnessResponse()));
+      }
       if (url.includes("/incidents")) return Promise.resolve(jsonResponse(incidentsResponse([])));
       return Promise.resolve(
         jsonResponse(signalsResponse(url.includes("bbox=") ? viewportItems : globalItems)),
@@ -509,6 +562,9 @@ describe("AtlasPulse dashboard", () => {
     const incident = makeIncident();
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const url = String(input);
+      if (url.includes("/source-freshness")) {
+        return Promise.resolve(jsonResponse(makeSourceFreshnessResponse()));
+      }
       return Promise.resolve(
         url.includes("/incidents")
           ? jsonResponse(incidentsResponse([incident]))
@@ -558,6 +614,9 @@ describe("AtlasPulse dashboard", () => {
     });
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const url = String(input);
+      if (url.includes("/source-freshness")) {
+        return Promise.resolve(jsonResponse(makeSourceFreshnessResponse()));
+      }
       if (url.includes("/agent-runs/preflight")) {
         return Promise.resolve(jsonResponse(agentRunPreflightResponse(alert)));
       }
@@ -622,7 +681,13 @@ describe("AtlasPulse dashboard", () => {
     });
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockImplementation(() => Promise.resolve(jsonResponse(signalsResponse([fire]))));
+      .mockImplementation((input) =>
+        Promise.resolve(
+          String(input).includes("/source-freshness")
+            ? jsonResponse(makeSourceFreshnessResponse())
+            : jsonResponse(signalsResponse([fire])),
+        ),
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     renderApp(<App />);
@@ -663,7 +728,13 @@ describe("AtlasPulse dashboard", () => {
     });
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockImplementation(() => Promise.resolve(jsonResponse(signalsResponse([conflict]))));
+      .mockImplementation((input) =>
+        Promise.resolve(
+          String(input).includes("/source-freshness")
+            ? jsonResponse(makeSourceFreshnessResponse())
+            : jsonResponse(signalsResponse([conflict])),
+        ),
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     renderApp(<App />);

@@ -7,12 +7,14 @@ import {
   fetchHybridSearch,
   fetchIncidentCandidates,
   fetchReplay,
+  fetchSourceFreshness,
 } from "./api";
 import { EventFeed } from "./components/EventFeed";
 import { IncidentDetail } from "./components/IncidentDetail";
 import { IncidentFeed } from "./components/IncidentFeed";
 import { ReplayControls } from "./components/ReplayControls";
 import { SearchPanel } from "./components/SearchPanel";
+import { SourceFreshnessPanel } from "./components/SourceFreshnessPanel";
 import {
   cameoRootCodeOf,
   conflictPriorityOf,
@@ -367,6 +369,11 @@ export default function App() {
     refetchInterval: 10_000,
     enabled: mode === "live",
   });
+  const sourceFreshnessQuery = useQuery({
+    queryKey: ["source-freshness"],
+    queryFn: ({ signal }) => fetchSourceFreshness(signal),
+    refetchInterval: 10_000,
+  });
   const viewportQuery = useQuery({
     queryKey: ["signals", "viewport", sourceFilter, viewport],
     queryFn: ({ signal }) =>
@@ -560,6 +567,21 @@ export default function App() {
     mode === "live"
       ? liveQuery.error || viewportQuery.error || incidentQuery.error
       : replayQuery.error;
+  const sourceState = sourceFreshnessQuery.isError
+    ? "unknown"
+    : sourceFreshnessQuery.isPending
+      ? "checking"
+      : sourceFreshnessQuery.data.passed
+        ? "current"
+        : "attention";
+  const sourceStateLabel =
+    sourceState === "unknown"
+      ? "FRESHNESS UNKNOWN"
+      : sourceState === "checking"
+        ? "CHECKING SOURCES"
+        : sourceState === "current"
+          ? "SOURCES CURRENT"
+          : "SOURCE ATTENTION";
 
   return (
     <main className="app-shell">
@@ -574,11 +596,13 @@ export default function App() {
         </a>
         <div className="mission-copy">
           <span>GLOBAL DISRUPTION INTELLIGENCE</span>
-          <small>FOUR LIVE SOURCES · HYBRID SEARCH · CORRELATED · AUDITABLE</small>
+          <small>LIVE MULTI-SOURCE · HYBRID SEARCH · CORRELATED · AUDITABLE</small>
         </div>
         <div className="system-state">
-          <span className={`live-dot ${liveQuery.isError ? "error" : ""}`} />
-          <span>{liveQuery.isError ? "SOURCE DEGRADED" : "SYSTEM LIVE"}</span>
+          <span
+            className={`live-dot ${sourceState === "unknown" ? "error" : sourceState === "checking" || sourceState === "attention" ? "pending" : ""}`}
+          />
+          <span>{sourceStateLabel}</span>
         </div>
       </header>
 
@@ -664,11 +688,17 @@ export default function App() {
           detail={`${highSeverity} weather · ${highConfidenceFires} fire · ${highPriorityConflicts} conflict`}
         />
         <Metric
-          label="Source freshness"
+          label="Visible event age"
           value={`USGS ${usgsFreshness}`}
-          detail={`NWS ${nwsFreshness} · FIRMS ${firmsFreshness} · GDELT ${gdeltFreshness}`}
+          detail={`NWS ${nwsFreshness} · FIRMS ${firmsFreshness} · GDELT ${gdeltFreshness} · bounded view`}
         />
       </section>
+
+      <SourceFreshnessPanel
+        response={sourceFreshnessQuery.data}
+        loading={sourceFreshnessQuery.isPending}
+        error={sourceFreshnessQuery.error}
+      />
 
       <section className="command-grid">
         <div className="map-panel">
@@ -814,7 +844,7 @@ export default function App() {
       </section>
 
       <footer>
-        <span>ATLASPULSE / SOURCE FRESHNESS CONTROL / v0.10.0</span>
+        <span>ATLASPULSE / OPERATIONS BEACON / v0.11.0</span>
         <span>Proposal-scoped approval · Ed25519 ledger · default deny · zero execution</span>
       </footer>
     </main>

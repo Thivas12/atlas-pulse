@@ -145,7 +145,7 @@ async def test_health_readiness_and_recent_events() -> None:
         events = await client.get("/v1/events", params={"limit": 1})
 
     assert health.status_code == 200
-    assert health.json() == {"status": "ok", "version": "0.10.0", "commit_sha": "unknown"}
+    assert health.json() == {"status": "ok", "version": "0.11.0", "commit_sha": "unknown"}
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
     assert events.status_code == 200

@@ -35,7 +35,11 @@ component can run without a paid API key.
 > now produce a content-addressed, gold-blind candidate task and protected prediction sheet.
 > Strict model/artifact/template/runtime identities bind each imported batch; paired reports expose
 > gains, regressions, abstention shifts, slices, and descriptive latency while remaining explicitly
-> blocked from production promotion. Before any generated answer or agent action is introduced,
+> blocked from production promotion. A separate CPU-only runner now executes one predeclared,
+> revision-pinned DeBERTa-v3-small ONNX candidate without access to gold: it balances both source
+> records, evaluates predicate-specific corroboration and contradiction hypotheses, abstains behind
+> fixed thresholds, hashes the exact local model bytes, and emits a content-addressed inference
+> trace. Before any generated answer or agent action is introduced,
 > `/v1/evidence-packs` now converts deployed search
 > results into deterministic, content-addressed JSON. It preserves retrieval order and provenance,
 > admits only structurally traceable citations, applies hard item and source-text character budgets,
@@ -58,7 +62,7 @@ component can run without a paid API key.
 | Spatial access | Indexed PostGIS point/polygon intersection, severity, source, time, expiry, and keyset filters |
 | Transparent correlation | Versioned cross-source rules, exact geography distance/time evidence, stable graph IDs, hard result caps, and explicit non-causal semantics |
 | Claim relationships | Stable source-field claims, conservative corroboration/contradiction rules, explicit abstention, immutable parent-edge references |
-| Relationship evaluation | Dual prediction-blind reviews, adjudicated gold, content-addressed model tasks/batches, paired regressions, abstention/slice metrics, and a closed promotion boundary |
+| Relationship evaluation | Dual prediction-blind reviews, adjudicated gold, a revision-pinned local ONNX NLI runner, paired regressions, abstention/slice metrics, and a closed promotion boundary |
 | Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable evidence tie-breaks |
 | Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, global-union campaign trajectories, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
@@ -107,7 +111,7 @@ flowchart TD
         direction TB
         RETRIEVAL_REVIEW["Longitudinal retrieval campaign"]:::review
         RELATION_REVIEW["Dual semantic review"]:::review
-        CANDIDATE["Gold-blind model sandbox"]:::sandbox
+        CANDIDATE["Pinned local NLI · gold blind"]:::sandbox
         PREFLIGHT["Default-deny preflight"]:::gate
         MANIFEST["Immutable run manifest"]:::gate
         HUMAN["Explicit human release"]:::human
@@ -266,8 +270,8 @@ trajectories.
 
 The separate [`structured-claims-v1` contract cases](evals/relationships/README.md) freeze exact
 corroboration, contradiction, and abstention behavior. They are synthetic regression cases, not a
-claim of live relationship accuracy. Capture and score the checked-in live benchmark before adding
-local NLI or LLM proposals:
+claim of live relationship accuracy. Capture and score the checked-in live benchmark before
+interpreting or promoting any local NLI or LLM proposal:
 
 ```bash
 mkdir -p artifacts/relationship-evaluation
@@ -281,8 +285,9 @@ uv run atlas-pulse-evaluate-relationships capture \
 The complete prediction-blind rubric, strict dual review, adjudication, exact reuse, deployed-rule
 score, and gold-blind candidate workflow is in
 [`evals/relationships/README.md`](evals/relationships/README.md). After adjudication, the CLI can
-export model-visible evidence without gold or deployed labels, then import an externally executed
-candidate's complete predictions into a content-addressed paired comparison. Every candidate
+export model-visible evidence without gold or deployed labels. A separate local runner can execute
+the checked-in, revision-pinned NLI candidate, emit its exact system identity and inference trace,
+then feed its complete predictions into a content-addressed paired comparison. Every candidate
 report remains blocked from promotion until representative evidence, an explicit quality/latency
 policy, regression verification, and human approval exist.
 
@@ -522,7 +527,9 @@ immutable manifests, and the zero-execution gate, and
 [ADR 0018](docs/adr/0018-content-addressed-retrieval-campaigns.md) for chronological reviewed
 campaigns, global-union scoring, and baseline-relative trajectories, and
 [ADR 0019](docs/adr/0019-gold-blind-relationship-candidate-sandbox.md) for gold-blind candidate
-tasks, immutable model identities, paired comparisons, and the closed promotion boundary.
+tasks, immutable model identities, paired comparisons, and the closed promotion boundary, and
+[ADR 0020](docs/adr/0020-pinned-local-relationship-nli-runner.md) for the separate CPU-only NLI
+runner, balanced source budgets, fixed abstention policy, and content-addressed inference trace.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -544,7 +551,7 @@ credential solely for transaction metering.
 | Sparse/vector retrieval | PostgreSQL full-text search + [pgvector](https://github.com/pgvector/pgvector) | Open source; self-hosted |
 | Retrieval evaluation | Pydantic, Python CSV, pytest, human judgments | Open source/local; no judge API |
 | Claim relationships | Versioned Python rules over source-backed fields | Open source/local; no model or API |
-| Relationship evaluation | Pydantic, Python CSV, pytest, human gold, external local candidate outputs | Open source/local; no judge API or bundled model |
+| Relationship evaluation | Pydantic, human gold, ONNX Runtime, tokenizers, DeBERTa-v3-small NLI | Apache-2.0/local CPU; no judge or inference API |
 | Agent governance | Versioned Python policy checks + canonical JSON identities | Open source/local; no model or agent framework |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
@@ -559,9 +566,9 @@ credential solely for transaction metering.
 1. Populate the first multi-capture campaign after deployment and use its globally pooled slice
    trajectories to decide whether a free local cross-encoder earns its added latency and
    complexity.
-2. Run the live claim-pair benchmark through two independent reviews and adjudication, select a
-   revision-pinned free local NLI candidate, and populate the new gold-blind paired report before
-   proposing any annotation version.
+2. Run the live claim-pair benchmark through two independent reviews and adjudication, execute the
+   checked-in revision-pinned local NLI candidate, and populate the gold-blind paired report before
+   proposing any annotation version or release threshold.
 3. Select a separate free local grounded-answer model adapter, add tokenizer-specific budgets, and
    build faithfulness/citation evaluation; keep the preflight blocked until those results justify
    a new policy version.

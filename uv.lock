@@ -188,6 +188,8 @@ dependencies = [
     { name = "geoalchemy2" },
     { name = "httpx", extra = ["socks"] },
     { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "onnxruntime" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-instrumentation-fastapi" },
@@ -197,6 +199,7 @@ dependencies = [
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "structlog" },
     { name = "tenacity" },
+    { name = "tokenizers" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "valkey" },
 ]
@@ -221,6 +224,8 @@ requires-dist = [
     { name = "geoalchemy2", specifier = ">=0.18.0,<1" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1,<1" },
     { name = "huggingface-hub", specifier = ">=1.0,<2" },
+    { name = "numpy", specifier = ">=2.3,<3" },
+    { name = "onnxruntime", specifier = ">=1.22,<2" },
     { name = "opentelemetry-api", specifier = ">=1.36.0,<2" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.36.0,<2" },
     { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.57b0,<1" },
@@ -230,6 +235,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.43,<3" },
     { name = "structlog", specifier = ">=26.1.0,<27" },
     { name = "tenacity", specifier = ">=9.1.2,<10" },
+    { name = "tokenizers", specifier = ">=0.21,<1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35.0,<1" },
     { name = "valkey", specifier = ">=6.1.0,<7" },
 ]

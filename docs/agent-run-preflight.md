@@ -43,7 +43,7 @@ One failure cannot hide another.
 | Capability scope | Read-only; network/tools/side effects off | Same restricted scope |
 | Model adapter | Pinned local candidate runner available; not released | Evaluated model adapter |
 | Live relationship benchmark | Awaiting independent adjudication | Adjudicated pass |
-| Grounded-answer evaluation | Harness and pinned runner available; no reviewed representative pass | Evaluated pass |
+| Grounded-answer evaluation | Harness, pinned runner, and dual-review adjudication tooling available; no reviewed representative pass | Evaluated pass |
 | Human release | Not granted | Explicit human approval |
 | Execution release | Disabled | Enabled |
 
@@ -88,4 +88,7 @@ documented in the
 [grounded-answer workflow](../evals/grounded-answers/README.md) and
 [`ADR 0021`](adr/0021-gold-free-grounded-answer-evaluation.md). The isolated local candidate is
 documented in
-[`ADR 0022`](adr/0022-pinned-local-grounded-answer-runner.md).
+[`ADR 0022`](adr/0022-pinned-local-grounded-answer-runner.md). Independent review and adjudication
+tooling is documented in
+[`ADR 0023`](adr/0023-grounded-answer-independent-review-adjudication.md); its artifacts remain
+descriptive and do not alter any authorization observation.

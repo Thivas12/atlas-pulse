@@ -51,9 +51,12 @@ component can run without a paid API key.
 > checked-in, revision-pinned Qwen3 1.7B Q8 candidate without review or gold access. It verifies the
 > exact GGUF and llama.cpp bytes, uses authenticated loopback-only offline inference with tools and
 > thinking disabled, constrains citations to each case, checks tokenizer context before generation,
-> and emits a content-addressed blocked trace. No live quality result is claimed, and every
-> first-pass result remains blocked from promotion. A second no-execution boundary binds an exact
-> pack into an immutable run manifest, evaluates eight explicit
+> and emits a content-addressed blocked trace. Two exact first-pass grounded-answer reviews can now
+> be compared per rubric field with observed agreement and Cohen's kappa. Only disputed rows enter
+> a candidate- and reviewer-blind sheet; agreed fields are immutable, review A/B order is swapped
+> per row, and a distinct adjudicator resolves only disputed fields. The finalized review retains
+> both review hashes and stays blocked. No live quality result is claimed. A second no-execution
+> boundary binds an exact pack into an immutable run manifest, evaluates eight explicit
 > default-deny authorization checks, reports every unmet release gate, and proves that no proposed
 > agent, generative model, agent network/tool access, answer, or side effect occurred.
 
@@ -76,7 +79,7 @@ component can run without a paid API key.
 | Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, global-union campaign trajectories, slice reports, explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
 | Agent handoff | Content-addressed evidence packs, exact retrieval provenance, hard source-text budgets, explicit exclusions, and an untrusted-data policy |
-| Grounded-answer evaluation | Gold-free live tasks, a revision-pinned local Qwen/llama.cpp runner, case-local citation schemas, tokenizer/context checks, model-blind human grading, descriptive support/citation/relevance/abstention metrics, and a closed promotion boundary |
+| Grounded-answer evaluation | Gold-free live tasks, a revision-pinned local Qwen/llama.cpp runner, case-local citation schemas, tokenizer/context checks, dual model-blind reviews, per-field agreement, disagreement-only blind adjudication, descriptive metrics, and a closed promotion boundary |
 | Agent governance | Pack-bound immutable run manifests, default-deny policy snapshots, explicit human/evaluation gates, and zero-execution proof |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels |
@@ -123,7 +126,8 @@ flowchart TD
         RELATION_REVIEW["Dual semantic review"]:::review
         CANDIDATE["Pinned relation NLI · gold blind"]:::sandbox
         ANSWER_RUNNER["Pinned Qwen brief · gold blind"]:::sandbox
-        ANSWER_REVIEW["Grounded brief review · gold free"]:::review
+        ANSWER_REVIEW["Dual grounded brief review"]:::review
+        ANSWER_ADJ["Blind field adjudication"]:::review
         PREFLIGHT["Default-deny preflight"]:::gate
         MANIFEST["Immutable run manifest"]:::gate
         HUMAN["Explicit human release"]:::human
@@ -140,8 +144,8 @@ flowchart TD
     STREAM --> INDEXER
     SEARCH --> RETRIEVAL_REVIEW --> PREFLIGHT
     CLAIMS --> RELATION_REVIEW --> CANDIDATE --> PREFLIGHT
-    PACK --> ANSWER_RUNNER --> ANSWER_REVIEW
-    ANSWER_REVIEW -.-> PREFLIGHT
+    PACK --> ANSWER_RUNNER --> ANSWER_REVIEW --> ANSWER_ADJ
+    ANSWER_ADJ -.-> PREFLIGHT
     PACK --> PREFLIGHT --> MANIFEST
     STREAM --> API
     POSTGIS --> API
@@ -173,10 +177,12 @@ flowchart TD
     linkStyle default stroke:#64748b,stroke-width:1.4px
 ```
 
-Solid paths are operational today. The violet candidate nodes are isolated local evaluation
-sandboxes, not production inference services. Dashed paths mark deliberately closed release
-connections: a first-pass grounded-answer report cannot satisfy preflight, and no specialist agent
-can run until the evaluation, model, execution, and human-release gates all pass.
+Solid paths are operational tooling today; they do not imply that a live candidate run or human
+review has occurred. The violet candidate nodes are isolated local evaluation sandboxes, not
+production inference services. Dashed paths mark deliberately closed release connections: even an
+adjudicated grounded-answer report cannot satisfy preflight without representative evidence,
+approved thresholds, target-hardware reproduction, and explicit release, and no specialist agent
+can run until every evaluation, model, execution, and human-release gate passes.
 
 Each source is at-least-once and failure-isolated: a slow or unavailable source cannot stop the
 other pollers. Identical semantic content is idempotent for the configured seven-day dedupe
@@ -458,7 +464,9 @@ approval token or a hidden agent invocation.
 
 The separate grounded-answer evaluator captures `/v1/evidence-packs` responses but does not add an
 API answer surface. Its pinned local runner revalidates exact model/runtime identities and isolates
-candidate execution from human review; every trace and report stays non-promoting. See the
+candidate execution from human review. Two independent reviews can be compared per rubric field,
+and only disputed fields can be finalized by a distinct, blinded adjudicator; every trace and
+report stays non-promoting. See the
 [grounded-answer workflow](evals/grounded-answers/README.md).
 
 Every event contains a stable source ID, an aware occurrence time, ingestion time, semantic
@@ -534,7 +542,8 @@ deterministic for retained entries rather than an indefinite event archive.
   production relationship rule.
 - Grounded-answer capture revalidates the deployed evidence-pack identity and request echo. Imports
   require task-local citations, complete token/latency measurements, and declared context limits;
-  protected review fields cannot change, and a first-pass score cannot promote a candidate.
+  protected review fields cannot change. Dual-review agreement and disagreement-only adjudication
+  remain candidate-blind, content-addressed, and unable to promote a candidate.
 - The pinned grounded-answer runner fails closed on model/runtime byte drift, prompt drift, context
   overflow, foreign citations, reasoning output, malformed JSON, or server accounting mismatch. It
   starts only its owned authenticated loopback child in llama.cpp offline mode and never receives a
@@ -584,7 +593,11 @@ and
 atomic cited answers, model-blind review, tokenizer budgets, and non-promoting first-pass metrics,
 and
 [ADR 0022](docs/adr/0022-pinned-local-grounded-answer-runner.md) for the revision-pinned Qwen GGUF,
-owned offline llama.cpp boundary, token preflight, case-local schemas, and blocked inference trace.
+owned offline llama.cpp boundary, token preflight, case-local schemas, and blocked inference trace,
+and
+[ADR 0023](docs/adr/0023-grounded-answer-independent-review-adjudication.md) for per-field
+independent-review agreement, reviewer-blind disagreement sheets, third-person adjudication, and
+the still-closed release boundary.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -607,7 +620,7 @@ credential solely for transaction metering.
 | Retrieval evaluation | Pydantic, Python CSV, pytest, human judgments | Open source/local; no judge API |
 | Claim relationships | Versioned Python rules over source-backed fields | Open source/local; no model or API |
 | Relationship evaluation | Pydantic, human gold, ONNX Runtime, tokenizers, DeBERTa-v3-small NLI | Apache-2.0/local CPU; no judge or inference API |
-| Grounded-answer evaluation | Pydantic, Qwen3 1.7B Q8 GGUF, llama.cpp, protected CSV review, human judgments | Apache-2.0/open source/local; no inference or judge API |
+| Grounded-answer evaluation | Pydantic, Qwen3 1.7B Q8 GGUF, llama.cpp, dual protected CSV review, per-field agreement, human adjudication | Apache-2.0/open source/local; no inference or judge API |
 | Agent governance | Versioned Python policy checks + canonical JSON identities | Open source/local; no model or agent framework |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
@@ -626,8 +639,9 @@ credential solely for transaction metering.
    checked-in revision-pinned local NLI candidate, and populate the gold-blind paired report before
    proposing any annotation version or release threshold.
 3. Execute the checked-in Qwen grounded-answer candidate over a fresh live gold-free task, complete
-   a first model-blind review, then add independent second review and disagreement adjudication
-   before proposing any threshold or preflight policy change.
+   two independent model-blind reviews, resolve disputed fields through the checked-in adjudication
+   workflow, and populate the final descriptive report before proposing any threshold or preflight
+   policy change.
 4. Add explicit approval identity, expiry/revocation, and an append-only signed run ledger before
    enabling evidence triage, impact assessment, or forecasting agents.
 5. Add agent trajectory scoring, drift monitoring, and a fully free deployment path.

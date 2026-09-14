@@ -16,6 +16,7 @@ from atlas_pulse.projections.base import SourceName
 from atlas_pulse.relationship_evaluation.candidates import CandidateSystemDefinition
 
 GroundedAnswerSchemaVersion = Literal["1.0.0"]
+GroundedAnswerReviewArtifactSchemaVersion = Literal["1.0.0", "1.1.0"]
 GroundedAnswerStatus = Literal["answered", "abstained"]
 GroundedAnswerAbstentionReason = Literal[
     "no_traceable_evidence",
@@ -25,8 +26,23 @@ GroundedAnswerAbstentionReason = Literal[
 SupportGrade = Annotated[int, Field(ge=0, le=3)]
 CitationGrade = Annotated[int, Field(ge=0, le=2)]
 RelevanceGrade = Annotated[int, Field(ge=0, le=2)]
+GroundedAnswerReviewDimension = Literal[
+    "support_grade",
+    "citation_quality",
+    "answer_relevance",
+    "abstention_appropriate",
+]
+GroundedAnswerReviewProcessVersion = Literal["independent-review-adjudication-v1"]
+GroundedAnswerReviewId = Annotated[str, Field(pattern=r"^grounded-review-[0-9a-f]{20}$")]
+Sha256Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 GROUNDING_RUBRIC_VERSION: Literal["grounded-brief-review-v1"] = "grounded-brief-review-v1"
+GROUNDING_REVIEW_DIMENSIONS: tuple[GroundedAnswerReviewDimension, ...] = (
+    "support_grade",
+    "citation_quality",
+    "answer_relevance",
+    "abstention_appropriate",
+)
 
 _BATCH_CAVEATS = (
     "The candidate receives only a gold-free task built from traceable evidence-pack excerpts; it never receives human review labels or rationales.",
@@ -39,6 +55,12 @@ _REVIEW_CAVEATS = (
     "One human review measures the selected candidate output only and is not independent adjudicated gold.",
     "Support, citation quality, relevance, and abstention appropriateness are human rubric judgments rather than automated truth claims.",
     "The review artifact cannot authorize a model, policy, answer endpoint, or agent execution.",
+)
+
+ADJUDICATED_GROUNDED_ANSWER_REVIEW_CAVEATS = (
+    "Two independent human reviews were compared and every disputed rubric field was resolved by a separate adjudicator.",
+    "Agreement and adjudication measure judgments over the bounded retrieved excerpts; they do not verify upstream source truth, freshness, or completeness.",
+    "The adjudicated review cannot authorize a model, policy, answer endpoint, or agent execution.",
 )
 
 
@@ -383,10 +405,76 @@ class GroundedAnswerJudgment(StrictModel):
         return self
 
 
-class ReviewedGroundedAnswerBatch(StrictModel):
-    """Content-addressed first-pass human review of one candidate batch."""
+class GroundedAnswerIndependentAdjudicationProvenance(StrictModel):
+    """Exact human-review lineage for one finalized grounded-answer judgment set."""
 
-    schema_version: GroundedAnswerSchemaVersion = "1.0.0"
+    process_version: GroundedAnswerReviewProcessVersion = "independent-review-adjudication-v1"
+    independent_reviewers: tuple[str, str]
+    independent_review_ids: tuple[GroundedAnswerReviewId, GroundedAnswerReviewId]
+    independent_review_sha256s: tuple[Sha256Digest, Sha256Digest]
+    agreement_report_id: str = Field(pattern=r"^grounded-agreement-[0-9a-f]{20}$")
+    dimension_observed_agreement: dict[GroundedAnswerReviewDimension, float] = Field(min_length=1)
+    dimension_cohen_kappa: dict[GroundedAnswerReviewDimension, float | None] = Field(min_length=1)
+    adjudicator: str = Field(min_length=2, max_length=200)
+    adjudicated_at: datetime
+    judgment_count: int = Field(ge=1)
+    adjudication_decision_count: int = Field(ge=0)
+    adjudicated_field_count: int = Field(ge=0)
+
+    @field_validator("independent_reviewers")
+    @classmethod
+    def normalize_independent_reviewers(cls, value: tuple[str, str]) -> tuple[str, str]:
+        normalized = tuple(" ".join(item.split()) for item in value)
+        if any(len(item) < 2 for item in normalized):
+            raise ValueError("independent reviewer identities require at least two characters")
+        if normalized[0].casefold() == normalized[1].casefold():
+            raise ValueError("independent review requires two different reviewer identities")
+        if normalized != tuple(sorted(normalized, key=lambda item: (item.casefold(), item))):
+            raise ValueError("independent reviewers must use canonical identity order")
+        return normalized[0], normalized[1]
+
+    @field_validator("adjudicator")
+    @classmethod
+    def normalize_adjudicator(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if len(normalized) < 2:
+            raise ValueError("adjudicator identity must contain at least two characters")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> GroundedAnswerIndependentAdjudicationProvenance:
+        if self.adjudicator.casefold() in {
+            reviewer.casefold() for reviewer in self.independent_reviewers
+        }:
+            raise ValueError("adjudicator must be independent from both reviewers")
+        if self.adjudicated_at.tzinfo is None:
+            raise ValueError("grounded-answer adjudication timestamp must be timezone-aware")
+        if len(set(self.independent_review_ids)) != 2:
+            raise ValueError("independent review IDs must be different")
+        if len(set(self.independent_review_sha256s)) != 2:
+            raise ValueError("independent review hashes must be different")
+        if set(self.dimension_observed_agreement) != set(self.dimension_cohen_kappa):
+            raise ValueError("agreement and kappa dimensions must match")
+        if any(not 0 <= value <= 1 for value in self.dimension_observed_agreement.values()):
+            raise ValueError("dimension observed agreement must be between zero and one")
+        if any(
+            value is not None and not -1 <= value <= 1
+            for value in self.dimension_cohen_kappa.values()
+        ):
+            raise ValueError("dimension Cohen kappa must be between minus one and one")
+        if (self.adjudication_decision_count == 0) != (self.adjudicated_field_count == 0):
+            raise ValueError("adjudication decision and field counts must be zero together")
+        if self.adjudicated_field_count < self.adjudication_decision_count:
+            raise ValueError("every adjudication decision must resolve at least one field")
+        if self.adjudication_decision_count > self.judgment_count:
+            raise ValueError("adjudication decisions cannot exceed reviewed judgments")
+        return self
+
+
+class ReviewedGroundedAnswerBatch(StrictModel):
+    """Content-addressed first-pass or independently adjudicated human review."""
+
+    schema_version: GroundedAnswerReviewArtifactSchemaVersion = "1.0.0"
     review_id: str = Field(pattern=r"^grounded-review-[0-9a-f]{20}$")
     review_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     task_id: str = Field(pattern=r"^grounded-task-[0-9a-f]{20}$")
@@ -398,7 +486,10 @@ class ReviewedGroundedAnswerBatch(StrictModel):
     reviewed_at: datetime
     judgment_count: int = Field(ge=1)
     judgments: tuple[GroundedAnswerJudgment, ...] = Field(min_length=1)
-    review_status: Literal["first_pass_complete"] = "first_pass_complete"
+    review_status: Literal["first_pass_complete", "independent_adjudication_complete"] = (
+        "first_pass_complete"
+    )
+    adjudication: GroundedAnswerIndependentAdjudicationProvenance | None = None
     promotion_status: Literal["blocked"] = "blocked"
     caveats: tuple[str, ...] = _REVIEW_CAVEATS
 
@@ -419,9 +510,26 @@ class ReviewedGroundedAnswerBatch(StrictModel):
         identities = [(item.case_id, item.claim_id or "") for item in self.judgments]
         if len(identities) != len(set(identities)) or identities != sorted(identities):
             raise ValueError("grounded-answer judgments must be unique and canonically ordered")
-        if self.review_status != "first_pass_complete":
-            raise ValueError("grounded-answer review must remain first-pass only")
-        if self.promotion_status != "blocked" or self.caveats != _REVIEW_CAVEATS:
+        if self.adjudication is None:
+            if self.schema_version != "1.0.0" or self.review_status != "first_pass_complete":
+                raise ValueError("unadjudicated grounded-answer reviews must remain first-pass")
+            expected_caveats = _REVIEW_CAVEATS
+        else:
+            if (
+                self.schema_version != "1.1.0"
+                or self.review_status != "independent_adjudication_complete"
+            ):
+                raise ValueError(
+                    "adjudicated grounded-answer reviews require artifact schema 1.1.0"
+                )
+            if self.reviewer != self.adjudication.adjudicator:
+                raise ValueError("final review identity must equal the adjudicator")
+            if self.reviewed_at != self.adjudication.adjudicated_at:
+                raise ValueError("final review timestamp must equal the adjudication timestamp")
+            if self.judgment_count != self.adjudication.judgment_count:
+                raise ValueError("adjudication provenance must cover every final judgment")
+            expected_caveats = ADJUDICATED_GROUNDED_ANSWER_REVIEW_CAVEATS
+        if self.promotion_status != "blocked" or self.caveats != expected_caveats:
             raise ValueError("grounded-answer review must retain its promotion boundary")
         expected_hash = grounded_answer_review_sha256(self)
         if self.review_sha256 != expected_hash:
@@ -433,6 +541,9 @@ class ReviewedGroundedAnswerBatch(StrictModel):
 
 def grounded_answer_review_sha256(review: ReviewedGroundedAnswerBatch) -> str:
     """Hash a review without its self-describing identity fields."""
-    return canonical_sha256(
-        review.model_dump(mode="json", exclude={"review_id", "review_sha256"}, exclude_none=False)
+    data = review.model_dump(
+        mode="json", exclude={"review_id", "review_sha256"}, exclude_none=False
     )
+    if data.get("adjudication") is None:
+        data.pop("adjudication", None)
+    return canonical_sha256(data)

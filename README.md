@@ -7,7 +7,7 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — longitudinal evidence quality and governed model/agent release.** Independent workers
+> **Current milestone — observable agent trajectories and governed release evidence.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
@@ -56,13 +56,19 @@ component can run without a paid API key.
 > a candidate- and reviewer-blind sheet; agreed fields are immutable, review A/B order is swapped
 > per row, and a distinct adjudicator resolves only disputed fields. The finalized review retains
 > both review hashes and stays blocked. No live quality result is claimed. A second no-execution
-> boundary binds an exact pack into an immutable run manifest, evaluates eight explicit
+> boundary binds an exact pack into an immutable run manifest, evaluates 11 explicit
 > default-deny authorization checks, reports every unmet release gate, and proves that no proposed
 > agent, generative model, agent network/tool access, answer, or side effect occurred. Preflight
 > now separates a stable proposal identity from its time-varying decision. An operator-only
 > governance CLI can record proposal-scoped approvals and revocations in a PostgreSQL-enforced
 > append-only Ed25519 hash chain. Approvals expire within 24 hours, require a configured trusted key, and can
-> clear only the human gate; execution remains hard-disabled.
+> clear only the human gate. A new offline workflow binds observable action metadata—never hidden
+> reasoning—to exact grounded-answer candidates, joins it to independent adjudication, detects
+> longitudinal drift, and evaluates a content-addressed conservative threshold policy. A passing
+> assessment means only `eligible_for_human_review`; quality, human approval, and execution remain
+> separate gates, and execution is hard-disabled. A resource-capped Compose overlay and Caddy edge
+> now provide a reproducible free-tier HTTPS deployment path without manufacturing a live-service
+> or model-quality claim.
 
 ## Why this is portfolio-grade
 
@@ -84,7 +90,9 @@ component can run without a paid API key.
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
 | Agent handoff | Content-addressed evidence packs, exact retrieval provenance, hard source-text budgets, explicit exclusions, and an untrusted-data policy |
 | Grounded-answer evaluation | Gold-free live tasks, a revision-pinned local Qwen/llama.cpp runner, case-local citation schemas, tokenizer/context checks, dual model-blind reviews, per-field agreement, disagreement-only blind adjudication, descriptive metrics, and a closed promotion boundary |
+| Agent trajectory evaluation | Reasoning-free observable traces, exact candidate/evidence/claim bindings, capability-policy checks, joined adjudicated quality, chronological drift, and content-addressed release thresholds |
 | Agent governance | Stable proposal scopes, short-lived actor-identified approvals, immutable revocations, trusted Ed25519 signatures, a PostgreSQL append-only hash chain, default-deny checks, and zero-execution proof |
+| Free-tier deployment | Resource-capped ARM Compose overlay, loopback-only internal ports, pinned Caddy HTTPS edge, cost guardrails, validation, backup, and rollback runbook |
 | Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI |
@@ -93,110 +101,100 @@ component can run without a paid API key.
 ## Architecture
 
 ```mermaid
-flowchart TD
-    subgraph SENSE["01 · SENSE / PUBLIC SIGNALS"]
+flowchart TB
+    subgraph ORBIT["◒ 01 · SIGNAL ORBIT"]
         direction LR
-        USGS["USGS · seismic"]:::source
-        NWS["NOAA · weather"]:::source
-        FIRMS["NASA · thermal"]:::source
-        GDELT["GDELT · conflict"]:::source
-        ADAPTERS["Failure-isolated adapters"]:::ingest
-        USGS --> ADAPTERS
-        NWS --> ADAPTERS
-        FIRMS --> ADAPTERS
-        GDELT --> ADAPTERS
+        FEEDS["USGS · NWS · FIRMS · GDELT"]:::signal
+        ADAPTERS["Failure-isolated adapters"]:::pulse
+        VAULT["SHA-256 raw vault"]:::trust
+        BUS["Valkey pulse stream"]:::trust
+        FEEDS --> ADAPTERS --> VAULT --> BUS
     end
 
-    subgraph TRUST["02 · TRUST / REPLAYABLE CORE"]
-        direction LR
-        RAW["SHA-256 raw vault"]:::trust --> VALIDATE["Strict validation"]:::trust
-        VALIDATE --> EVENT["Shared Event contract"]:::trust
-        EVENT --> STREAM["Valkey atomic stream"]:::trust
-    end
-
-    subgraph INTEL["03 · FUSE / EVIDENCE INTELLIGENCE"]
+    subgraph CONSTELLATION["⌖ 02 · EVIDENCE CONSTELLATION"]
         direction LR
         PROJECTOR["Restart-safe projector"]:::state --> POSTGIS["PostGIS current state"]:::state
-        POSTGIS --> GRAPH["Measured evidence graph"]:::intel
-        GRAPH --> CLAIMS["Structured claim relations"]:::intel
-        INDEXER["Independent indexer"]:::state --> SEARCHDB["FTS + pgvector"]:::state
-        SEARCHDB --> SEARCH["Hybrid evidence search"]:::intel
+        POSTGIS --> GRAPH["Measured graph + claims"]:::intel
+        INDEXER["Independent indexer"]:::state --> SEARCH["FTS + vector search"]:::intel
         SEARCH --> PACK["Bounded evidence pack"]:::intel
     end
 
-    subgraph GOVERN["04 · GOVERN / RELEASE CONTROL"]
+    subgraph OBSERVATORY["◇ 03 · PROOF OBSERVATORY"]
         direction TB
-        RETRIEVAL_REVIEW["Longitudinal retrieval campaign"]:::review
-        RELATION_REVIEW["Dual semantic review"]:::review
-        CANDIDATE["Pinned relation NLI · gold blind"]:::sandbox
-        ANSWER_RUNNER["Pinned Qwen brief · gold blind"]:::sandbox
-        ANSWER_REVIEW["Dual grounded brief review"]:::review
-        ANSWER_ADJ["Blind field adjudication"]:::review
-        PREFLIGHT["Default-deny preflight"]:::gate
+        RETRIEVAL["Longitudinal retrieval review"]:::review
+        RELATIONS["Blind relation review + pinned NLI"]:::sandbox
+        GROUNDED["Gold-free brief + blind adjudication"]:::sandbox
+        TRAJECTORY["Observable trajectory score"]:::trajectory
+        DRIFT["Chronological drift chain"]:::trajectory
+        RELEASE["Content-addressed thresholds"]:::threshold
+        GROUNDED --> TRAJECTORY --> DRIFT --> RELEASE
+        RELATIONS --> RELEASE
+    end
+
+    subgraph AIRLOCK["⊘ 04 · RELEASE AIRLOCK"]
+        direction TB
+        PREFLIGHT["11-check default-deny preflight"]:::gate
         PROPOSAL["Immutable proposal scope"]:::gate
-        MANIFEST["Immutable run manifest"]:::gate
-        HUMAN["Verified human operator"]:::human
-        APPROVAL["Scoped approval · ≤24h"]:::human
-        REVOCATION["Immutable revocation"]:::human
-        LEDGER["Ed25519 append-only ledger"]:::audit
+        MANIFEST["Blocked run manifest"]:::locked
+        OPERATOR["Verified human operator"]:::human
+        LEDGER["Signed approval + revocation ledger"]:::audit
+        PREFLIGHT --> PROPOSAL --> MANIFEST
+        OPERATOR --> LEDGER
+        PROPOSAL -.-> LEDGER
+        LEDGER -.-> PREFLIGHT
     end
 
-    subgraph SERVE["05 · SERVE / OPERATOR SURFACE"]
+    subgraph SURFACE["△ 05 · ATLAS SURFACE"]
         direction LR
-        API["FastAPI evidence surface"]:::surface --> WEB["Atlas command center"]:::surface
-        AGENTS["Specialist agents · future"]:::future
+        API["FastAPI evidence API"]:::surface --> WEB["Atlas command center"]:::surface
+        EDGE["Caddy HTTPS edge"]:::surface
+        WEB --> EDGE
+        FUTURE["Specialist agents · locked"]:::future
     end
 
-    ADAPTERS --> RAW
-    STREAM --> PROJECTOR
-    STREAM --> INDEXER
-    SEARCH --> RETRIEVAL_REVIEW --> PREFLIGHT
-    CLAIMS --> RELATION_REVIEW --> CANDIDATE --> PREFLIGHT
-    PACK --> ANSWER_RUNNER --> ANSWER_REVIEW --> ANSWER_ADJ
-    ANSWER_ADJ -.-> PREFLIGHT
-    PACK --> PREFLIGHT --> PROPOSAL --> MANIFEST
-    HUMAN --> APPROVAL
-    PROPOSAL -.-> APPROVAL --> LEDGER
-    HUMAN --> REVOCATION --> LEDGER
-    MANIFEST -.-> LEDGER
-    LEDGER -.-> PREFLIGHT
-    STREAM --> API
+    BUS --> PROJECTOR
+    BUS --> INDEXER
+    GRAPH --> RELATIONS
+    SEARCH --> RETRIEVAL
+    PACK --> GROUNDED
+    PACK --> PREFLIGHT
+    RELEASE --> PREFLIGHT
+    BUS --> API
     POSTGIS --> API
     GRAPH --> API
-    CLAIMS --> API
     SEARCH --> API
     PACK --> API
     MANIFEST --> API
-    WEB -.-> HUMAN
-    MANIFEST -.-> AGENTS
+    MANIFEST -.-> FUTURE
 
-    classDef source fill:#082f49,stroke:#38bdf8,color:#e0f2fe,stroke-width:1px
-    classDef ingest fill:#083344,stroke:#22d3ee,color:#cffafe,stroke-width:1.5px
-    classDef trust fill:#0f2f2b,stroke:#2dd4bf,color:#ccfbf1,stroke-width:1px
-    classDef state fill:#102a24,stroke:#34d399,color:#d1fae5,stroke-width:1px
-    classDef intel fill:#211a3a,stroke:#a78bfa,color:#ede9fe,stroke-width:1px
-    classDef review fill:#2d2414,stroke:#fbbf24,color:#fef3c7,stroke-width:1px
+    classDef signal fill:#082f49,stroke:#38bdf8,color:#e0f2fe,stroke-width:1.5px
+    classDef pulse fill:#083344,stroke:#22d3ee,color:#cffafe,stroke-width:2px
+    classDef trust fill:#0f2f2b,stroke:#2dd4bf,color:#ccfbf1,stroke-width:1.5px
+    classDef state fill:#102a24,stroke:#34d399,color:#d1fae5,stroke-width:1.5px
+    classDef intel fill:#211a3a,stroke:#a78bfa,color:#ede9fe,stroke-width:1.5px
+    classDef review fill:#30260f,stroke:#fbbf24,color:#fef3c7,stroke-width:1.5px
     classDef sandbox fill:#2a1838,stroke:#c084fc,color:#f3e8ff,stroke-width:1.5px
-    classDef gate fill:#3a1d24,stroke:#fb7185,color:#ffe4e6,stroke-width:1.5px
+    classDef trajectory fill:#172e3d,stroke:#67e8f9,color:#cffafe,stroke-width:1.5px
+    classDef threshold fill:#34220d,stroke:#fb923c,color:#ffedd5,stroke-width:2px
+    classDef gate fill:#351820,stroke:#fb7185,color:#ffe4e6,stroke-width:1.5px
+    classDef locked fill:#450a0a,stroke:#f43f5e,color:#ffe4e6,stroke-width:2.5px
     classDef human fill:#352a12,stroke:#facc15,color:#fef9c3,stroke-width:1.5px
     classDef audit fill:#0b2f2f,stroke:#2dd4bf,color:#ccfbf1,stroke-width:1.5px
-    classDef surface fill:#172554,stroke:#60a5fa,color:#dbeafe,stroke-width:1px
-    classDef future fill:#171b24,stroke:#94a3b8,color:#cbd5e1,stroke-width:1px,stroke-dasharray:5 4
-    style SENSE fill:#061521,stroke:#164e63,color:#bae6fd
-    style TRUST fill:#071c1b,stroke:#115e59,color:#99f6e4
-    style INTEL fill:#121126,stroke:#4c1d95,color:#ddd6fe
-    style GOVERN fill:#20151a,stroke:#881337,color:#fecdd3
-    style SERVE fill:#0d1730,stroke:#1e3a8a,color:#bfdbfe
-    linkStyle default stroke:#64748b,stroke-width:1.4px
+    classDef surface fill:#172554,stroke:#60a5fa,color:#dbeafe,stroke-width:1.5px
+    classDef future fill:#171b24,stroke:#94a3b8,color:#cbd5e1,stroke-width:1.5px,stroke-dasharray:6 4
+    style ORBIT fill:#061521,stroke:#155e75,color:#bae6fd
+    style CONSTELLATION fill:#071c1b,stroke:#166534,color:#bbf7d0
+    style OBSERVATORY fill:#171329,stroke:#6d28d9,color:#ede9fe
+    style AIRLOCK fill:#211116,stroke:#be123c,color:#fecdd3
+    style SURFACE fill:#0d1730,stroke:#1d4ed8,color:#bfdbfe
+    linkStyle default stroke:#64748b,stroke-width:1.5px
 ```
 
 Solid paths are operational tooling today; they do not imply that a live candidate run or human
-review has occurred. The violet candidate nodes are isolated local evaluation sandboxes, not
-production inference services. Dashed paths mark deliberate human or release boundaries, including
-explicit CLI recording into the ledger. Even an adjudicated grounded-answer report cannot satisfy
-preflight without representative evidence, approved thresholds, target-hardware reproduction, and
-explicit release. The signed ledger makes human intent auditable, but no specialist agent can run
-until every evaluation, model, execution, and human-release gate passes.
+review has occurred. The observatory contains isolated local evaluation workflows, not production
+inference services. Dashed paths are deliberate authority boundaries. The red airlock stays closed:
+even a passing trajectory assessment and a valid signed human approval cannot satisfy the separate
+execution-release gate in v0.8.
 
 Each source is at-least-once and failure-isolated: a slow or unavailable source cannot stop the
 other pollers. Identical semantic content is idempotent for the configured seven-day dedupe
@@ -280,6 +278,11 @@ embedding model. See
 Approval key generation, blocked-preflight recording, grant/status/revoke commands, signature
 verification, and the database immutability boundary are in
 [`docs/agent-run-ledger.md`](docs/agent-run-ledger.md).
+Observable trajectory capture, joined scoring, chronological drift, threshold assessment, and the
+assessment-to-preflight binding are in
+[`docs/agent-trajectory-release.md`](docs/agent-trajectory-release.md). The free ARM host, HTTPS,
+cost, backup, and rollback path is in
+[`docs/free-tier-deployment.md`](docs/free-tier-deployment.md).
 Live mode is served from current PostGIS state, omits expired alerts/detections, and refreshes the
 map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
 remain in the global feed without being falsely placed on the map. Replay starts
@@ -476,10 +479,11 @@ See the [evaluation boundary](docs/retrieval-evaluation.md).
 prefixes under explicit item and character budgets. `/v1/agent-runs/preflight` returns a fresh pack
 beside a stable proposal scope and a second content-addressed manifest. That manifest binds the
 pack, requested read-only capabilities, default-deny policy, optional signed-ledger approval
-observation, all eight authorization checks, and an explicit `not_started` execution state. Under
-`agent-authorization-v2`, the result is still always `blocked`: an active approval can satisfy only
-the human gate while model, benchmark, grounded-answer, and execution gates remain closed. A
-manifest is not an approval token or a hidden agent invocation.
+observation, optional content-addressed release assessment, all 11 authorization checks, and an
+explicit `not_started` execution state. Under `agent-authorization-v3`, the result is still always
+`blocked`: a validated assessment may satisfy its six measured quality checks, and an active
+approval may satisfy only the human gate, while execution release remains hard-disabled. A manifest
+is not an approval token, model-quality claim, or hidden agent invocation.
 
 The separate grounded-answer evaluator captures `/v1/evidence-packs` responses but does not add an
 API answer surface. Its pinned local runner revalidates exact model/runtime identities and isolates
@@ -568,9 +572,13 @@ deterministic for retained entries rather than an indefinite event archive.
   starts only its owned authenticated loopback child in llama.cpp offline mode and never receives a
   review or report artifact.
 - Agent preflight evaluates every policy gate even when evidence is unavailable, binds the exact
-  pack identity into its proposal and manifest, and can only return `blocked` under the v2 policy.
+  pack and release-assessment identities into its proposal and manifest, and can only return
+  `blocked` under the v3 policy.
   It never starts the proposed agent, invokes a generative agent model, grants agent network/tool
   access, generates an answer, or performs an agent side effect.
+- Trajectory imports accept only bounded observable action metadata and capability observations;
+  hidden reasoning is not part of the schema. Scores require exact independently adjudicated
+  grounded evidence, and release assessment requires a complete chronological drift chain.
 
 See [ADR 0001](docs/adr/0001-use-valkey-streams.md) for the event-bus decision,
 [ADR 0002](docs/adr/0002-snapshot-before-validation.md) for the evidence boundary, and
@@ -618,7 +626,10 @@ and
 independent-review agreement, reviewer-blind disagreement sheets, third-person adjudication, and
 the still-closed release boundary, and
 [ADR 0024](docs/adr/0024-signed-agent-approval-ledger.md) for stable approval scope, actor identity,
-expiry/revocation, Ed25519 trust anchors, and database-enforced append-only ledger semantics.
+expiry/revocation, Ed25519 trust anchors, and database-enforced append-only ledger semantics, and
+[ADR 0025](docs/adr/0025-observable-agent-trajectory-release-policy.md) for reasoning-free
+trajectory evidence, longitudinal drift, content-addressed thresholds, and the still-closed
+execution boundary.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -643,12 +654,15 @@ credential solely for transaction metering.
 | Relationship evaluation | Pydantic, human gold, ONNX Runtime, tokenizers, DeBERTa-v3-small NLI | Apache-2.0/local CPU; no judge or inference API |
 | Grounded-answer evaluation | Pydantic, Qwen3 1.7B Q8 GGUF, llama.cpp, dual protected CSV review, per-field agreement, human adjudication | Apache-2.0/open source/local; no inference or judge API |
 | Agent governance | Versioned policy checks, canonical JSON, Ed25519 via `cryptography`, PostgreSQL ledger | Open source/local; no model or agent framework |
+| Trajectory release evidence | Strict Pydantic artifacts, observable metadata, deterministic metrics and drift | Open source/local; no telemetry or judge service |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
 | Static serving | Caddy | Open source |
 | Observability | OpenTelemetry | Open source; console export by default |
 | Toolchain | uv, Ruff, mypy, pytest, Vite, Vitest, Biome | Open source |
 | Runtime | Docker Engine/Compose or Podman | Free/open-source options |
+| Public reference host | OCI Ampere A1 Always Free allocation, subject to provider eligibility and capacity | No paid fallback in the documented path |
+| Public HTTPS | Pinned Caddy edge plus user DNS or optional `sslip.io` hostname | Open source/free path; provider terms still apply |
 | CI | GitHub Actions on this public repository | Free hosted runners for public repos |
 
 ## Next milestones
@@ -663,8 +677,13 @@ credential solely for transaction metering.
    two independent model-blind reviews, resolve disputed fields through the checked-in adjudication
    workflow, and populate the final descriptive report before proposing any threshold or preflight
    policy change.
-4. Add agent trajectory scoring, drift monitoring, release-threshold policy, and a fully free
-   deployment path before enabling evidence triage, impact assessment, or forecasting agents.
+4. Deploy the resource-capped free-tier HTTPS slice, collect at least 30 days of readiness,
+   freshness, restart, certificate, resource, backup, and restore evidence, and publish only the
+   measurements actually observed.
+5. Run at least three fresh grounded-answer/trajectory captures through independent review and the
+   pinned release policy. Only after real evidence is eligible and an exact-scope approval exists,
+   design a separately authenticated canary execution, kill switch, and rollback boundary; do not
+   enable evidence triage, impact assessment, or forecasting agents beforehand.
 
 ## Data and attribution
 

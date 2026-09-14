@@ -233,6 +233,27 @@ function agentRunPreflightResponse(item: EventEnvelope): AgentRunPreflightRespon
       blocking_reason: "grounded_answer_evaluation_missing",
     },
     {
+      check_id: "agent_trajectory_evaluation",
+      status: "blocked",
+      observed: "not_supplied",
+      required: "observable_trajectory_pass",
+      blocking_reason: "agent_trajectory_evaluation_missing",
+    },
+    {
+      check_id: "trajectory_drift_monitoring",
+      status: "blocked",
+      observed: "not_supplied",
+      required: "complete_stable_drift_chain",
+      blocking_reason: "trajectory_drift_evidence_missing",
+    },
+    {
+      check_id: "release_threshold_policy",
+      status: "blocked",
+      observed: "not_supplied",
+      required: "eligible_for_human_review",
+      blocking_reason: "release_thresholds_not_met",
+    },
+    {
       check_id: "human_release",
       status: "blocked",
       observed: "not_supplied",
@@ -251,8 +272,8 @@ function agentRunPreflightResponse(item: EventEnvelope): AgentRunPreflightRespon
     evidence_pack: evidencePack,
     manifest: {
       manifest_id: `manifest-${"d".repeat(64)}`,
-      schema_version: "1.1.0",
-      rule_version: "agent-run-manifest-v2",
+      schema_version: "1.2.0",
+      rule_version: "agent-run-manifest-v3",
       identity_algorithm: "sha256-canonical-json-v1",
       proposal_id: `proposal-${"e".repeat(64)}`,
       status: "blocked",
@@ -278,16 +299,36 @@ function agentRunPreflightResponse(item: EventEnvelope): AgentRunPreflightRespon
         evidence_ids: evidencePack.items.map((evidence) => evidence.evidence_id),
       },
       policy: {
-        policy_version: "agent-authorization-v2",
+        policy_version: "agent-authorization-v3",
         default_decision: "deny",
         execution_enabled: false,
         human_release_required: true,
         evaluated_model_required: true,
         relationship_benchmark_required: true,
         grounded_answer_evaluation_required: true,
+        agent_trajectory_evaluation_required: true,
+        trajectory_drift_monitoring_required: true,
+        release_threshold_policy_required: true,
         network_access_allowed: false,
         tool_access_allowed: false,
         external_side_effects_allowed: false,
+      },
+      release: {
+        status: "not_supplied",
+        assessment_id: null,
+        assessment_sha256: null,
+        policy_id: null,
+        policy_sha256: null,
+        agent_candidate_id: null,
+        relationship_report_id: null,
+        trajectory_report_ids: [],
+        model_adapter_evaluated: false,
+        relationship_benchmark_passed: false,
+        grounded_answer_evaluation_passed: false,
+        agent_trajectory_evaluation_passed: false,
+        trajectory_drift_monitoring_passed: false,
+        release_threshold_policy_passed: false,
+        blocking_reasons: [],
       },
       approval: {
         status: "not_supplied",
@@ -304,7 +345,7 @@ function agentRunPreflightResponse(item: EventEnvelope): AgentRunPreflightRespon
       authorization: {
         decision: "blocked",
         passed_check_count: 3,
-        blocked_check_count: 5,
+        blocked_check_count: 8,
         blocking_reasons: checks.flatMap((check) =>
           check.blocking_reason === null ? [] : [check.blocking_reason],
         ),
@@ -556,7 +597,7 @@ describe("AtlasPulse dashboard", () => {
     await user.click(screen.getByRole("button", { name: "Check run policy" }));
     expect(await screen.findByText("Blocked · no execution")).toBeInTheDocument();
     expect(screen.getByText(`manifest-${"d".repeat(64)}`)).toBeInTheDocument();
-    expect(screen.getByText(/3 checks passed · 5 blocking gates/)).toBeInTheDocument();
+    expect(screen.getByText(/3 checks passed · 8 blocking gates/)).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/agent-runs/preflight?q=residents+shelter+from+violent+storm&retrieval_limit=20&candidate_limit=100&max_items=8&max_characters_per_item=2000&max_total_characters=12000&active_only=true&bbox=-10%2C-5%2C20%2C30",
       expect.any(Object),

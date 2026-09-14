@@ -136,7 +136,7 @@ async def test_health_readiness_and_recent_events() -> None:
         events = await client.get("/v1/events", params={"limit": 1})
 
     assert health.status_code == 200
-    assert health.json() == {"status": "ok", "version": "0.7.0"}
+    assert health.json() == {"status": "ok", "version": "0.8.0"}
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
     assert events.status_code == 200
@@ -770,12 +770,16 @@ async def test_agent_run_preflight_chains_pack_and_manifest_without_executing() 
     assert manifest["evidence"]["pack_id"] == pack["pack_id"]
     assert manifest["evidence"]["evidence_ids"] == [pack["items"][0]["evidence_id"]]
     assert manifest["policy"]["policy_version"] == AGENT_AUTHORIZATION_POLICY_VERSION
+    assert manifest["release"]["status"] == "not_supplied"
     assert manifest["authorization"]["passed_check_count"] == 3
-    assert manifest["authorization"]["blocked_check_count"] == 5
+    assert manifest["authorization"]["blocked_check_count"] == 8
     assert manifest["authorization"]["blocking_reasons"] == [
         "model_adapter_not_selected",
         "live_relationship_benchmark_incomplete",
         "grounded_answer_evaluation_missing",
+        "agent_trajectory_evaluation_missing",
+        "trajectory_drift_evidence_missing",
+        "release_thresholds_not_met",
         "human_release_not_granted",
         "execution_disabled",
     ]
@@ -800,7 +804,7 @@ async def test_agent_run_preflight_chains_pack_and_manifest_without_executing() 
     duplicate_check["manifest"]["authorization"]["checks"][-1] = duplicate_check["manifest"][
         "authorization"
     ]["checks"][0]
-    with pytest.raises(ValueError, match="each v2 check exactly once"):
+    with pytest.raises(ValueError, match="each v3 check exactly once"):
         AgentRunPreflightResponse.model_validate(duplicate_check)
 
     invalid_reason = copy.deepcopy(body)
@@ -888,7 +892,7 @@ async def test_agent_run_preflight_resolves_a_trusted_approval_but_stays_blocked
     assert manifest["approval"]["status"] == "active"
     assert manifest["approval"]["approver_id"] == "github:12345"
     assert manifest["authorization"]["passed_check_count"] == 4
-    assert manifest["authorization"]["blocked_check_count"] == 4
+    assert manifest["authorization"]["blocked_check_count"] == 7
     assert "human_release_not_granted" not in manifest["authorization"]["blocking_reasons"]
     assert manifest["status"] == "blocked"
     assert manifest["execution"]["status"] == "not_started"

@@ -1,0 +1,11 @@
+services:
+  api:
+    environment:
+      ATLAS_AGENT_RELEASE_ASSESSMENT_PATH: /run/atlas/release-assessment.json
+    volumes:
+      - type: bind
+        source: ${ATLAS_AGENT_RELEASE_ASSESSMENT_HOST_PATH:?set an explicit assessment file}
+        target: /run/atlas/release-assessment.json
+        read_only: true
+        bind:
+          create_host_path: false

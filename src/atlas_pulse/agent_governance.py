@@ -113,7 +113,9 @@ class AgentApprovalGrant(_ImmutableModel):
     identity_algorithm: Literal["sha256-canonical-json-v1"] = "sha256-canonical-json-v1"
     proposal_id: str = Field(pattern=r"^proposal-[0-9a-f]{64}$")
     source_manifest_id: str = Field(pattern=r"^manifest-[0-9a-f]{64}$")
-    policy_version: Literal["agent-authorization-v2"] = "agent-authorization-v2"
+    policy_version: Literal["agent-authorization-v2", "agent-authorization-v3"] = (
+        "agent-authorization-v3"
+    )
     approver: GovernanceActor
     issued_at: datetime
     expires_at: datetime

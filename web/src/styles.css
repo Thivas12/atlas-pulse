@@ -1332,6 +1332,11 @@ input:focus-visible {
   color: #6fbdb4;
 }
 
+.agent-run-release-state {
+  display: block;
+  color: #7ba7bc;
+}
+
 .agent-run-summary .blocking-reasons {
   color: #b28dc9;
 }

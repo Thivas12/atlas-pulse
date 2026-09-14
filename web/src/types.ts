@@ -367,6 +367,9 @@ const authorizationBlockReasonSchema = z.enum([
   "model_adapter_not_selected",
   "live_relationship_benchmark_incomplete",
   "grounded_answer_evaluation_missing",
+  "agent_trajectory_evaluation_missing",
+  "trajectory_drift_evidence_missing",
+  "release_thresholds_not_met",
   "human_release_not_granted",
   "human_release_not_yet_valid",
   "human_release_expired",
@@ -385,6 +388,9 @@ const authorizationCheckIdSchema = z.enum([
   "model_adapter",
   "live_relationship_benchmark",
   "grounded_answer_evaluation",
+  "agent_trajectory_evaluation",
+  "trajectory_drift_monitoring",
+  "release_threshold_policy",
   "human_release",
   "execution_release",
 ]);
@@ -392,8 +398,8 @@ const authorizationCheckIdSchema = z.enum([
 export const agentRunManifestSchema = z
   .object({
     manifest_id: z.string().regex(/^manifest-[0-9a-f]{64}$/),
-    schema_version: z.literal("1.1.0"),
-    rule_version: z.literal("agent-run-manifest-v2"),
+    schema_version: z.literal("1.2.0"),
+    rule_version: z.literal("agent-run-manifest-v3"),
     identity_algorithm: z.literal("sha256-canonical-json-v1"),
     proposal_id: z.string().regex(/^proposal-[0-9a-f]{64}$/),
     status: z.literal("blocked"),
@@ -419,16 +425,48 @@ export const agentRunManifestSchema = z
       evidence_ids: z.array(z.string().regex(/^evidence-[0-9a-f]{64}$/)),
     }),
     policy: z.object({
-      policy_version: z.literal("agent-authorization-v2"),
+      policy_version: z.literal("agent-authorization-v3"),
       default_decision: z.literal("deny"),
       execution_enabled: z.literal(false),
       human_release_required: z.literal(true),
       evaluated_model_required: z.literal(true),
       relationship_benchmark_required: z.literal(true),
       grounded_answer_evaluation_required: z.literal(true),
+      agent_trajectory_evaluation_required: z.literal(true),
+      trajectory_drift_monitoring_required: z.literal(true),
+      release_threshold_policy_required: z.literal(true),
       network_access_allowed: z.literal(false),
       tool_access_allowed: z.literal(false),
       external_side_effects_allowed: z.literal(false),
+    }),
+    release: z.object({
+      status: z.enum(["not_supplied", "blocked", "eligible_for_human_review"]),
+      assessment_id: z
+        .string()
+        .regex(/^release-assessment-[0-9a-f]{20}$/)
+        .nullable(),
+      assessment_sha256: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/)
+        .nullable(),
+      policy_id: z
+        .string()
+        .regex(/^release-policy-[0-9a-f]{20}$/)
+        .nullable(),
+      policy_sha256: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/)
+        .nullable(),
+      agent_candidate_id: z.string().min(1).nullable(),
+      relationship_report_id: z.string().min(1).nullable(),
+      trajectory_report_ids: z.array(z.string().regex(/^trajectory-report-[0-9a-f]{20}$/)),
+      model_adapter_evaluated: z.boolean(),
+      relationship_benchmark_passed: z.boolean(),
+      grounded_answer_evaluation_passed: z.boolean(),
+      agent_trajectory_evaluation_passed: z.boolean(),
+      trajectory_drift_monitoring_passed: z.boolean(),
+      release_threshold_policy_passed: z.boolean(),
+      blocking_reasons: z.array(z.string().regex(/^[a-z0-9_]+$/)),
     }),
     approval: z.object({
       status: z.enum([
@@ -483,7 +521,7 @@ export const agentRunManifestSchema = z
             blocking_reason: authorizationBlockReasonSchema.nullable(),
           }),
         )
-        .length(8),
+        .length(11),
     }),
     execution: z.object({
       status: z.literal("not_started"),
@@ -507,7 +545,7 @@ export const agentRunManifestSchema = z
       check.blocking_reason === null ? [] : [check.blocking_reason],
     );
     invariant(
-      new Set(manifest.authorization.checks.map((check) => check.check_id)).size === 8,
+      new Set(manifest.authorization.checks.map((check) => check.check_id)).size === 11,
       "authorization check IDs must be unique",
       ["authorization", "checks"],
     );
@@ -553,6 +591,64 @@ export const agentRunManifestSchema = z
         manifest.approval.approved_proposal_id === manifest.proposal_id,
         "active approval is not bound to the manifest proposal",
         ["approval", "approved_proposal_id"],
+      );
+    }
+    const releaseThreshold = manifest.authorization.checks.find(
+      (check) => check.check_id === "release_threshold_policy",
+    );
+    invariant(
+      (manifest.release.status === "eligible_for_human_review") ===
+        (releaseThreshold?.status === "passed"),
+      "release threshold check does not match release assessment",
+      ["release", "status"],
+    );
+    const releaseIdentityFields = [
+      manifest.release.assessment_id,
+      manifest.release.assessment_sha256,
+      manifest.release.policy_id,
+      manifest.release.policy_sha256,
+      manifest.release.agent_candidate_id,
+      manifest.release.relationship_report_id,
+    ];
+    const releaseFlags = [
+      manifest.release.model_adapter_evaluated,
+      manifest.release.relationship_benchmark_passed,
+      manifest.release.grounded_answer_evaluation_passed,
+      manifest.release.agent_trajectory_evaluation_passed,
+      manifest.release.trajectory_drift_monitoring_passed,
+      manifest.release.release_threshold_policy_passed,
+    ];
+    if (manifest.release.status === "not_supplied") {
+      invariant(
+        releaseIdentityFields.every((value) => value === null) &&
+          manifest.release.trajectory_report_ids.length === 0 &&
+          releaseFlags.every((value) => value === false) &&
+          manifest.release.blocking_reasons.length === 0,
+        "not_supplied release state cannot contain assessment fields",
+        ["release"],
+      );
+    } else {
+      invariant(
+        releaseIdentityFields.every((value) => value !== null) &&
+          manifest.release.trajectory_report_ids.length > 0,
+        "resolved release state requires complete assessment identity",
+        ["release"],
+      );
+    }
+    if (manifest.release.status === "eligible_for_human_review") {
+      invariant(
+        releaseFlags.every((value) => value === true) &&
+          manifest.release.blocking_reasons.length === 0,
+        "eligible release state requires every quality gate to pass",
+        ["release"],
+      );
+    }
+    if (manifest.release.status === "blocked") {
+      invariant(
+        !manifest.release.release_threshold_policy_passed &&
+          manifest.release.blocking_reasons.length > 0,
+        "blocked release state requires threshold blocking reasons",
+        ["release"],
       );
     }
     const approvalFields = [

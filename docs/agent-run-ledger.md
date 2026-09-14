@@ -35,8 +35,9 @@ does not grant it release authority.
 | `ledger_invalid` | Blocked | Identity, signature, artifact, order, or hash-chain verification failed |
 | `ledger_unavailable` | Blocked | Durable approval state could not be read |
 
-An active approval passes only `human_release`. AtlasPulse still reports `blocked` because model,
-live benchmark, grounded-answer, and execution-release gates are not satisfied. The execution state
+An active approval passes only `human_release`. AtlasPulse still reports `blocked` because quality
+gates require a separately validated relationship, grounded-answer, trajectory, drift, and release
+assessment, while execution release remains hard-disabled. The execution state
 remains `not_started` with every action flag false.
 
 ## Operator workflow

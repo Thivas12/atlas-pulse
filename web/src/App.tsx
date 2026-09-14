@@ -814,7 +814,7 @@ export default function App() {
       </section>
 
       <footer>
-        <span>ATLASPULSE / SIGNED RELEASE CONTROL / v0.7.0</span>
+        <span>ATLASPULSE / TRAJECTORY RELEASE CONTROL / v0.8.0</span>
         <span>Proposal-scoped approval · Ed25519 ledger · default deny · zero execution</span>
       </footer>
     </main>

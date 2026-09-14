@@ -148,6 +148,14 @@ def _review_rows(
     )
 
 
+def grounded_answer_review_rows(
+    task: GroundedAnswerTask,
+    batch: GroundedAnswerCandidateBatch,
+) -> tuple[dict[str, str], ...]:
+    """Return canonical reviewer-visible rows for protected downstream workflows."""
+    return tuple(_review_rows(task, batch))
+
+
 def build_grounded_answer_review_sheet(
     task: GroundedAnswerTask,
     batch: GroundedAnswerCandidateBatch,
@@ -235,6 +243,9 @@ def apply_grounded_answer_review(
     timestamp = reviewed_at or datetime.now(UTC)
     if timestamp.tzinfo is None:
         raise ValueError("grounded-answer review timestamp must be timezone-aware")
+    normalized_reviewer = " ".join(reviewer.split())
+    if len(normalized_reviewer) < 2:
+        raise ValueError("reviewer identity must contain at least two characters")
     ordered = tuple(sorted(judgments, key=lambda item: (item.case_id, item.claim_id or "")))
     draft = ReviewedGroundedAnswerBatch.model_construct(
         schema_version="1.0.0",
@@ -245,7 +256,7 @@ def apply_grounded_answer_review(
         batch_id=batch.batch_id,
         batch_sha256=batch.batch_sha256,
         rubric_version=GROUNDING_RUBRIC_VERSION,
-        reviewer=reviewer,
+        reviewer=normalized_reviewer,
         reviewed_at=timestamp,
         judgment_count=len(ordered),
         judgments=ordered,
@@ -260,7 +271,7 @@ def apply_grounded_answer_review(
         task_sha256=task.task_sha256,
         batch_id=batch.batch_id,
         batch_sha256=batch.batch_sha256,
-        reviewer=reviewer,
+        reviewer=normalized_reviewer,
         reviewed_at=timestamp,
         judgment_count=len(ordered),
         judgments=ordered,

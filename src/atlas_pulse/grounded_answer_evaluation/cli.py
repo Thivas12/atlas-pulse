@@ -11,6 +11,10 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from atlas_pulse.grounded_answer_evaluation.adjudication import (
+    apply_grounded_answer_adjudication,
+    build_grounded_answer_adjudication_sheet,
+)
 from atlas_pulse.grounded_answer_evaluation.base import (
     GroundedAnswerBenchmark,
     GroundedAnswerCandidateBatch,
@@ -28,7 +32,11 @@ from atlas_pulse.grounded_answer_evaluation.judgments import (
     build_grounded_answer_review_sheet,
 )
 from atlas_pulse.grounded_answer_evaluation.metrics import score_grounded_answer_review
-from atlas_pulse.grounded_answer_evaluation.report import render_grounded_answer_markdown
+from atlas_pulse.grounded_answer_evaluation.report import (
+    render_grounded_answer_adjudication_markdown,
+    render_grounded_answer_agreement_markdown,
+    render_grounded_answer_markdown,
+)
 from atlas_pulse.relationship_evaluation.candidates import CandidateSystemDefinition
 
 
@@ -109,6 +117,59 @@ def _review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _compare_reviews(args: argparse.Namespace) -> int:
+    outputs = (args.output_json, args.output_markdown, args.output_adjudication_sheet)
+    inputs = (args.task, args.batch, args.first_review, args.second_review)
+    _ensure_writable(outputs, inputs=inputs, force=args.force)
+    task = _json_model(args.task, GroundedAnswerTask)
+    batch = _json_model(args.batch, GroundedAnswerCandidateBatch)
+    first = _json_model(args.first_review, ReviewedGroundedAnswerBatch)
+    second = _json_model(args.second_review, ReviewedGroundedAnswerBatch)
+    sheet = build_grounded_answer_adjudication_sheet(task, batch, first, second)
+    report = sheet.agreement_report
+    _write(args.output_json, report.model_dump_json(indent=2) + "\n")
+    _write(args.output_markdown, render_grounded_answer_agreement_markdown(report))
+    _write(args.output_adjudication_sheet, sheet.content)
+    print(
+        f"Compared independent reviews in {report.report_id}: "
+        f"{sheet.pending_judgment_count} disputed row(s), "
+        f"{sheet.pending_field_count} field(s); promotion remains blocked"
+    )
+    return 0
+
+
+def _adjudicate(args: argparse.Namespace) -> int:
+    outputs = (args.output_review, args.output_json, args.output_markdown)
+    inputs = (
+        args.task,
+        args.batch,
+        args.first_review,
+        args.second_review,
+        args.judgments,
+    )
+    _ensure_writable(outputs, inputs=inputs, force=args.force)
+    task = _json_model(args.task, GroundedAnswerTask)
+    batch = _json_model(args.batch, GroundedAnswerCandidateBatch)
+    first = _json_model(args.first_review, ReviewedGroundedAnswerBatch)
+    second = _json_model(args.second_review, ReviewedGroundedAnswerBatch)
+    review, report = apply_grounded_answer_adjudication(
+        task,
+        batch,
+        first,
+        second,
+        args.judgments.read_text(encoding="utf-8"),
+        adjudicator=args.adjudicator,
+    )
+    _write(args.output_review, review.model_dump_json(indent=2) + "\n")
+    _write(args.output_json, report.model_dump_json(indent=2) + "\n")
+    _write(args.output_markdown, render_grounded_answer_adjudication_markdown(report))
+    print(
+        f"Finalized blocked {review.review_id}: "
+        f"{report.adjudication_decision_count} disputed row(s) adjudicated"
+    )
+    return 0
+
+
 def _score(args: argparse.Namespace) -> int:
     outputs = (args.output_json, args.output_markdown)
     inputs = (args.task, args.batch, args.review)
@@ -159,7 +220,37 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--output-review", type=Path, required=True)
     review.add_argument("--force", action="store_true")
 
-    score = commands.add_parser("score", help="score one first-pass review without promotion")
+    compare = commands.add_parser(
+        "compare-reviews",
+        help="compare two independent reviews and emit a blind adjudication sheet",
+    )
+    compare.add_argument("--task", type=Path, required=True)
+    compare.add_argument("--batch", type=Path, required=True)
+    compare.add_argument("--first-review", type=Path, required=True)
+    compare.add_argument("--second-review", type=Path, required=True)
+    compare.add_argument("--output-json", type=Path, required=True)
+    compare.add_argument("--output-markdown", type=Path, required=True)
+    compare.add_argument("--output-adjudication-sheet", type=Path, required=True)
+    compare.add_argument("--force", action="store_true")
+
+    adjudicate = commands.add_parser(
+        "adjudicate",
+        help="finalize disputed fields through a separate human adjudicator",
+    )
+    adjudicate.add_argument("--task", type=Path, required=True)
+    adjudicate.add_argument("--batch", type=Path, required=True)
+    adjudicate.add_argument("--first-review", type=Path, required=True)
+    adjudicate.add_argument("--second-review", type=Path, required=True)
+    adjudicate.add_argument("--judgments", type=Path, required=True)
+    adjudicate.add_argument("--adjudicator", required=True)
+    adjudicate.add_argument("--output-review", type=Path, required=True)
+    adjudicate.add_argument("--output-json", type=Path, required=True)
+    adjudicate.add_argument("--output-markdown", type=Path, required=True)
+    adjudicate.add_argument("--force", action="store_true")
+
+    score = commands.add_parser(
+        "score", help="score one complete first-pass or adjudicated review without promotion"
+    )
     score.add_argument("--task", type=Path, required=True)
     score.add_argument("--batch", type=Path, required=True)
     score.add_argument("--review", type=Path, required=True)
@@ -180,6 +271,10 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             return _candidate_import(args)
         if args.command == "review":
             return _review(args)
+        if args.command == "compare-reviews":
+            return _compare_reviews(args)
+        if args.command == "adjudicate":
+            return _adjudicate(args)
         return _score(args)
     except (
         FileExistsError,

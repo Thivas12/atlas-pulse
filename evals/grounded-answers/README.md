@@ -11,9 +11,12 @@ generator and contains no reference answer, human grade, or production release s
 | Task JSON | `capture` | Questions, slices, exact evidence excerpts, hashes, citations, pack identity | Reference answers, model output, grades |
 | Submission JSON | `capture`, completed by external runner | Atomic cited claims or explicit abstentions, token counts, latency | Human judgments |
 | Candidate batch | `candidate-import` | Exact task binding and immutable candidate identity | Promotion approval |
-| Review CSV | `candidate-import`, completed by human | Model-blind claims and only their cited evidence | Candidate/model identity, preset grades |
-| Reviewed batch | `review` | Named first-pass judgments and rationales | Adjudicated gold |
-| Report JSON/Markdown | `score` | Overall, slice, case, token, and latency measurements | Release verdict |
+| Review CSV copies | `candidate-import`, completed independently by two humans | Model-blind claims and only their cited evidence | Candidate/model identity, preset grades |
+| First-pass reviews | `review` twice | Named, content-addressed judgments and rationales | Adjudicated judgment set |
+| Agreement report | `compare-reviews` | Per-field observed agreement, Cohen's kappa, exact disagreements, both review hashes | Release verdict |
+| Adjudication CSV | `compare-reviews`, completed by a third human | Disputed rows, blinded review A/B grades and rationales | Candidate/model/reviewer identity, agreed-row edits |
+| Final reviewed batch | `adjudicate` | Consensus grades, resolved disputed fields, full independent-review provenance | Promotion approval |
+| Report JSON/Markdown | `score` | Overall, slice, case, token, latency, and adjudication provenance | Release verdict |
 
 Every derived JSON artifact is content-addressed. All candidate, review, and report artifacts keep
 `promotion_status: blocked`.
@@ -148,10 +151,11 @@ uv run atlas-pulse-evaluate-grounded-answers candidate-import \
 Import rejects missing outputs, foreign citations, changed case identities, floating or malformed
 model identity, missing tokenizer identity, context overflow, and output-budget overflow.
 
-## 3. Review without model identity
+## 3. Complete two independent model-blind reviews
 
-The CSV intentionally excludes the candidate and model name. Grade only the question, candidate
-claim, and cited excerpts. Do not edit the protected columns.
+The CSV intentionally excludes candidate and model identity. Before either reviewer starts, make
+two independent copies of the untouched template. Reviewers grade only the question, candidate
+claim, and cited excerpts and must not coordinate judgments or edit protected columns.
 
 | Field | Scale | Use |
 | --- | --- | --- |
@@ -161,38 +165,90 @@ claim, and cited excerpts. Do not edit the protected columns.
 | `abstention_appropriate` | `yes` or `no` | Complete only for an abstained case |
 | `rationale` | At least ten characters | Explain every grade or abstention judgment |
 
-Import one complete first-pass review:
+Import both complete first-pass reviews with distinct human identities:
 
 ```bash
 uv run atlas-pulse-evaluate-grounded-answers review \
   --task artifacts/grounded-answer-evaluation/task.json \
   --batch artifacts/grounded-answer-evaluation/batch.json \
-  --judgments artifacts/grounded-answer-evaluation/review.csv \
-  --reviewer "Reviewer name" \
-  --output-review artifacts/grounded-answer-evaluation/reviewed.json
+  --judgments artifacts/grounded-answer-evaluation/review-a.csv \
+  --reviewer "First reviewer" \
+  --output-review artifacts/grounded-answer-evaluation/reviewed-a.json
+
+uv run atlas-pulse-evaluate-grounded-answers review \
+  --task artifacts/grounded-answer-evaluation/task.json \
+  --batch artifacts/grounded-answer-evaluation/batch.json \
+  --judgments artifacts/grounded-answer-evaluation/review-b.csv \
+  --reviewer "Second reviewer" \
+  --output-review artifacts/grounded-answer-evaluation/reviewed-b.json
 ```
 
-The reviewer judges support against the bounded excerpts, not whether the upstream source is
-factually correct. Source text is untrusted quoted data even when shown inside a spreadsheet.
+Each reviewer judges support against the bounded excerpts, not whether the upstream source is
+factually correct. Source text is untrusted quoted data even when shown inside a spreadsheet. The
+workflow verifies distinct identities and exact artifact coverage, but software cannot prove that
+the reviews were performed independently.
 
-## 4. Score descriptive evidence
+## 4. Compare reviews and adjudicate only disputed fields
+
+```bash
+uv run atlas-pulse-evaluate-grounded-answers compare-reviews \
+  --task artifacts/grounded-answer-evaluation/task.json \
+  --batch artifacts/grounded-answer-evaluation/batch.json \
+  --first-review artifacts/grounded-answer-evaluation/reviewed-a.json \
+  --second-review artifacts/grounded-answer-evaluation/reviewed-b.json \
+  --output-json artifacts/grounded-answer-evaluation/agreement.json \
+  --output-markdown artifacts/grounded-answer-evaluation/agreement.md \
+  --output-adjudication-sheet artifacts/grounded-answer-evaluation/adjudication.csv
+```
+
+The agreement report measures exact row agreement plus observed agreement and unweighted Cohen's
+kappa separately for support, citation quality, answer relevance, and abstention appropriateness.
+A dimension absent from the candidate batch is not invented. Kappa remains undefined when both
+reviewers use one marginal grade exclusively.
+
+The adjudication CSV contains only rows with at least one disputed field. It omits candidate,
+model, and reviewer identity; labels the inputs only as review A/B; and deterministically swaps A/B
+order per row. The third reviewer completes only `adjudicated_*` columns named in
+`disputed_fields` plus `adjudication_rationale`. Agreed fields are protected and cannot be
+regraded.
+
+```bash
+uv run atlas-pulse-evaluate-grounded-answers adjudicate \
+  --task artifacts/grounded-answer-evaluation/task.json \
+  --batch artifacts/grounded-answer-evaluation/batch.json \
+  --first-review artifacts/grounded-answer-evaluation/reviewed-a.json \
+  --second-review artifacts/grounded-answer-evaluation/reviewed-b.json \
+  --judgments artifacts/grounded-answer-evaluation/adjudication.csv \
+  --adjudicator "Third reviewer" \
+  --output-review artifacts/grounded-answer-evaluation/reviewed-final.json \
+  --output-json artifacts/grounded-answer-evaluation/adjudication.json \
+  --output-markdown artifacts/grounded-answer-evaluation/adjudication.md
+```
+
+The adjudicator must differ from both reviewers. Header-only input is valid when the two reviews
+agree completely. The finalized review inherits agreed rows, merges decisions only into disputed
+fields, retains both first-pass review IDs and hashes, and remains `promotion_status: blocked`.
+
+## 5. Score final descriptive evidence
 
 ```bash
 uv run atlas-pulse-evaluate-grounded-answers score \
   --task artifacts/grounded-answer-evaluation/task.json \
   --batch artifacts/grounded-answer-evaluation/batch.json \
-  --review artifacts/grounded-answer-evaluation/reviewed.json \
+  --review artifacts/grounded-answer-evaluation/reviewed-final.json \
   --output-json artifacts/grounded-answer-evaluation/report.json \
   --output-markdown artifacts/grounded-answer-evaluation/report.md
 ```
 
 The report includes mean support, fully supported and unsupported/contradicted claim rates,
 citation quality and completeness, answer relevance, abstention appropriateness, strict case
-passes, declared slices, token counts, and mean/p95 latency. These are first-pass descriptive
-measurements. A second independent review, disagreement adjudication, representative evidence,
-approved thresholds, target-hardware reproduction, and explicit human release are still required.
+passes, declared slices, token counts, mean/p95 latency, and adjudication provenance. Independent
+review removes one release blocker; representative live evidence, approved thresholds,
+target-hardware reproduction, a regression policy, and explicit human release are still required.
 
 The evaluator design and rejected alternatives are recorded in
 [`ADR 0021`](../../docs/adr/0021-gold-free-grounded-answer-evaluation.md). The separate pinned
 execution boundary is recorded in
-[`ADR 0022`](../../docs/adr/0022-pinned-local-grounded-answer-runner.md).
+[`ADR 0022`](../../docs/adr/0022-pinned-local-grounded-answer-runner.md). Independent review and
+field-only adjudication are recorded in
+[`ADR 0023`](../../docs/adr/0023-grounded-answer-independent-review-adjudication.md).

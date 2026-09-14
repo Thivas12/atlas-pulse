@@ -13,6 +13,7 @@ from atlas_pulse.evaluation.metrics import canonical_sha256
 from atlas_pulse.grounded_answer_evaluation.base import (
     GroundedAnswerCandidateBatch,
     GroundedAnswerCandidateCase,
+    GroundedAnswerIndependentAdjudicationProvenance,
     GroundedAnswerJudgment,
     GroundedAnswerStatus,
     GroundedAnswerTask,
@@ -20,15 +21,29 @@ from atlas_pulse.grounded_answer_evaluation.base import (
 )
 from atlas_pulse.relationship_evaluation.candidates import CandidateSystemDefinition
 
-_PROMOTION_BLOCKERS = (
+_FIRST_PASS_PROMOTION_BLOCKERS = (
     "A second independent review and disagreement-only adjudication are still required.",
     "No representative grounded-answer quality, citation, abstention, or latency thresholds are approved.",
     "Candidate token and latency measurements require reproduction on the target execution hardware.",
     "The default-deny agent policy remains unchanged; model execution and production answers stay disabled.",
 )
 
-_REPORT_CAVEATS = (
+_ADJUDICATED_PROMOTION_BLOCKERS = (
+    "Independent review and adjudication cover this exact batch only; representative live evidence and a regression policy are still required.",
+    "No representative grounded-answer quality, citation, abstention, or latency thresholds are approved.",
+    "Candidate token and latency measurements require reproduction on the target execution hardware.",
+    "The default-deny agent policy remains unchanged; model execution and production answers stay disabled.",
+)
+
+_FIRST_PASS_REPORT_CAVEATS = (
     "This report summarizes one human first-pass review and is not adjudicated gold or a production release decision.",
+    "Claim support is measured only against the bounded retrieved excerpts; it does not verify source truth, freshness, or completeness.",
+    "Citation quality measures whether the cited excerpts support a claim, not whether the upstream public source is factually correct.",
+    "A strict case pass is descriptive: every cited claim was fully supported, citations were complete, and the answer was directly relevant, or the abstention was judged appropriate.",
+)
+
+_ADJUDICATED_REPORT_CAVEATS = (
+    "This report summarizes two independent reviews plus disagreement-only adjudication and is not a production release decision.",
     "Claim support is measured only against the bounded retrieved excerpts; it does not verify source truth, freshness, or completeness.",
     "Citation quality measures whether the cited excerpts support a claim, not whether the upstream public source is factually correct.",
     "A strict case pass is descriptive: every cited claim was fully supported, citations were complete, and the answer was directly relevant, or the abstention was judged appropriate.",
@@ -116,7 +131,7 @@ class GroundedAnswerCaseOutcome(StrictModel):
 class GroundedAnswerEvaluationReport(StrictModel):
     """Content-addressed descriptive report that cannot promote a candidate."""
 
-    schema_version: Literal["1.0.0"] = "1.0.0"
+    schema_version: Literal["1.0.0", "1.1.0"] = "1.0.0"
     report_id: str = Field(pattern=r"^grounded-report-[0-9a-f]{20}$")
     report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     generated_at: datetime
@@ -127,13 +142,14 @@ class GroundedAnswerEvaluationReport(StrictModel):
     review_id: str = Field(pattern=r"^grounded-review-[0-9a-f]{20}$")
     review_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     reviewer: str = Field(min_length=2, max_length=200)
+    adjudication: GroundedAnswerIndependentAdjudicationProvenance | None = None
     system: CandidateSystemDefinition
     overall: GroundedAnswerMetricSummary
     slices: dict[str, GroundedAnswerMetricSummary]
     outcomes: tuple[GroundedAnswerCaseOutcome, ...] = Field(min_length=1)
     promotion_status: Literal["blocked"] = "blocked"
-    promotion_blockers: tuple[str, ...] = _PROMOTION_BLOCKERS
-    caveats: tuple[str, ...] = _REPORT_CAVEATS
+    promotion_blockers: tuple[str, ...] = _FIRST_PASS_PROMOTION_BLOCKERS
+    caveats: tuple[str, ...] = _FIRST_PASS_REPORT_CAVEATS
 
     @model_validator(mode="after")
     def validate_report(self) -> GroundedAnswerEvaluationReport:
@@ -146,10 +162,22 @@ class GroundedAnswerEvaluationReport(StrictModel):
             raise ValueError("grounded-answer report overall count must match outcomes")
         if any(not name or name != name.strip().casefold() for name in self.slices):
             raise ValueError("grounded-answer report slice names must be normalized")
+        if self.adjudication is None:
+            if self.schema_version != "1.0.0":
+                raise ValueError("first-pass grounded-answer reports require schema 1.0.0")
+            expected_blockers = _FIRST_PASS_PROMOTION_BLOCKERS
+            expected_caveats = _FIRST_PASS_REPORT_CAVEATS
+        else:
+            if self.schema_version != "1.1.0":
+                raise ValueError("adjudicated grounded-answer reports require schema 1.1.0")
+            if self.reviewer != self.adjudication.adjudicator:
+                raise ValueError("adjudicated report reviewer must equal the adjudicator")
+            expected_blockers = _ADJUDICATED_PROMOTION_BLOCKERS
+            expected_caveats = _ADJUDICATED_REPORT_CAVEATS
         if (
             self.promotion_status != "blocked"
-            or self.promotion_blockers != _PROMOTION_BLOCKERS
-            or self.caveats != _REPORT_CAVEATS
+            or self.promotion_blockers != expected_blockers
+            or self.caveats != expected_caveats
         ):
             raise ValueError("grounded-answer report must retain its closed promotion boundary")
         expected_hash = grounded_answer_report_sha256(self)
@@ -162,9 +190,12 @@ class GroundedAnswerEvaluationReport(StrictModel):
 
 def grounded_answer_report_sha256(report: GroundedAnswerEvaluationReport) -> str:
     """Hash a report without its self-describing identity fields."""
-    return canonical_sha256(
-        report.model_dump(mode="json", exclude={"report_id", "report_sha256"}, exclude_none=False)
+    data = report.model_dump(
+        mode="json", exclude={"report_id", "report_sha256"}, exclude_none=False
     )
+    if data.get("adjudication") is None:
+        data.pop("adjudication", None)
+    return canonical_sha256(data)
 
 
 def _mean(values: Sequence[int | float]) -> float | None:
@@ -297,7 +328,7 @@ def score_grounded_answer_review(
     *,
     generated_at: datetime | None = None,
 ) -> GroundedAnswerEvaluationReport:
-    """Score one complete first-pass review without creating a release verdict."""
+    """Score one complete first-pass or adjudicated review without a release verdict."""
     if batch.task_id != task.task_id or batch.task_sha256 != task.task_sha256:
         raise ValueError("grounded-answer batch does not match the exact task")
     if (
@@ -330,8 +361,14 @@ def score_grounded_answer_review(
     if timestamp.tzinfo is None:
         raise ValueError("grounded-answer report generated_at must be timezone-aware")
     overall = _summary(batch.cases, judgments_by_case, outcomes_by_case)
+    adjudicated = review.adjudication is not None
+    schema_version: Literal["1.0.0", "1.1.0"] = "1.1.0" if adjudicated else "1.0.0"
+    promotion_blockers = (
+        _ADJUDICATED_PROMOTION_BLOCKERS if adjudicated else _FIRST_PASS_PROMOTION_BLOCKERS
+    )
+    caveats = _ADJUDICATED_REPORT_CAVEATS if adjudicated else _FIRST_PASS_REPORT_CAVEATS
     draft = GroundedAnswerEvaluationReport.model_construct(
-        schema_version="1.0.0",
+        schema_version=schema_version,
         report_id="grounded-report-" + "0" * 20,
         report_sha256="0" * 64,
         generated_at=timestamp,
@@ -342,16 +379,18 @@ def score_grounded_answer_review(
         review_id=review.review_id,
         review_sha256=review.review_sha256,
         reviewer=review.reviewer,
+        adjudication=review.adjudication,
         system=batch.system,
         overall=overall,
         slices=slices,
         outcomes=outcomes,
         promotion_status="blocked",
-        promotion_blockers=_PROMOTION_BLOCKERS,
-        caveats=_REPORT_CAVEATS,
+        promotion_blockers=promotion_blockers,
+        caveats=caveats,
     )
     digest = grounded_answer_report_sha256(draft)
     return GroundedAnswerEvaluationReport(
+        schema_version=schema_version,
         report_id=f"grounded-report-{digest[:20]}",
         report_sha256=digest,
         generated_at=timestamp,
@@ -362,8 +401,11 @@ def score_grounded_answer_review(
         review_id=review.review_id,
         review_sha256=review.review_sha256,
         reviewer=review.reviewer,
+        adjudication=review.adjudication,
         system=batch.system,
         overall=overall,
         slices=slices,
         outcomes=outcomes,
+        promotion_blockers=promotion_blockers,
+        caveats=caveats,
     )

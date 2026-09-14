@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from atlas_pulse.grounded_answer_evaluation.adjudication import (
+    GroundedAnswerAdjudicationReport,
+    IndependentGroundedAnswerReviewAgreementReport,
+)
 from atlas_pulse.grounded_answer_evaluation.metrics import (
     GroundedAnswerEvaluationReport,
     GroundedAnswerMetricSummary,
@@ -31,14 +35,26 @@ def _summary_row(name: str, value: GroundedAnswerMetricSummary) -> str:
 
 
 def render_grounded_answer_markdown(report: GroundedAnswerEvaluationReport) -> str:
-    """Render the first-pass metrics, cases, and non-promotion boundary."""
+    """Render first-pass or adjudicated metrics, cases, and non-promotion boundary."""
+    if report.adjudication is None:
+        review_lines = [f"- First-pass review: `{report.review_id}` by {report.reviewer}"]
+    else:
+        provenance = report.adjudication
+        review_lines = [
+            f"- Final adjudicated review: `{report.review_id}` by {report.reviewer}",
+            "- Independent reviews: "
+            + ", ".join(f"`{review_id}`" for review_id in provenance.independent_review_ids),
+            f"- Agreement report: `{provenance.agreement_report_id}`",
+            f"- Disputed rows / fields resolved: {provenance.adjudication_decision_count} / "
+            f"{provenance.adjudicated_field_count}",
+        ]
     lines = [
         "# Grounded-answer candidate review",
         "",
         f"- Report: `{report.report_id}`",
         f"- Task: `{report.task_id}`",
         f"- Candidate batch: `{report.batch_id}`",
-        f"- First-pass review: `{report.review_id}` by {report.reviewer}",
+        *review_lines,
         f"- Candidate: `{report.system.candidate_id}`",
         "- Promotion status: **BLOCKED**",
         "",
@@ -87,6 +103,99 @@ def render_grounded_answer_markdown(report: GroundedAnswerEvaluationReport) -> s
         )
     lines.extend(["", "## Promotion blockers", ""])
     lines.extend(f"- {item}" for item in report.promotion_blockers)
+    lines.extend(["", "## Caveats", ""])
+    lines.extend(f"- {item}" for item in report.caveats)
+    return "\n".join(lines) + "\n"
+
+
+def render_grounded_answer_agreement_markdown(
+    report: IndependentGroundedAnswerReviewAgreementReport,
+) -> str:
+    """Render independent-review agreement by rubric dimension."""
+    lines = [
+        "# Grounded-answer independent-review agreement",
+        "",
+        f"- Report: `{report.report_id}`",
+        f"- Task / batch: `{report.task_id}` / `{report.batch_id}`",
+        f"- First review: `{report.first_review.review_id}` by {report.first_review.reviewer}",
+        f"- Second review: `{report.second_review.review_id}` by {report.second_review.reviewer}",
+        "- Promotion status: **BLOCKED**",
+        "",
+        "## Judgment rows",
+        "",
+        "| Judgments | Complete agreement | Disputed rows | Disputed fields | Exact row agreement |",
+        "| ---: | ---: | ---: | ---: | ---: |",
+        f"| {report.judgments.judgment_count} | "
+        f"{report.judgments.complete_agreement_count} | "
+        f"{report.judgments.disagreement_count} | "
+        f"{report.judgments.disputed_field_count} | "
+        f"{report.judgments.exact_judgment_agreement:.1%} |",
+        "",
+        "## Rubric-field agreement",
+        "",
+        "| Field | Ratings | Agreements | Disagreements | Observed | Expected | Cohen's kappa |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for dimension, metrics in report.dimensions.items():
+        kappa = "n/a" if metrics.cohen_kappa is None else f"{metrics.cohen_kappa:.3f}"
+        lines.append(
+            f"| `{dimension}` | {metrics.rating_count} | {metrics.agreement_count} | "
+            f"{metrics.disagreement_count} | {metrics.observed_agreement:.1%} | "
+            f"{metrics.expected_agreement:.1%} | {kappa} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Disputed rows",
+            "",
+            "| Case | Claim | Fields |",
+            "| --- | --- | --- |",
+        ]
+    )
+    if report.disagreements:
+        for disagreement in report.disagreements:
+            lines.append(
+                f"| `{disagreement.case_id}` | `{disagreement.claim_id or 'abstention'}` | "
+                f"{', '.join(f'`{field}`' for field in disagreement.disputed_fields)} |"
+            )
+    else:
+        lines.append("| None | None | No disagreements |")
+    lines.extend(["", "## Caveats", ""])
+    lines.extend(f"- {item}" for item in report.caveats)
+    return "\n".join(lines) + "\n"
+
+
+def render_grounded_answer_adjudication_markdown(
+    report: GroundedAnswerAdjudicationReport,
+) -> str:
+    """Render finalized decision provenance without turning it into a release verdict."""
+    lines = [
+        "# Grounded-answer adjudication",
+        "",
+        f"- Report: `{report.report_id}`",
+        f"- Agreement report: `{report.agreement_report_id}`",
+        f"- Final review: `{report.final_review_id}`",
+        f"- Adjudicator: {report.adjudicator}",
+        "- Promotion status: **BLOCKED**",
+        f"- Consensus rows inherited: {report.inherited_agreement_count}",
+        f"- Disputed rows / fields resolved: {report.adjudication_decision_count} / "
+        f"{report.adjudicated_field_count}",
+        "",
+        "## Decisions",
+        "",
+        "| Case | Claim | Resolved fields | Final rationale |",
+        "| --- | --- | --- | --- |",
+    ]
+    if report.decisions:
+        for decision in report.decisions:
+            rationale = decision.final_judgment.rationale.replace("|", "\\|")
+            lines.append(
+                f"| `{decision.case_id}` | `{decision.claim_id or 'abstention'}` | "
+                f"{', '.join(f'`{field}`' for field in decision.disputed_fields)} | "
+                f"{rationale} |"
+            )
+    else:
+        lines.append("| None | None | No disagreements | Independent consensus |")
     lines.extend(["", "## Caveats", ""])
     lines.extend(f"- {item}" for item in report.caveats)
     return "\n".join(lines) + "\n"

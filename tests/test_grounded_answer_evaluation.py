@@ -25,7 +25,9 @@ from atlas_pulse.evidence_packs import (
     validate_evidence_pack_identity,
 )
 from atlas_pulse.grounded_answer_evaluation import (
+    GROUNDING_ADJUDICATION_COLUMNS,
     GROUNDING_REVIEW_COLUMNS,
+    GroundedAnswerAdjudicationReport,
     GroundedAnswerBenchmark,
     GroundedAnswerCandidateBatch,
     GroundedAnswerCaseOutcome,
@@ -41,16 +43,21 @@ from atlas_pulse.grounded_answer_evaluation import (
     GroundedAnswerTask,
     GroundedAnswerTaskCase,
     ReviewedGroundedAnswerBatch,
+    apply_grounded_answer_adjudication,
     apply_grounded_answer_review,
     apply_grounded_answer_submission,
+    build_grounded_answer_adjudication_sheet,
     build_grounded_answer_review_sheet,
     build_grounded_answer_submission,
     capture_grounded_answer_task,
+    compare_grounded_answer_reviews,
     grounded_answer_batch_sha256,
     grounded_answer_case_sha256,
     grounded_answer_report_sha256,
     grounded_answer_review_sha256,
     grounded_answer_task_sha256,
+    render_grounded_answer_adjudication_markdown,
+    render_grounded_answer_agreement_markdown,
     render_grounded_answer_markdown,
     score_grounded_answer_review,
 )
@@ -69,6 +76,8 @@ CAPTURED_AT = datetime(2026, 9, 14, 4, tzinfo=UTC)
 GENERATED_AT = datetime(2026, 9, 14, 5, tzinfo=UTC)
 REVIEWED_AT = datetime(2026, 9, 14, 6, tzinfo=UTC)
 REPORTED_AT = datetime(2026, 9, 14, 7, tzinfo=UTC)
+SECOND_REVIEWED_AT = datetime(2026, 9, 14, 6, 30, tzinfo=UTC)
+ADJUDICATED_AT = datetime(2026, 9, 14, 8, tzinfo=UTC)
 
 
 def _benchmark() -> GroundedAnswerBenchmark:
@@ -309,6 +318,59 @@ def _review(
     )
 
 
+def _second_review(
+    task: GroundedAnswerTask,
+    batch: GroundedAnswerCandidateBatch,
+    *,
+    disagree: bool = True,
+) -> ReviewedGroundedAnswerBatch:
+    rows = list(csv.DictReader(io.StringIO(_completed_review_csv(task, batch))))
+    for row in rows:
+        row["rationale"] = "A second independent reading applied the same bounded rubric."
+        if not disagree:
+            continue
+        if row["claim_id"] == "claim-01":
+            row["support_0_to_3"] = "2"
+            row["answer_relevance_0_to_2"] = "1"
+        elif row["claim_id"] == "claim-02":
+            row["citation_quality_0_to_2"] = "2"
+        else:
+            row["abstention_appropriate"] = "no"
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=GROUNDING_REVIEW_COLUMNS, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return apply_grounded_answer_review(
+        task,
+        batch,
+        output.getvalue(),
+        reviewer="Blair Reviewer",
+        reviewed_at=SECOND_REVIEWED_AT,
+    )
+
+
+def _completed_adjudication_csv(content: str) -> str:
+    rows = list(csv.DictReader(io.StringIO(content)))
+    final_columns = {
+        "support_grade": ("adjudicated_support_0_to_3", "3"),
+        "citation_quality": ("adjudicated_citation_quality_0_to_2", "2"),
+        "answer_relevance": ("adjudicated_answer_relevance_0_to_2", "2"),
+        "abstention_appropriate": ("adjudicated_abstention_appropriate", "yes"),
+    }
+    for row in rows:
+        for field in row["disputed_fields"].split(";"):
+            column, value = final_columns[field]
+            row[column] = value
+        row["adjudication_rationale"] = (
+            "The final grade follows the bounded evidence and the stated rubric."
+        )
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=GROUNDING_ADJUDICATION_COLUMNS, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
 def test_capture_is_gold_free_content_addressed_and_replayable() -> None:
     task = _task()
     repeated = _task()
@@ -389,6 +451,335 @@ def test_model_blind_review_and_descriptive_score() -> None:
     assert "Promotion status: **BLOCKED**" in markdown
     assert "A second independent review" in markdown
     assert "p95 ms" in markdown
+
+
+def test_independent_review_agreement_is_canonical_and_dimension_specific() -> None:
+    task = _task()
+    batch = _batch(task)
+    first = _review(task, batch)
+    second = _second_review(task, batch)
+
+    report = compare_grounded_answer_reviews(second, first, generated_at=REPORTED_AT)
+    reverse = compare_grounded_answer_reviews(first, second, generated_at=REPORTED_AT)
+    assert report == reverse
+    assert report.first_review.reviewer == "Alex Reviewer"
+    assert report.second_review.reviewer == "Blair Reviewer"
+    assert report.judgments.judgment_count == 3
+    assert report.judgments.complete_agreement_count == 0
+    assert report.judgments.disagreement_count == 3
+    assert report.judgments.disputed_field_count == 4
+    assert report.judgments.exact_judgment_agreement == 0
+    assert report.dimensions["support_grade"].rating_count == 2
+    assert report.dimensions["support_grade"].observed_agreement == 0.5
+    assert report.dimensions["support_grade"].cohen_kappa == pytest.approx(1 / 3)
+    assert report.dimensions["citation_quality"].observed_agreement == 0.5
+    assert report.dimensions["citation_quality"].cohen_kappa == 0
+    assert report.dimensions["answer_relevance"].observed_agreement == 0
+    assert report.dimensions["abstention_appropriate"].observed_agreement == 0
+    assert (
+        sum(
+            sum(row.values())
+            for row in report.dimensions["support_grade"].confusion_matrix.values()
+        )
+        == 2
+    )
+
+    sheet = build_grounded_answer_adjudication_sheet(task, batch, second, first)
+    assert sheet.pending_judgment_count == 3
+    assert sheet.pending_field_count == 4
+    assert batch.system.model_id not in sheet.content
+    assert batch.system.candidate_id not in sheet.content
+    assert first.reviewer not in sheet.content
+    assert second.reviewer not in sheet.content
+    rows = list(csv.DictReader(io.StringIO(sheet.content)))
+    assert len(rows) == 3
+    assert tuple(rows[0]) == GROUNDING_ADJUDICATION_COLUMNS
+    assert all(row["agreement_report_id"] == sheet.agreement_report.report_id for row in rows)
+    assert all(row["disputed_fields"] for row in rows)
+
+    support_data = report.dimensions["support_grade"].model_dump(mode="python")
+    with pytest.raises(ValidationError, match="observed agreement"):
+        type(report.dimensions["support_grade"]).model_validate(
+            {**support_data, "observed_agreement": 0.75}
+        )
+    with pytest.raises(ValidationError, match="task ID"):
+        type(report).model_validate(
+            {**report.model_dump(mode="python"), "task_id": "grounded-task-" + "0" * 20}
+        )
+    markdown = render_grounded_answer_agreement_markdown(report)
+    assert "Rubric-field agreement" in markdown
+    assert "support_grade" in markdown
+    assert "Promotion status: **BLOCKED**" in markdown
+
+    formula_rows = list(csv.DictReader(io.StringIO(_completed_review_csv(task, batch))))
+    for row in formula_rows:
+        row["rationale"] = "=FORMULA-LIKE reviewer rationale remains inert text"
+    formula_csv = io.StringIO(newline="")
+    writer = csv.DictWriter(formula_csv, fieldnames=GROUNDING_REVIEW_COLUMNS, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(formula_rows)
+    formula_review = apply_grounded_answer_review(
+        task,
+        batch,
+        formula_csv.getvalue(),
+        reviewer="Alex Reviewer",
+        reviewed_at=REVIEWED_AT,
+    )
+    formula_sheet = build_grounded_answer_adjudication_sheet(task, batch, formula_review, second)
+    assert "'=FORMULA-LIKE" in formula_sheet.content
+
+
+def test_disagreement_only_adjudication_finalizes_a_blocked_review_and_score() -> None:
+    task = _task()
+    batch = _batch(task)
+    first = _review(task, batch)
+    second = _second_review(task, batch)
+    sheet = build_grounded_answer_adjudication_sheet(task, batch, first, second)
+
+    final_review, record = apply_grounded_answer_adjudication(
+        task,
+        batch,
+        second,
+        first,
+        _completed_adjudication_csv(sheet.content),
+        adjudicator="Casey Adjudicator",
+        adjudicated_at=ADJUDICATED_AT,
+    )
+    assert final_review.schema_version == "1.1.0"
+    assert final_review.review_status == "independent_adjudication_complete"
+    assert final_review.promotion_status == "blocked"
+    assert final_review.review_sha256 == grounded_answer_review_sha256(final_review)
+    assert final_review.adjudication is not None
+    assert final_review.adjudication.independent_reviewers == (
+        "Alex Reviewer",
+        "Blair Reviewer",
+    )
+    assert final_review.adjudication.adjudication_decision_count == 3
+    assert final_review.adjudication.adjudicated_field_count == 4
+    assert record.adjudicator == "Casey Adjudicator"
+    assert record.adjudication_decision_count == 3
+    assert record.adjudicated_field_count == 4
+    assert record.inherited_agreement_count == 0
+    assert record.final_review_id == final_review.review_id
+    assert record.final_review_sha256 == final_review.review_sha256
+    assert GroundedAnswerAdjudicationReport.model_validate_json(record.model_dump_json()) == record
+    assert ReviewedGroundedAnswerBatch.model_validate_json(final_review.model_dump_json()) == (
+        final_review
+    )
+    assert all(
+        decision.final_judgment.rationale.startswith("The final grade")
+        for decision in record.decisions
+    )
+    with pytest.raises(ValidationError, match="agreement ID"):
+        GroundedAnswerAdjudicationReport.model_validate(
+            {
+                **record.model_dump(mode="python"),
+                "agreement_report_id": "grounded-agreement-" + "0" * 20,
+            }
+        )
+    partial_decision = next(
+        decision
+        for decision in record.decisions
+        if "citation_quality" not in decision.disputed_fields
+        and decision.final_judgment.citation_quality is not None
+    )
+    changed_final = partial_decision.final_judgment.model_copy(update={"citation_quality": 1})
+    with pytest.raises(ValidationError, match="cannot change an agreed rubric field"):
+        type(partial_decision).model_validate(
+            {
+                **partial_decision.model_dump(mode="python"),
+                "final_judgment": changed_final.model_dump(mode="python"),
+            }
+        )
+
+    scored = score_grounded_answer_review(
+        task,
+        batch,
+        final_review,
+        generated_at=datetime(2026, 9, 14, 9, tzinfo=UTC),
+    )
+    assert scored.schema_version == "1.1.0"
+    assert scored.adjudication == final_review.adjudication
+    assert scored.promotion_status == "blocked"
+    assert not any(
+        "second independent review" in item.casefold() for item in scored.promotion_blockers
+    )
+    assert any("representative live evidence" in item for item in scored.promotion_blockers)
+    score_markdown = render_grounded_answer_markdown(scored)
+    assert "Final adjudicated review" in score_markdown
+    assert "Promotion status: **BLOCKED**" in score_markdown
+    adjudication_markdown = render_grounded_answer_adjudication_markdown(record)
+    assert "Disputed rows / fields resolved: 3 / 4" in adjudication_markdown
+    assert "Casey Adjudicator" in adjudication_markdown
+
+
+def test_complete_independent_agreement_needs_no_decision_rows() -> None:
+    task = _task()
+    batch = _batch(task)
+    first = _review(task, batch)
+    second = _second_review(task, batch, disagree=False)
+    sheet = build_grounded_answer_adjudication_sheet(task, batch, first, second)
+
+    assert sheet.pending_judgment_count == 0
+    assert sheet.pending_field_count == 0
+    assert list(csv.DictReader(io.StringIO(sheet.content))) == []
+    assert all(
+        value.observed_agreement == 1 for value in sheet.agreement_report.dimensions.values()
+    )
+    final_review, record = apply_grounded_answer_adjudication(
+        task,
+        batch,
+        first,
+        second,
+        sheet.content,
+        adjudicator="Casey Adjudicator",
+        adjudicated_at=ADJUDICATED_AT,
+    )
+    assert record.inherited_agreement_count == 3
+    assert record.adjudication_decision_count == 0
+    assert record.adjudicated_field_count == 0
+    assert record.decisions == ()
+    assert final_review.adjudication is not None
+    assert final_review.adjudication.adjudication_decision_count == 0
+    assert all("Independent reviewers agreed" in item.rationale for item in final_review.judgments)
+    assert "No disagreements" in render_grounded_answer_adjudication_markdown(record)
+
+
+def test_grounded_answer_adjudication_fails_closed_on_identity_and_sheet_drift() -> None:
+    task = _task()
+    batch = _batch(task)
+    first = _review(task, batch)
+    second = _second_review(task, batch)
+    sheet = build_grounded_answer_adjudication_sheet(task, batch, first, second)
+    completed = _completed_adjudication_csv(sheet.content)
+
+    same_person = apply_grounded_answer_review(
+        task,
+        batch,
+        _completed_review_csv(task, batch),
+        reviewer=" alex reviewer ",
+        reviewed_at=SECOND_REVIEWED_AT,
+    )
+    with pytest.raises(ValueError, match="different reviewer identities"):
+        compare_grounded_answer_reviews(first, same_person)
+    with pytest.raises(ValueError, match="exact same task and candidate batch"):
+        compare_grounded_answer_reviews(
+            first,
+            second.model_copy(update={"batch_sha256": "0" * 64}),
+        )
+    with pytest.raises(ValueError, match="independent from both reviewers"):
+        apply_grounded_answer_adjudication(
+            task,
+            batch,
+            first,
+            second,
+            completed,
+            adjudicator="ALEX REVIEWER",
+        )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        apply_grounded_answer_adjudication(
+            task,
+            batch,
+            first,
+            second,
+            completed,
+            adjudicator="Casey Adjudicator",
+            adjudicated_at=datetime(2026, 9, 14, 8),
+        )
+
+    rows = list(csv.DictReader(io.StringIO(completed)))
+
+    def encode(changed: list[dict[str, str]]) -> str:
+        output = io.StringIO(newline="")
+        writer = csv.DictWriter(
+            output, fieldnames=GROUNDING_ADJUDICATION_COLUMNS, lineterminator="\n"
+        )
+        writer.writeheader()
+        writer.writerows(changed)
+        return output.getvalue()
+
+    tampered = [dict(row) for row in rows]
+    tampered[0]["question_json"] = '"changed"'
+    with pytest.raises(ValueError, match="changed protected fields"):
+        apply_grounded_answer_adjudication(
+            task,
+            batch,
+            first,
+            second,
+            encode(tampered),
+            adjudicator="Casey Adjudicator",
+        )
+    with pytest.raises(ValueError, match="missing 1 disagreement"):
+        apply_grounded_answer_adjudication(
+            task,
+            batch,
+            first,
+            second,
+            encode(rows[:-1]),
+            adjudicator="Casey Adjudicator",
+        )
+    with pytest.raises(ValueError, match="duplicates a disagreement"):
+        apply_grounded_answer_adjudication(
+            task,
+            batch,
+            first,
+            second,
+            encode([*rows, rows[0]]),
+            adjudicator="Casey Adjudicator",
+        )
+
+    support_row = next(row for row in rows if "support_grade" in row["disputed_fields"])
+    invalid_grade = [dict(row) for row in rows]
+    invalid_grade[rows.index(support_row)]["adjudicated_support_0_to_3"] = "4"
+    with pytest.raises(ValueError, match="requires one of 0, 1, 2, 3"):
+        apply_grounded_answer_adjudication(
+            task,
+            batch,
+            first,
+            second,
+            encode(invalid_grade),
+            adjudicator="Casey Adjudicator",
+        )
+    partial_row = next(
+        row
+        for row in rows
+        if "support_grade" in row["disputed_fields"]
+        and "citation_quality" not in row["disputed_fields"]
+    )
+    regraded = [dict(row) for row in rows]
+    regraded[rows.index(partial_row)]["adjudicated_citation_quality_0_to_2"] = "2"
+    with pytest.raises(ValueError, match="cannot regrade agreed field"):
+        apply_grounded_answer_adjudication(
+            task,
+            batch,
+            first,
+            second,
+            encode(regraded),
+            adjudicator="Casey Adjudicator",
+        )
+    short_rationale = [dict(row) for row in rows]
+    short_rationale[0]["adjudication_rationale"] = "short"
+    with pytest.raises(ValueError, match="at least ten characters"):
+        apply_grounded_answer_adjudication(
+            task,
+            batch,
+            first,
+            second,
+            encode(short_rationale),
+            adjudicator="Casey Adjudicator",
+        )
+
+    final_review, _ = apply_grounded_answer_adjudication(
+        task,
+        batch,
+        first,
+        second,
+        completed,
+        adjudicator="Casey Adjudicator",
+        adjudicated_at=ADJUDICATED_AT,
+    )
+    with pytest.raises(ValueError, match="independent first pass"):
+        compare_grounded_answer_reviews(first, final_review)
 
 
 def test_review_sheet_json_quotes_formula_like_candidate_text() -> None:
@@ -1327,6 +1718,118 @@ def test_cli_candidate_review_score_and_input_protection(
     )
     assert "must not replace input artifacts" in capsys.readouterr().err
     assert task_path.read_text(encoding="utf-8") == original
+
+
+def test_cli_compare_adjudicate_and_score_final_review(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    task = _task()
+    batch = _batch(task)
+    first = _review(task, batch)
+    second = _second_review(task, batch)
+    task_path = tmp_path / "task.json"
+    batch_path = tmp_path / "batch.json"
+    first_path = tmp_path / "first.json"
+    second_path = tmp_path / "second.json"
+    task_path.write_text(task.model_dump_json(indent=2), encoding="utf-8")
+    batch_path.write_text(batch.model_dump_json(indent=2), encoding="utf-8")
+    first_path.write_text(first.model_dump_json(indent=2), encoding="utf-8")
+    second_path.write_text(second.model_dump_json(indent=2), encoding="utf-8")
+    agreement_json = tmp_path / "agreement.json"
+    agreement_markdown = tmp_path / "agreement.md"
+    adjudication_sheet = tmp_path / "adjudication.csv"
+
+    assert (
+        grounded_cli.run_cli(
+            [
+                "compare-reviews",
+                "--task",
+                str(task_path),
+                "--batch",
+                str(batch_path),
+                "--first-review",
+                str(second_path),
+                "--second-review",
+                str(first_path),
+                "--output-json",
+                str(agreement_json),
+                "--output-markdown",
+                str(agreement_markdown),
+                "--output-adjudication-sheet",
+                str(adjudication_sheet),
+            ]
+        )
+        == 0
+    )
+    assert "3 disputed row(s), 4 field(s)" in capsys.readouterr().out
+    assert "review_a" in adjudication_sheet.read_text(encoding="utf-8")
+    assert "Rubric-field agreement" in agreement_markdown.read_text(encoding="utf-8")
+    adjudication_sheet.write_text(
+        _completed_adjudication_csv(adjudication_sheet.read_text(encoding="utf-8")),
+        encoding="utf-8",
+    )
+
+    final_path = tmp_path / "final.json"
+    adjudication_json = tmp_path / "adjudication.json"
+    adjudication_markdown = tmp_path / "adjudication.md"
+    assert (
+        grounded_cli.run_cli(
+            [
+                "adjudicate",
+                "--task",
+                str(task_path),
+                "--batch",
+                str(batch_path),
+                "--first-review",
+                str(first_path),
+                "--second-review",
+                str(second_path),
+                "--judgments",
+                str(adjudication_sheet),
+                "--adjudicator",
+                "Casey Adjudicator",
+                "--output-review",
+                str(final_path),
+                "--output-json",
+                str(adjudication_json),
+                "--output-markdown",
+                str(adjudication_markdown),
+            ]
+        )
+        == 0
+    )
+    assert "3 disputed row(s) adjudicated" in capsys.readouterr().out
+    final_review = ReviewedGroundedAnswerBatch.model_validate_json(
+        final_path.read_text(encoding="utf-8")
+    )
+    assert final_review.review_status == "independent_adjudication_complete"
+    assert "Promotion status: **BLOCKED**" in adjudication_markdown.read_text(encoding="utf-8")
+
+    report_path = tmp_path / "final-report.json"
+    report_markdown = tmp_path / "final-report.md"
+    assert (
+        grounded_cli.run_cli(
+            [
+                "score",
+                "--task",
+                str(task_path),
+                "--batch",
+                str(batch_path),
+                "--review",
+                str(final_path),
+                "--output-json",
+                str(report_path),
+                "--output-markdown",
+                str(report_markdown),
+            ]
+        )
+        == 0
+    )
+    scored = GroundedAnswerEvaluationReport.model_validate_json(
+        report_path.read_text(encoding="utf-8")
+    )
+    assert scored.adjudication is not None
+    assert "Final adjudicated review" in report_markdown.read_text(encoding="utf-8")
 
 
 def test_cli_capture_writes_blank_gold_free_template(

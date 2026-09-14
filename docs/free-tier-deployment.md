@@ -156,8 +156,10 @@ it requires a separately reviewed retention and credential policy.
 
 Use the checked-in [operational evidence workflow](operational-evidence.md) to bind the deployed
 commit, collect public probes and resource snapshots, and record operator-run restart, encrypted
-off-host backup, and isolated restore drills. Collect at least 30 consecutive aligned UTC sample
-dates before
+off-host backup, and isolated restore drills. Its optional source-poll recovery recorder can bind a
+separately approved fault window to exact degraded/recovered probes and retained transitions, but
+it cannot inject the fault and does not count toward the sampled campaign. Collect at least 30
+consecutive aligned UTC sample dates before
 publishing even its narrow `minimum_observation_set_complete` result. Event visibility does not
 prove source-poll freshness, and a process being up once is not measured availability.
 

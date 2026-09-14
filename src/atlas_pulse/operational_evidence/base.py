@@ -14,7 +14,13 @@ from pydantic import Field, field_validator, model_validator
 from atlas_pulse.evaluation.base import StrictModel
 from atlas_pulse.evaluation.metrics import canonical_sha256
 from atlas_pulse.projections.base import SourceName
-from atlas_pulse.source_polling import SourceFreshnessItem
+from atlas_pulse.source_polling import (
+    SourceFreshnessItem,
+    SourcePollFailureCode,
+    SourcePollHistoryResponse,
+    SourcePollStage,
+    SourcePollTransition,
+)
 
 OPERATIONAL_EVIDENCE_SCHEMA_VERSION = "1.1.0"
 OPERATIONAL_EVIDENCE_IDENTITY_ALGORITHM = "sha256-canonical-json-v1"
@@ -51,6 +57,18 @@ DRILL_CAVEATS = (
     "Restart and restore records bind operator-observed checks; they are not a substitute for an "
     "independent disaster-recovery audit.",
     "No drill record authorizes agent execution or a production data deletion.",
+)
+SOURCE_POLL_RECOVERY_DRILL_CAVEATS = (
+    "Fault timing, the expected bounded failure code, and the no-deletion statement are "
+    "operator assertions; the artifact validates observations but does not independently attest "
+    "the cause of the failure.",
+    "The bound history is worker-written, retention-bounded state from the deployment under test. "
+    "It is not an independent monitor, durable audit log, availability SLA, or proof of upstream "
+    "completeness.",
+    "A passing drill shows one observed degraded state followed by one passing state. It does not "
+    "prove uninterrupted recovery after the final probe.",
+    "The recorder only reads supplied artifacts. It does not inject a fault, restart a service, "
+    "delete production data, authorize an agent, or enable execution.",
 )
 BACKUP_CAVEATS = (
     "A file digest proves the bytes observed by the collector, not durability at a remote storage "
@@ -730,6 +748,428 @@ def build_restart_recovery(
     return RestartRecoveryEvidence(
         **draft.model_dump(mode="python", exclude={"evidence_id", "evidence_sha256"}),
         evidence_id=f"restart-recovery-{digest[:20]}",
+        evidence_sha256=digest,
+    )
+
+
+class SourcePollRecoveryDrillSubmission(StrictModel):
+    """Operator-declared fault window and exact attempts for one source-poll drill."""
+
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    source: SourceName
+    fault_started_at: datetime
+    fault_cleared_at: datetime
+    failure_attempt_id: str = Field(pattern=r"^source-poll-[0-9a-f]{32}$")
+    recovery_attempt_id: str = Field(pattern=r"^source-poll-[0-9a-f]{32}$")
+    expected_failure_code: SourcePollFailureCode
+    operator_fault_injected: Literal[True] = True
+    production_data_deleted: Literal[False] = False
+    execution_enabled: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_submission(self) -> SourcePollRecoveryDrillSubmission:
+        started = _require_utc(self.fault_started_at, "fault_started_at")
+        cleared = _require_utc(self.fault_cleared_at, "fault_cleared_at")
+        if cleared < started:
+            raise ValueError("fault clearance cannot precede fault injection")
+        if self.failure_attempt_id == self.recovery_attempt_id:
+            raise ValueError("failure and recovery attempts must be distinct")
+        if (
+            self.operator_fault_injected is not True
+            or self.production_data_deleted is not False
+            or self.execution_enabled is not False
+        ):
+            raise ValueError("source-poll drill submissions must retain the safe boundary")
+        return self
+
+
+class SourcePollRecoveryDrillEvidence(StrictModel):
+    """Content-addressed evidence for one bounded, operator-run source-poll recovery drill."""
+
+    kind: Literal["source_poll_recovery_drill"] = "source_poll_recovery_drill"
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    rule_version: Literal["source-poll-recovery-drill-v1"] = "source-poll-recovery-drill-v1"
+    identity_algorithm: Literal["sha256-canonical-json-v1"] = "sha256-canonical-json-v1"
+    evidence_id: str = Field(pattern=r"^source-poll-recovery-[0-9a-f]{20}$")
+    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target_id: str = Field(pattern=r"^deployment-target-[0-9a-f]{20}$")
+    target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source: SourceName
+    expected_failure_code: SourcePollFailureCode
+    observed_failure_code: SourcePollFailureCode
+    observed_failure_stage: SourcePollStage
+    fault_started_at: datetime
+    fault_cleared_at: datetime
+    fault_window_seconds: float = Field(ge=0, allow_inf_nan=False)
+    before_observed_at: datetime
+    failure_observed_at: datetime
+    observed_at: datetime
+    recovery_observation_seconds: float = Field(ge=0, allow_inf_nan=False)
+    history_generated_at: datetime
+    history_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    history_item_count: int = Field(ge=4, le=100)
+    before_probe_id: str = Field(pattern=r"^deployment-probe-[0-9a-f]{20}$")
+    before_probe_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    failure_probe_id: str = Field(pattern=r"^deployment-probe-[0-9a-f]{20}$")
+    failure_probe_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    recovery_probe_id: str = Field(pattern=r"^deployment-probe-[0-9a-f]{20}$")
+    recovery_probe_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    failure_attempt_id: str = Field(pattern=r"^source-poll-[0-9a-f]{32}$")
+    recovery_attempt_id: str = Field(pattern=r"^source-poll-[0-9a-f]{32}$")
+    failure_attempt_started_at: datetime
+    failure_terminal_at: datetime
+    recovery_attempt_started_at: datetime
+    recovery_terminal_at: datetime
+    failure_started_stream_id: str = Field(pattern=r"^[0-9]+-[0-9]+$")
+    failure_terminal_stream_id: str = Field(pattern=r"^[0-9]+-[0-9]+$")
+    recovery_started_stream_id: str = Field(pattern=r"^[0-9]+-[0-9]+$")
+    recovery_terminal_stream_id: str = Field(pattern=r"^[0-9]+-[0-9]+$")
+    before_probe_passed: bool
+    failure_probe_passed: bool
+    recovery_probe_passed: bool
+    before_source_current: bool
+    failure_source_degraded: bool
+    recovery_source_current: bool
+    failure_code_matched: bool
+    other_required_sources_maintained: bool
+    failure_surface_isolated: bool
+    readiness_maintained: bool
+    execution_boundary_maintained: bool
+    passed: bool
+    operator_fault_injected: Literal[True] = True
+    production_data_deleted: Literal[False] = False
+    recorder_mutated_services: Literal[False] = False
+    execution_enabled: Literal[False] = False
+    caveats: tuple[str, ...] = SOURCE_POLL_RECOVERY_DRILL_CAVEATS
+
+    @model_validator(mode="after")
+    def validate_recovery(self) -> SourcePollRecoveryDrillEvidence:
+        fault_started = _require_utc(self.fault_started_at, "fault_started_at")
+        fault_cleared = _require_utc(self.fault_cleared_at, "fault_cleared_at")
+        before = _require_utc(self.before_observed_at, "before_observed_at")
+        failed = _require_utc(self.failure_observed_at, "failure_observed_at")
+        recovered = _require_utc(self.observed_at, "observed_at")
+        failure_started = _require_utc(
+            self.failure_attempt_started_at, "failure_attempt_started_at"
+        )
+        failure_terminal = _require_utc(self.failure_terminal_at, "failure_terminal_at")
+        recovery_started = _require_utc(
+            self.recovery_attempt_started_at, "recovery_attempt_started_at"
+        )
+        recovery_terminal = _require_utc(self.recovery_terminal_at, "recovery_terminal_at")
+        history_generated = _require_utc(self.history_generated_at, "history_generated_at")
+        if not (
+            before
+            <= fault_started
+            <= failure_started
+            <= failure_terminal
+            <= failed
+            <= fault_cleared
+            <= recovery_started
+            <= recovery_terminal
+            <= recovered
+            <= history_generated
+        ):
+            raise ValueError("source-poll recovery times must follow the declared drill sequence")
+        if abs(self.fault_window_seconds - (fault_cleared - fault_started).total_seconds()) > 1e-6:
+            raise ValueError("fault-window seconds must match the declared times")
+        if (
+            abs(self.recovery_observation_seconds - (recovered - fault_cleared).total_seconds())
+            > 1e-6
+        ):
+            raise ValueError("recovery-observation seconds must match the declared times")
+        if len({self.before_probe_id, self.failure_probe_id, self.recovery_probe_id}) != 3:
+            raise ValueError("source-poll recovery evidence requires three distinct probes")
+        for identifier, digest in (
+            (self.before_probe_id, self.before_probe_sha256),
+            (self.failure_probe_id, self.failure_probe_sha256),
+            (self.recovery_probe_id, self.recovery_probe_sha256),
+        ):
+            if identifier != f"deployment-probe-{digest[:20]}":
+                raise ValueError("source-poll recovery probe IDs must match their full SHA-256")
+        if self.failure_attempt_id == self.recovery_attempt_id:
+            raise ValueError("failure and recovery attempts must be distinct")
+        stream_positions = tuple(
+            _source_poll_stream_position(value)
+            for value in (
+                self.failure_started_stream_id,
+                self.failure_terminal_stream_id,
+                self.recovery_started_stream_id,
+                self.recovery_terminal_stream_id,
+            )
+        )
+        if stream_positions != tuple(sorted(set(stream_positions))):
+            raise ValueError("bound source-poll transitions must be unique and chronological")
+        if self.failure_code_matched != (self.expected_failure_code == self.observed_failure_code):
+            raise ValueError("failure-code match must reflect the expected and observed values")
+        expected_pass = (
+            self.before_probe_passed
+            and not self.failure_probe_passed
+            and self.recovery_probe_passed
+            and self.before_source_current
+            and self.failure_source_degraded
+            and self.recovery_source_current
+            and self.failure_code_matched
+            and self.other_required_sources_maintained
+            and self.failure_surface_isolated
+            and self.readiness_maintained
+            and self.execution_boundary_maintained
+        )
+        if self.passed != expected_pass:
+            raise ValueError("source-poll recovery pass status must match every bounded check")
+        if (
+            self.operator_fault_injected is not True
+            or self.production_data_deleted is not False
+            or self.recorder_mutated_services is not False
+            or self.execution_enabled is not False
+            or self.caveats != SOURCE_POLL_RECOVERY_DRILL_CAVEATS
+        ):
+            raise ValueError("source-poll recovery evidence must retain the safe boundary")
+        _validate_identity(
+            self,
+            prefix="source-poll-recovery",
+            identifier=self.evidence_id,
+            digest=self.evidence_sha256,
+            identity_fields={"evidence_id", "evidence_sha256"},
+        )
+        return self
+
+
+def _source_poll_stream_position(value: str) -> tuple[int, int]:
+    first, separator, second = value.partition("-")
+    if separator != "-" or not first.isascii() or not second.isascii():
+        raise ValueError("source-poll stream ID must contain ASCII digits")
+    if not first.isdigit() or not second.isdigit():
+        raise ValueError("source-poll stream ID must contain ASCII digits")
+    return int(first), int(second)
+
+
+def _bound_transition(
+    history: SourcePollHistoryResponse,
+    *,
+    attempt_id: str,
+    transition: Literal["started", "succeeded", "failed"],
+) -> SourcePollTransition:
+    matches = tuple(
+        item
+        for item in history.items
+        if item.attempt.attempt_id == attempt_id and item.transition == transition
+    )
+    if len(matches) != 1:
+        raise ValueError(
+            f"source-poll history must contain exactly one {transition} transition for {attempt_id}"
+        )
+    return matches[0]
+
+
+def _freshness_item(
+    probe: DeploymentProbeEvidence, source: SourceName
+) -> SourceFreshnessItem | None:
+    return next((item for item in probe.source_freshness if item.source == source), None)
+
+
+def _endpoint_passed(probe: DeploymentProbeEvidence, name: ProbeName) -> bool:
+    return next(item for item in probe.endpoints if item.name == name).passed
+
+
+def build_source_poll_recovery_drill(
+    target: DeploymentTarget,
+    before: DeploymentProbeEvidence,
+    failure: DeploymentProbeEvidence,
+    recovery: DeploymentProbeEvidence,
+    history: SourcePollHistoryResponse,
+    submission: SourcePollRecoveryDrillSubmission,
+) -> SourcePollRecoveryDrillEvidence:
+    """Bind an operator-run fault window to exact probes and retained poll transitions."""
+    for probe in (before, failure, recovery):
+        if probe.target_id != target.target_id or probe.target_sha256 != target.target_sha256:
+            raise ValueError("source-poll recovery probes must match the exact deployment target")
+        if (
+            probe.expected_version != target.application_version
+            or probe.expected_commit_sha != target.commit_sha
+        ):
+            raise ValueError("source-poll recovery probes must retain exact target metadata")
+    if submission.source not in target.required_sources:
+        raise ValueError("source-poll recovery source must be required by the deployment target")
+
+    failure_started = _bound_transition(
+        history,
+        attempt_id=submission.failure_attempt_id,
+        transition="started",
+    )
+    failure_terminal = _bound_transition(
+        history,
+        attempt_id=submission.failure_attempt_id,
+        transition="failed",
+    )
+    recovery_started = _bound_transition(
+        history,
+        attempt_id=submission.recovery_attempt_id,
+        transition="started",
+    )
+    recovery_terminal = _bound_transition(
+        history,
+        attempt_id=submission.recovery_attempt_id,
+        transition="succeeded",
+    )
+    transitions = (failure_started, failure_terminal, recovery_started, recovery_terminal)
+    if any(item.source != submission.source for item in transitions):
+        raise ValueError("bound source-poll transitions must match the submitted source")
+    if (
+        failure_started.attempt.started_at != failure_terminal.attempt.started_at
+        or recovery_started.attempt.started_at != recovery_terminal.attempt.started_at
+    ):
+        raise ValueError("terminal source-poll transitions must match their exact starts")
+    if failure_terminal.attempt.completed_at is None:
+        raise ValueError("failed source-poll transition must contain its completion time")
+    if recovery_terminal.attempt.completed_at is None:
+        raise ValueError("successful source-poll transition must contain its completion time")
+    if tuple(_source_poll_stream_position(item.stream_id) for item in transitions) != tuple(
+        sorted(_source_poll_stream_position(item.stream_id) for item in transitions)
+    ):
+        raise ValueError("bound source-poll transitions must be chronological")
+    if not (
+        before.observed_at
+        <= submission.fault_started_at
+        <= failure_started.attempt.started_at
+        <= failure_terminal.attempt.completed_at
+        <= failure.observed_at
+        <= submission.fault_cleared_at
+        <= recovery_started.attempt.started_at
+        <= recovery_terminal.attempt.completed_at
+        <= recovery.observed_at
+        <= history.generated_at
+    ):
+        raise ValueError("source-poll recovery artifacts must follow the declared drill sequence")
+
+    before_item = _freshness_item(before, submission.source)
+    failure_item = _freshness_item(failure, submission.source)
+    recovery_item = _freshness_item(recovery, submission.source)
+    before_source_current = bool(
+        before_item is not None
+        and before_item.passed
+        and before_item.poll_status == "healthy"
+        and before_item.source_data_status == "current"
+        and before_item.last_outcome == "succeeded"
+    )
+    observed_failure_code = failure_terminal.attempt.failure_code
+    assert observed_failure_code is not None
+    failure_source_degraded = bool(
+        failure_item is not None
+        and not failure_item.passed
+        and failure_item.poll_status == "degraded"
+        and failure_item.last_outcome == "failed"
+        and failure_item.last_attempt_at == failure_terminal.attempt.started_at
+        and failure_item.last_stage == failure_terminal.attempt.stage
+        and failure_item.last_failure_code == observed_failure_code
+        and failure_item.transport_attempts == failure_terminal.attempt.transport_attempts
+        and failure_item.consecutive_failures >= 1
+    )
+    recovery_source_current = bool(
+        recovery_item is not None
+        and recovery_item.passed
+        and recovery_item.poll_status == "healthy"
+        and recovery_item.source_data_status == "current"
+        and recovery_item.last_outcome == "succeeded"
+        and recovery_item.last_stage == "complete"
+        and recovery_item.last_attempt_at == recovery_terminal.attempt.started_at
+        and recovery_item.last_success_at == recovery_terminal.attempt.completed_at
+        and recovery_item.last_source_generated_at == recovery_terminal.attempt.source_generated_at
+        and recovery_item.timestamp_basis == recovery_terminal.attempt.timestamp_basis
+        and recovery_item.transport_attempts == recovery_terminal.attempt.transport_attempts
+        and recovery_item.consecutive_failures == 0
+    )
+    failure_by_source = {item.source: item for item in failure.source_freshness}
+    other_sources_maintained = all(
+        source in failure_by_source and failure_by_source[source].passed
+        for source in target.required_sources
+        if source != submission.source
+    )
+    failure_freshness = next(item for item in failure.endpoints if item.name == "source_freshness")
+    failure_surface_isolated = (
+        not failure_freshness.passed
+        and failure_freshness.failure_code == "unexpected_value"
+        and all(item.passed for item in failure.endpoints if item.name != "source_freshness")
+        and failure.certificate.passed
+        and failure.observed_version == target.application_version
+        and failure.observed_commit_sha == target.commit_sha
+    )
+    readiness_maintained = all(
+        _endpoint_passed(probe, "readiness") for probe in (before, failure, recovery)
+    )
+    execution_boundary_maintained = all(
+        probe.execution_boundary.passed for probe in (before, failure, recovery)
+    )
+    failure_code_matched = observed_failure_code == submission.expected_failure_code
+    passed = (
+        before.passed
+        and not failure.passed
+        and recovery.passed
+        and before_source_current
+        and failure_source_degraded
+        and recovery_source_current
+        and failure_code_matched
+        and other_sources_maintained
+        and failure_surface_isolated
+        and readiness_maintained
+        and execution_boundary_maintained
+    )
+    draft = SourcePollRecoveryDrillEvidence.model_construct(
+        evidence_id="source-poll-recovery-" + "0" * 20,
+        evidence_sha256="0" * 64,
+        target_id=target.target_id,
+        target_sha256=target.target_sha256,
+        source=submission.source,
+        expected_failure_code=submission.expected_failure_code,
+        observed_failure_code=observed_failure_code,
+        observed_failure_stage=failure_terminal.attempt.stage,
+        fault_started_at=submission.fault_started_at,
+        fault_cleared_at=submission.fault_cleared_at,
+        fault_window_seconds=(
+            submission.fault_cleared_at - submission.fault_started_at
+        ).total_seconds(),
+        before_observed_at=before.observed_at,
+        failure_observed_at=failure.observed_at,
+        observed_at=recovery.observed_at,
+        recovery_observation_seconds=(
+            recovery.observed_at - submission.fault_cleared_at
+        ).total_seconds(),
+        history_generated_at=history.generated_at,
+        history_sha256=canonical_sha256(history.model_dump(mode="json", exclude_none=False)),
+        history_item_count=history.count,
+        before_probe_id=before.evidence_id,
+        before_probe_sha256=before.evidence_sha256,
+        failure_probe_id=failure.evidence_id,
+        failure_probe_sha256=failure.evidence_sha256,
+        recovery_probe_id=recovery.evidence_id,
+        recovery_probe_sha256=recovery.evidence_sha256,
+        failure_attempt_id=submission.failure_attempt_id,
+        recovery_attempt_id=submission.recovery_attempt_id,
+        failure_attempt_started_at=failure_started.attempt.started_at,
+        failure_terminal_at=failure_terminal.attempt.completed_at,
+        recovery_attempt_started_at=recovery_started.attempt.started_at,
+        recovery_terminal_at=recovery_terminal.attempt.completed_at,
+        failure_started_stream_id=failure_started.stream_id,
+        failure_terminal_stream_id=failure_terminal.stream_id,
+        recovery_started_stream_id=recovery_started.stream_id,
+        recovery_terminal_stream_id=recovery_terminal.stream_id,
+        before_probe_passed=before.passed,
+        failure_probe_passed=failure.passed,
+        recovery_probe_passed=recovery.passed,
+        before_source_current=before_source_current,
+        failure_source_degraded=failure_source_degraded,
+        recovery_source_current=recovery_source_current,
+        failure_code_matched=failure_code_matched,
+        other_required_sources_maintained=other_sources_maintained,
+        failure_surface_isolated=failure_surface_isolated,
+        readiness_maintained=readiness_maintained,
+        execution_boundary_maintained=execution_boundary_maintained,
+        passed=passed,
+    )
+    digest = _model_sha256(draft, identity_fields={"evidence_id", "evidence_sha256"})
+    return SourcePollRecoveryDrillEvidence(
+        **draft.model_dump(mode="python", exclude={"evidence_id", "evidence_sha256"}),
+        evidence_id=f"source-poll-recovery-{digest[:20]}",
         evidence_sha256=digest,
     )
 

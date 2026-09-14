@@ -119,12 +119,16 @@ Explain that identical polls are atomically deduplicated while a source correcti
 immutable revision. Raw HTTP bodies are stored by SHA-256 before parsing. The canonical projector
 and retrieval indexer have independent atomic checkpoints, so a cold or failed embedding model
 cannot stall live state. The free FIRMS key exists only in the ingestor and is redacted from
-public evidence and telemetry.
+public evidence and telemetry. For an operator-run source fault, the read-only operations recorder
+can bind exact pre-fault, degraded, and post-clearance probes to the selected failure/start/success
+transitions. It never injects the fault, and the same-deployment ledger is not presented as
+independent monitoring or a causal attestation.
 
 ```bash
 docker compose exec ingestor sh -lc 'find /app/data/raw -type f | sort | head -n 6'
 docker compose exec postgres psql -U atlas -d atlas -c \
   'select projection_name,last_stream_id,updated_at from projection_checkpoints;'
+uv run atlas-pulse-operations record-source-recovery --help
 ```
 
 ## 58–60 seconds: close on engineering quality

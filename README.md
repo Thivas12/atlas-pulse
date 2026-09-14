@@ -7,7 +7,7 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — bounded source-poll recovery evidence without inference.** Independent
+> **Current milestone — content-addressed source-poll recovery drills without mutation.** Independent
 > workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
@@ -15,6 +15,11 @@ component can run without a paid API key.
 > bounded outcome, actual transport attempts, and upstream timestamp basis in Valkey—separately
 > from event publication. A strict newest-first `/v1/source-polls` view and dashboard timeline now
 > expose the retained start-to-terminal sequence without URLs, payloads, exceptions, or secrets.
+> A separate read-only recorder can bind an operator-declared fault window to exact pre-fault,
+> degraded, and recovered public probes plus the four selected ledger transitions. It verifies
+> readiness at all three probe times and source isolation without injecting faults, mutating
+> services, inferring recovery from history alone, or counting the drill as independent campaign
+> evidence.
 > Every unmodified source response is preserved, strictly validated,
 > normalized, and atomically published to Valkey Streams. A restart-safe worker
 > transactionally projects every revision, current event pointer, and its checkpoint into
@@ -90,7 +95,7 @@ component can run without a paid API key.
 | Real public data | Independent USGS, NOAA/NWS, NASA FIRMS, and GDELT 2.0 near-real-time feeds |
 | Auditability | SHA-256 content-addressed raw snapshots are written before parsing |
 | Reliable delivery | Bounded HTTP retry plus pipelined, revision-aware atomic Lua deduplication |
-| Source freshness | Atomic poll transitions, actual retry counts, source timestamp provenance, strict API/UI parity, separate heartbeat/data-age states, stale/clock-skew detection, and bounded newest-first recovery replay |
+| Source freshness | Atomic poll transitions, actual retry counts, source timestamp provenance, strict API/UI parity, separate heartbeat/data-age states, bounded newest-first replay, and content-addressed operator-scoped recovery drills |
 | Credential safety | Free FIRMS key is ingestor-only and redacted from events, errors, and spans |
 | Shared contracts | Immutable `Event` and `GeoPoint` models pinned to `agent-rag-core` commit `7732801` |
 | Deterministic replay | Exclusive Valkey Stream cursors page retained history oldest-first without boundary duplicates |
@@ -107,7 +112,7 @@ component can run without a paid API key.
 | Agent trajectory evaluation | Reasoning-free observable traces, exact candidate/evidence/claim bindings, capability-policy checks, joined adjudicated quality, chronological drift, and content-addressed release thresholds |
 | Agent governance | Stable proposal scopes, short-lived actor-identified approvals, immutable revocations, trusted Ed25519 signatures, a PostgreSQL append-only hash chain, default-deny checks, and zero-execution proof |
 | Free-tier deployment | Resource-capped ARM Compose overlay, loopback-only internal ports, pinned Caddy HTTPS edge, cost guardrails, validation, backup, and rollback runbook |
-| Operational evidence | Declared-commit health, strict source-freshness probes, verified public TLS, bounded resource capture, drill bindings, and conservative 30-day sampled reports |
+| Operational evidence | Declared-commit health, strict source-freshness probes, verified public TLS, bounded resource capture, read-only restart/source-recovery drill bindings, and conservative 30-day sampled reports |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels, a source-operations beacon, and a credential-free recovery timeline |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI |
 | Supply-chain hygiene | Read-only workflow permissions, commit-pinned Actions, weekly dependency updates |
@@ -680,7 +685,9 @@ validation, explicit unknown states, and the separation of operational freshness
 event visibility, and
 [ADR 0029](docs/adr/0029-bounded-source-poll-recovery-history.md) for credential-free retained
 transition history, newest-first exclusive cursors, and its separation from readiness and sampled
-campaign evidence.
+campaign evidence, and
+[ADR 0030](docs/adr/0030-content-addressed-source-poll-recovery-drill.md) for exact fault-window,
+probe, and transition binding without giving the recorder mutation authority or inferring causality.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 

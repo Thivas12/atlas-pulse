@@ -21,10 +21,12 @@ from atlas_pulse.operational_evidence.base import (
     ResourceSnapshotSubmission,
     RestartTrigger,
     RestoreDrillSubmission,
+    SourcePollRecoveryDrillSubmission,
     build_deployment_target,
     build_resource_snapshot,
     build_restart_recovery,
     build_restore_drill,
+    build_source_poll_recovery_drill,
 )
 from atlas_pulse.operational_evidence.campaign import evaluate_operational_campaign
 from atlas_pulse.operational_evidence.capture import (
@@ -33,6 +35,7 @@ from atlas_pulse.operational_evidence.capture import (
     capture_resource_snapshot,
 )
 from atlas_pulse.operational_evidence.report import render_operational_report
+from atlas_pulse.source_polling import SourcePollHistoryResponse
 
 _MAX_ARTIFACT_BYTES = 5 * 1024 * 1024
 _EVIDENCE_ADAPTER: TypeAdapter[OperationalEvidence] = TypeAdapter(OperationalEvidence)
@@ -225,6 +228,38 @@ def _restart(args: argparse.Namespace) -> int:
     return 0 if evidence.passed else 1
 
 
+def _source_recovery(args: argparse.Namespace) -> int:
+    inputs = (
+        args.target,
+        args.before_probe,
+        args.failure_probe,
+        args.recovery_probe,
+        args.history,
+        args.submission,
+    )
+    _ensure_writable((args.output,), inputs=inputs, force=args.force)
+    target = _model(args.target, DeploymentTarget)
+    before = _model(args.before_probe, DeploymentProbeEvidence)
+    failure = _model(args.failure_probe, DeploymentProbeEvidence)
+    recovery = _model(args.recovery_probe, DeploymentProbeEvidence)
+    history = _model(args.history, SourcePollHistoryResponse)
+    submission = _model(args.submission, SourcePollRecoveryDrillSubmission)
+    evidence = build_source_poll_recovery_drill(
+        target,
+        before,
+        failure,
+        recovery,
+        history,
+        submission,
+    )
+    _write_model(args.output, evidence)
+    print(
+        f"Wrote {'passing' if evidence.passed else 'failing'} source-poll recovery evidence "
+        f"{evidence.evidence_id}; this command did not inject a fault or mutate a service"
+    )
+    return 0 if evidence.passed else 1
+
+
 def _backup(args: argparse.Namespace) -> int:
     inputs = (args.target, args.backup_file)
     _ensure_writable((args.output,), inputs=inputs, force=args.force)
@@ -352,6 +387,19 @@ def _parser() -> argparse.ArgumentParser:
     restart.add_argument("--output", type=Path, required=True)
     restart.add_argument("--force", action="store_true")
 
+    source_recovery = commands.add_parser(
+        "record-source-recovery",
+        help="bind an operator-run source fault to exact probes and poll history",
+    )
+    source_recovery.add_argument("--target", type=Path, required=True)
+    source_recovery.add_argument("--before-probe", type=Path, required=True)
+    source_recovery.add_argument("--failure-probe", type=Path, required=True)
+    source_recovery.add_argument("--recovery-probe", type=Path, required=True)
+    source_recovery.add_argument("--history", type=Path, required=True)
+    source_recovery.add_argument("--submission", type=Path, required=True)
+    source_recovery.add_argument("--output", type=Path, required=True)
+    source_recovery.add_argument("--force", action="store_true")
+
     backup = commands.add_parser(
         "record-backup", help="hash one stable PostgreSQL custom-format backup"
     )
@@ -402,6 +450,8 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             return _capture_resource(args)
         if args.command == "record-restart":
             return _restart(args)
+        if args.command == "record-source-recovery":
+            return _source_recovery(args)
         if args.command == "record-backup":
             return _backup(args)
         if args.command == "record-restore":

@@ -27,11 +27,14 @@ from atlas_pulse.operational_evidence import (
     RestoreCheck,
     RestoreDrillSubmission,
     ServiceResourceObservation,
+    SourcePollRecoveryDrillEvidence,
+    SourcePollRecoveryDrillSubmission,
     build_backup_evidence,
     build_deployment_target,
     build_resource_snapshot,
     build_restart_recovery,
     build_restore_drill,
+    build_source_poll_recovery_drill,
     capture_deployment_probe,
     capture_resource_snapshot,
     evaluate_operational_campaign,
@@ -40,7 +43,14 @@ from atlas_pulse.operational_evidence import (
 )
 from atlas_pulse.operational_evidence.base import PROBE_PATHS, RESTORE_CHECKS
 from atlas_pulse.operational_evidence.cli import run_cli
-from atlas_pulse.source_polling import SourceFreshnessItem, SourceFreshnessResponse
+from atlas_pulse.projections.base import SourceName
+from atlas_pulse.source_polling import (
+    SourceFreshnessItem,
+    SourceFreshnessResponse,
+    SourcePollAttempt,
+    SourcePollHistoryResponse,
+    SourcePollTransition,
+)
 
 _COMMIT = "a" * 40
 _START = datetime(2026, 9, 14, 12, tzinfo=UTC)
@@ -52,6 +62,7 @@ class _HandlerOptions(TypedDict, total=False):
     boundary_overrides: dict[str, object] | None
     invalid_events: bool
     invalid_freshness: bool
+    freshness_response: SourceFreshnessResponse
 
 
 def _target(*, commit_sha: str = _COMMIT, deployed_at: datetime = _START) -> DeploymentTarget:
@@ -90,6 +101,7 @@ def _handler(
     boundary_overrides: dict[str, object] | None = None,
     invalid_events: bool = False,
     invalid_freshness: bool = False,
+    freshness_response: SourceFreshnessResponse | None = None,
 ) -> httpx.MockTransport:
     def respond(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/healthz":
@@ -108,33 +120,37 @@ def _handler(
             payload = (
                 {"passed": True}
                 if invalid_freshness
-                else SourceFreshnessResponse(
-                    generated_at=observed_at,
-                    items=tuple(
-                        SourceFreshnessItem(
-                            source=source,
-                            interval_seconds=900 if source == "gdelt" else 60,
-                            poll_stale_after_seconds=2700 if source == "gdelt" else 180,
-                            source_stale_after_seconds=3600 if source == "gdelt" else 600,
-                            poll_status="healthy",
-                            source_data_status="current",
-                            last_outcome="succeeded",
-                            last_stage="complete",
-                            last_attempt_at=observed_at - timedelta(seconds=30),
-                            last_success_at=observed_at - timedelta(seconds=20),
-                            last_source_generated_at=(
-                                observed_at - timedelta(seconds=120 if source == "gdelt" else 60)
-                            ),
-                            last_success_age_seconds=20,
-                            source_age_seconds=120 if source == "gdelt" else 60,
-                            consecutive_failures=0,
-                            transport_attempts=1,
-                            timestamp_basis="source_metadata",
-                            passed=True,
-                        )
-                        for source in ("gdelt", "usgs")
-                    ),
-                    passed=True,
+                else (
+                    freshness_response
+                    or SourceFreshnessResponse(
+                        generated_at=observed_at,
+                        items=tuple(
+                            SourceFreshnessItem(
+                                source=source,
+                                interval_seconds=900 if source == "gdelt" else 60,
+                                poll_stale_after_seconds=2700 if source == "gdelt" else 180,
+                                source_stale_after_seconds=3600 if source == "gdelt" else 600,
+                                poll_status="healthy",
+                                source_data_status="current",
+                                last_outcome="succeeded",
+                                last_stage="complete",
+                                last_attempt_at=observed_at - timedelta(seconds=30),
+                                last_success_at=observed_at - timedelta(seconds=20),
+                                last_source_generated_at=(
+                                    observed_at
+                                    - timedelta(seconds=120 if source == "gdelt" else 60)
+                                ),
+                                last_success_age_seconds=20,
+                                source_age_seconds=120 if source == "gdelt" else 60,
+                                consecutive_failures=0,
+                                transport_attempts=1,
+                                timestamp_basis="source_metadata",
+                                passed=True,
+                            )
+                            for source in ("gdelt", "usgs")
+                        ),
+                        passed=True,
+                    )
                 ).model_dump(mode="json")
             )
         elif request.url.path == "/api/v1/events":
@@ -631,6 +647,386 @@ def test_restart_recovery_cross_validates_target_time_and_service() -> None:
             services=("api",),
             restart_started_at=_START + timedelta(hours=1, minutes=1),
         )
+
+
+def _healthy_freshness_item(
+    source: SourceName,
+    generated_at: datetime,
+    attempt: SourcePollAttempt,
+) -> SourceFreshnessItem:
+    assert source in {"gdelt", "usgs"}
+    assert attempt.outcome == "succeeded"
+    assert attempt.completed_at is not None
+    assert attempt.source_generated_at is not None
+    assert attempt.timestamp_basis is not None
+    return SourceFreshnessItem(
+        source=source,
+        interval_seconds=900 if source == "gdelt" else 60,
+        poll_stale_after_seconds=2700 if source == "gdelt" else 180,
+        source_stale_after_seconds=3600 if source == "gdelt" else 600,
+        poll_status="healthy",
+        source_data_status="current",
+        last_outcome="succeeded",
+        last_stage="complete",
+        last_attempt_at=attempt.started_at,
+        last_success_at=attempt.completed_at,
+        last_source_generated_at=attempt.source_generated_at,
+        last_success_age_seconds=(generated_at - attempt.completed_at).total_seconds(),
+        source_age_seconds=(generated_at - attempt.source_generated_at).total_seconds(),
+        consecutive_failures=0,
+        transport_attempts=attempt.transport_attempts,
+        timestamp_basis=attempt.timestamp_basis,
+        passed=True,
+    )
+
+
+def _successful_poll(
+    source: SourceName,
+    attempt_id: str,
+    *,
+    started_at: datetime,
+    completed_at: datetime,
+    source_generated_at: datetime,
+) -> SourcePollAttempt:
+    assert source in {"gdelt", "usgs"}
+    return SourcePollAttempt(
+        attempt_id=attempt_id,
+        source=source,
+        started_at=started_at,
+        completed_at=completed_at,
+        outcome="succeeded",
+        stage="complete",
+        transport_attempts=1,
+        source_generated_at=source_generated_at,
+        timestamp_basis="source_metadata",
+        fetched_events=2,
+        published_events=1,
+        deduplicated_events=1,
+    )
+
+
+def _source_poll_recovery_inputs(
+    target: DeploymentTarget,
+) -> tuple[
+    DeploymentProbeEvidence,
+    DeploymentProbeEvidence,
+    DeploymentProbeEvidence,
+    SourcePollHistoryResponse,
+    SourcePollRecoveryDrillSubmission,
+]:
+    failure_id = "source-poll-" + "1" * 32
+    recovery_id = "source-poll-" + "2" * 32
+    failure_started_at = _START + timedelta(minutes=2, seconds=5)
+    failure_completed_at = _START + timedelta(minutes=2, seconds=15)
+    recovery_started_at = _START + timedelta(minutes=3, seconds=5)
+    recovery_completed_at = _START + timedelta(minutes=3, seconds=10)
+    failure_started = SourcePollAttempt(
+        attempt_id=failure_id,
+        source="usgs",
+        started_at=failure_started_at,
+        outcome="in_progress",
+        stage="fetch",
+    )
+    failure_terminal = SourcePollAttempt(
+        attempt_id=failure_id,
+        source="usgs",
+        started_at=failure_started_at,
+        completed_at=failure_completed_at,
+        outcome="failed",
+        stage="fetch",
+        transport_attempts=3,
+        failure_code="transport_exhausted",
+    )
+    recovery_started = SourcePollAttempt(
+        attempt_id=recovery_id,
+        source="usgs",
+        started_at=recovery_started_at,
+        outcome="in_progress",
+        stage="fetch",
+    )
+    recovery_terminal = _successful_poll(
+        "usgs",
+        recovery_id,
+        started_at=recovery_started_at,
+        completed_at=recovery_completed_at,
+        source_generated_at=_START + timedelta(minutes=3),
+    )
+    prior_success = _successful_poll(
+        "usgs",
+        "source-poll-" + "0" * 32,
+        started_at=_START + timedelta(seconds=40),
+        completed_at=_START + timedelta(seconds=50),
+        source_generated_at=_START + timedelta(seconds=20),
+    )
+    assert prior_success.completed_at is not None
+    assert prior_success.source_generated_at is not None
+    gdelt_failure = _successful_poll(
+        "gdelt",
+        "source-poll-" + "3" * 32,
+        started_at=_START + timedelta(minutes=2),
+        completed_at=_START + timedelta(minutes=2, seconds=10),
+        source_generated_at=_START + timedelta(minutes=1),
+    )
+    failure_observed_at = _START + timedelta(minutes=2, seconds=30)
+    failure_freshness = SourceFreshnessResponse(
+        generated_at=failure_observed_at,
+        items=(
+            _healthy_freshness_item("gdelt", failure_observed_at, gdelt_failure),
+            SourceFreshnessItem(
+                source="usgs",
+                interval_seconds=60,
+                poll_stale_after_seconds=180,
+                source_stale_after_seconds=600,
+                poll_status="degraded",
+                source_data_status="current",
+                last_outcome="failed",
+                last_stage="fetch",
+                last_failure_code="transport_exhausted",
+                last_attempt_at=failure_started_at,
+                last_success_at=prior_success.completed_at,
+                last_source_generated_at=prior_success.source_generated_at,
+                last_success_age_seconds=(
+                    failure_observed_at - prior_success.completed_at
+                ).total_seconds(),
+                source_age_seconds=(
+                    failure_observed_at - prior_success.source_generated_at
+                ).total_seconds(),
+                consecutive_failures=1,
+                transport_attempts=3,
+                timestamp_basis="source_metadata",
+                passed=False,
+            ),
+        ),
+        passed=False,
+    )
+    recovery_observed_at = _START + timedelta(minutes=3, seconds=20)
+    gdelt_recovery = _successful_poll(
+        "gdelt",
+        "source-poll-" + "4" * 32,
+        started_at=_START + timedelta(minutes=3),
+        completed_at=_START + timedelta(minutes=3, seconds=8),
+        source_generated_at=_START + timedelta(minutes=2),
+    )
+    recovery_freshness = SourceFreshnessResponse(
+        generated_at=recovery_observed_at,
+        items=(
+            _healthy_freshness_item("gdelt", recovery_observed_at, gdelt_recovery),
+            _healthy_freshness_item("usgs", recovery_observed_at, recovery_terminal),
+        ),
+        passed=True,
+    )
+    before = _probe(target, _START + timedelta(minutes=1))
+    failure = _probe(
+        target,
+        failure_observed_at,
+        freshness_response=failure_freshness,
+    )
+    recovery = _probe(
+        target,
+        recovery_observed_at,
+        freshness_response=recovery_freshness,
+    )
+    history = SourcePollHistoryResponse(
+        generated_at=_START + timedelta(minutes=3, seconds=30),
+        count=4,
+        items=(
+            SourcePollTransition(
+                stream_id="1000-4",
+                source="usgs",
+                transition="succeeded",
+                attempt=recovery_terminal,
+            ),
+            SourcePollTransition(
+                stream_id="1000-3",
+                source="usgs",
+                transition="started",
+                attempt=recovery_started,
+            ),
+            SourcePollTransition(
+                stream_id="1000-2",
+                source="usgs",
+                transition="failed",
+                attempt=failure_terminal,
+            ),
+            SourcePollTransition(
+                stream_id="1000-1",
+                source="usgs",
+                transition="started",
+                attempt=failure_started,
+            ),
+        ),
+        next_cursor="1000-1",
+        has_more=False,
+    )
+    submission = SourcePollRecoveryDrillSubmission(
+        source="usgs",
+        fault_started_at=_START + timedelta(minutes=2),
+        fault_cleared_at=_START + timedelta(minutes=3),
+        failure_attempt_id=failure_id,
+        recovery_attempt_id=recovery_id,
+        expected_failure_code="transport_exhausted",
+    )
+    return before, failure, recovery, history, submission
+
+
+def test_source_poll_recovery_drill_binds_fault_probes_and_history() -> None:
+    target = _target()
+    before, failure, recovery, history, submission = _source_poll_recovery_inputs(target)
+
+    evidence = build_source_poll_recovery_drill(
+        target,
+        before,
+        failure,
+        recovery,
+        history,
+        submission,
+    )
+
+    assert evidence.passed is True
+    assert evidence.failure_probe_passed is False
+    assert evidence.readiness_maintained is True
+    assert evidence.failure_started_stream_id == "1000-1"
+    assert evidence.recovery_terminal_stream_id == "1000-4"
+    assert evidence.fault_window_seconds == 60
+    assert evidence.recovery_observation_seconds == 20
+    assert evidence.recorder_mutated_services is False
+    assert evidence.execution_enabled is False
+    assert (
+        SourcePollRecoveryDrillEvidence.model_validate_json(evidence.model_dump_json()) == evidence
+    )
+
+    mismatch = build_source_poll_recovery_drill(
+        target,
+        before,
+        failure,
+        recovery,
+        history,
+        submission.model_copy(update={"expected_failure_code": "source_payload_invalid"}),
+    )
+    assert mismatch.passed is False
+    assert mismatch.failure_code_matched is False
+
+    data = evidence.model_dump(mode="python")
+    data["readiness_maintained"] = False
+    with pytest.raises(ValidationError, match="pass status"):
+        SourcePollRecoveryDrillEvidence.model_validate(data)
+
+
+def test_source_poll_recovery_evidence_rejects_internal_tampering() -> None:
+    target = _target()
+    before, failure, recovery, history, submission = _source_poll_recovery_inputs(target)
+    evidence = build_source_poll_recovery_drill(
+        target,
+        before,
+        failure,
+        recovery,
+        history,
+        submission,
+    )
+    data = evidence.model_dump(mode="python")
+
+    invalid = data | {"history_generated_at": _START}
+    with pytest.raises(ValidationError, match="declared drill sequence"):
+        SourcePollRecoveryDrillEvidence.model_validate(invalid)
+    invalid = data | {"fault_window_seconds": 61.0}
+    with pytest.raises(ValidationError, match="fault-window seconds"):
+        SourcePollRecoveryDrillEvidence.model_validate(invalid)
+    invalid = data | {"recovery_observation_seconds": 21.0}
+    with pytest.raises(ValidationError, match="recovery-observation seconds"):
+        SourcePollRecoveryDrillEvidence.model_validate(invalid)
+    invalid = data | {"failure_probe_id": evidence.before_probe_id}
+    with pytest.raises(ValidationError, match="three distinct probes"):
+        SourcePollRecoveryDrillEvidence.model_validate(invalid)
+    invalid = data | {"before_probe_sha256": "f" * 64}
+    with pytest.raises(ValidationError, match="full SHA-256"):
+        SourcePollRecoveryDrillEvidence.model_validate(invalid)
+    invalid = data | {"recovery_attempt_id": evidence.failure_attempt_id}
+    with pytest.raises(ValidationError, match="attempts must be distinct"):
+        SourcePollRecoveryDrillEvidence.model_validate(invalid)
+    invalid = data | {"recovery_terminal_stream_id": evidence.recovery_started_stream_id}
+    with pytest.raises(ValidationError, match="unique and chronological"):
+        SourcePollRecoveryDrillEvidence.model_validate(invalid)
+    invalid = data | {"failure_code_matched": False, "passed": False}
+    with pytest.raises(ValidationError, match="failure-code match"):
+        SourcePollRecoveryDrillEvidence.model_validate(invalid)
+    invalid = data | {"caveats": ("unsafe",)}
+    with pytest.raises(ValidationError, match="safe boundary"):
+        SourcePollRecoveryDrillEvidence.model_validate(invalid)
+
+
+def test_source_poll_recovery_drill_rejects_unbound_or_misordered_inputs() -> None:
+    target = _target()
+    before, failure, recovery, history, submission = _source_poll_recovery_inputs(target)
+    incomplete = history.model_copy(
+        update={
+            "count": 3,
+            "items": history.items[:-1],
+            "next_cursor": "1000-2",
+        }
+    )
+    with pytest.raises(ValueError, match="exactly one started transition"):
+        build_source_poll_recovery_drill(
+            target,
+            before,
+            failure,
+            recovery,
+            incomplete,
+            submission,
+        )
+    with pytest.raises(ValueError, match="declared drill sequence"):
+        build_source_poll_recovery_drill(
+            target,
+            before,
+            failure,
+            recovery,
+            history,
+            submission.model_copy(update={"fault_cleared_at": _START + timedelta(minutes=4)}),
+        )
+
+
+def test_cli_records_source_poll_recovery_without_mutating_services(tmp_path: Path) -> None:
+    target = _target()
+    before, failure, recovery, history, submission = _source_poll_recovery_inputs(target)
+    inputs = {
+        "target": target,
+        "before": before,
+        "failure": failure,
+        "recovery": recovery,
+        "history": history,
+        "submission": submission,
+    }
+    paths: dict[str, Path] = {}
+    for name, model in inputs.items():
+        path = tmp_path / f"{name}.json"
+        path.write_text(model.model_dump_json())
+        paths[name] = path
+    output = tmp_path / "source-recovery.evidence.json"
+
+    assert (
+        run_cli(
+            [
+                "record-source-recovery",
+                "--target",
+                str(paths["target"]),
+                "--before-probe",
+                str(paths["before"]),
+                "--failure-probe",
+                str(paths["failure"]),
+                "--recovery-probe",
+                str(paths["recovery"]),
+                "--history",
+                str(paths["history"]),
+                "--submission",
+                str(paths["submission"]),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    evidence = SourcePollRecoveryDrillEvidence.model_validate_json(output.read_text())
+    assert evidence.passed is True
+    assert evidence.recorder_mutated_services is False
 
 
 def test_backup_hashing_rejects_wrong_format_symlink_and_empty_file(tmp_path: Path) -> None:

@@ -3,7 +3,8 @@
 AtlasPulse v0.12 records deployment observations before making a public reliability statement. The
 workflow is content-addressed, exact-commit-bound, and deliberately conservative. It does not run
 a model or agent, change an approval, restart a service, create a backup, restore data, or claim an
-SLA.
+SLA. Its source-poll drill recorder also does not inject or clear faults; it only validates
+operator-supplied artifacts.
 
 ## Claim boundary
 
@@ -162,7 +163,83 @@ uv run atlas-pulse-operations record-restart \
 The record passes only when both exact probes passed. It reports the observed recovery interval but
 does not impose or claim an SLO.
 
-## 4. Bind backup and isolated restore evidence
+## 4. Bind a source-poll failure/recovery drill
+
+Run this optional diagnostic drill only under a separately reviewed change window. The operations
+CLI never changes source configuration, networking, or containers. Capture a passing probe, inject
+a bounded fault using your approved operator procedure, wait for the selected required source to
+record a terminal failure, and capture a second probe before clearing the fault. That failure probe
+is expected to exit with status 1 because source freshness is degraded while readiness remains up.
+After clearing the fault, wait for the next successful attempt and capture a passing third probe.
+Finally, save a history page that contains both exact start/terminal pairs:
+
+```bash
+mkdir -p artifacts/operations/drills
+
+uv run atlas-pulse-operations probe \
+  --target artifacts/operations/target.json \
+  --output artifacts/operations/drills/before-probe.json
+
+# Inject the operator-reviewed fault outside this CLI and record its UTC start time.
+
+uv run atlas-pulse-operations probe \
+  --target artifacts/operations/target.json \
+  --output artifacts/operations/drills/failure-probe.json
+test "$?" -eq 1
+
+# Clear the fault outside this CLI, record its UTC clearance time, and wait for a new success.
+
+uv run atlas-pulse-operations probe \
+  --target artifacts/operations/target.json \
+  --output artifacts/operations/drills/recovery-probe.json
+
+curl --fail --silent --show-error \
+  "https://$ATLAS_PUBLIC_HOST/api/v1/source-polls?limit=100" \
+  --output artifacts/operations/drills/source-polls.json
+```
+
+Identify the failed and successful attempt IDs in that retained page. Create a strict submission;
+the example failure code must match the fault you expected to observe:
+
+```json
+{
+  "schema_version": "1.0.0",
+  "source": "usgs",
+  "fault_started_at": "2026-09-15T11:00:00Z",
+  "fault_cleared_at": "2026-09-15T11:03:00Z",
+  "failure_attempt_id": "source-poll-REPLACE_WITH_32_LOWERCASE_HEX_CHARACTERS",
+  "recovery_attempt_id": "source-poll-REPLACE_WITH_32_LOWERCASE_HEX_CHARACTERS",
+  "expected_failure_code": "transport_exhausted",
+  "operator_fault_injected": true,
+  "production_data_deleted": false,
+  "execution_enabled": false
+}
+```
+
+Bind the exact artifacts without replaying the fault:
+
+```bash
+uv run atlas-pulse-operations record-source-recovery \
+  --target artifacts/operations/target.json \
+  --before-probe artifacts/operations/drills/before-probe.json \
+  --failure-probe artifacts/operations/drills/failure-probe.json \
+  --recovery-probe artifacts/operations/drills/recovery-probe.json \
+  --history artifacts/operations/drills/source-polls.json \
+  --submission artifacts/operations/drills/source-recovery-submission.json \
+  --output artifacts/operations/drills/source-recovery.json
+```
+
+A passing record requires the selected source to be healthy/current before the fault, degraded with
+the exact failed attempt while the fault remains active, and healthy/current on the exact selected
+success after clearance. Every other required source, readiness, the other public endpoints, and
+the default-deny execution boundary must stay passing. The artifact binds the full probe hashes,
+canonical history hash, four stream IDs, attempt IDs, and chronology.
+
+This is operator-scoped diagnostic evidence, not independent monitoring or proof of causality. It
+does not count toward the 30-day campaign or its restart requirement, so keep it outside the
+campaign's `evidence/` directory.
+
+## 5. Bind backup and isolated restore evidence
 
 Create a PostgreSQL custom-format dump using the deployment runbook, copy it to operator-controlled
 off-host storage, and apply an independently reviewed encryption/retention policy. The evidence
@@ -212,7 +289,7 @@ uv run atlas-pulse-operations record-restore \
 The campaign counts a restore toward completion only when it passed and references an encrypted
 off-host backup in the same exact-target evidence set.
 
-## 5. Recompute the report
+## 6. Recompute the report
 
 Evidence files discovered from a directory must end in `.evidence.json`. The report command loads
 each file with no-follow, regular-file, stable-read, and 5 MiB bounds; verifies every content ID;

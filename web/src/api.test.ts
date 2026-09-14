@@ -7,8 +7,14 @@ import {
   fetchIncidentCandidates,
   fetchLatest,
   fetchReplay,
+  fetchSourceFreshness,
 } from "./api";
-import { makeEnvelope, makeIncident } from "./test/fixtures";
+import {
+  makeEnvelope,
+  makeIncident,
+  makeSourceFreshnessItem,
+  makeSourceFreshnessResponse,
+} from "./test/fixtures";
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -18,6 +24,48 @@ function jsonResponse(value: unknown, status = 200): Response {
 }
 
 describe("AtlasPulse API client", () => {
+  it("validates independent source poll and upstream freshness evidence", async () => {
+    const body = makeSourceFreshnessResponse([
+      makeSourceFreshnessItem("gdelt", {
+        poll_status: "degraded",
+        last_outcome: "failed",
+        last_stage: "fetch",
+        last_failure_code: "transport_exhausted",
+        consecutive_failures: 1,
+        transport_attempts: 3,
+        passed: false,
+      }),
+      makeSourceFreshnessItem("usgs"),
+    ]);
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchSourceFreshness()).resolves.toEqual(body);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/source-freshness",
+      expect.objectContaining({ headers: { Accept: "application/json" } }),
+    );
+  });
+
+  it("rejects internally inconsistent or extended freshness payloads", async () => {
+    const body = makeSourceFreshnessResponse();
+    const invalidPayloads = [
+      { ...body, passed: false },
+      { ...body, items: [...body.items].reverse() },
+      { ...body, undeclared_field: true },
+      { ...body, generated_at: "2026-09-14T13:00:00+01:00" },
+      {
+        ...body,
+        items: [{ ...body.items[0], source_age_seconds: 61 }, ...body.items.slice(1)],
+      },
+    ];
+
+    for (const payload of invalidPayloads) {
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(payload)));
+      await expect(fetchSourceFreshness()).rejects.toThrow();
+    }
+  });
+
   it("validates the latest event response", async () => {
     const body = { count: 1, items: [makeEnvelope()] };
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body));

@@ -5,16 +5,21 @@ Start from a populated local stack with `docker compose up -d --build` and open
 
 ## 0–18 seconds: prove live public evidence and indexed spatial state
 
-Point out separate USGS/NWS/FIRMS/GDELT freshness, earthquake points, severity-colored NWS
-polygons, confidence-colored NASA FIRMS points, and priority-colored GDELT observations. Switch
-among **Earthquakes**, **Weather**, **Fires**, and **Conflict**. Pan the map and show that the
-browser requests an indexed PostGIS viewport rather than downloading the full revision stream.
-Open one signal and follow its public evidence link. State its source-specific uncertainty: an NWS
-alert is authoritative but can change, a FIRMS pixel is a thermal anomaly rather than a confirmed
-wildfire perimeter, and GDELT is a machine-coded media observation rather than verified ground
-truth.
+Start with the **Operations beacon**. Point out that each source has separate poll-heartbeat and
+upstream-data states, while the metric below is labelled only as bounded visible-event age. A green
+event list is never substituted for missing freshness evidence. Then show earthquake points,
+severity-colored NWS polygons, confidence-colored NASA FIRMS points, and priority-colored GDELT
+observations. Switch among **Earthquakes**, **Weather**, **Fires**, and **Conflict**. Pan the map and
+show that the browser requests an indexed PostGIS viewport rather than downloading the full
+revision stream. Open one signal and follow its public evidence link. State its source-specific
+uncertainty: an NWS alert is authoritative but can change, a FIRMS pixel is a thermal anomaly rather
+than a confirmed wildfire perimeter, and GDELT is a machine-coded media observation rather than
+verified ground truth.
 
 ```bash
+curl -fsS 'http://localhost:8000/v1/source-freshness' \
+  | jq '{generated_at, passed, sources: [.items[] |
+        {source, poll_status, source_data_status, source_age_seconds, passed}]}'
 curl -fsS 'http://localhost:8000/v1/signals?source=nws&min_severity=3&bbox=-125,24,-66,50' \
   | jq '{count, next_cursor, has_more, order}'
 ```

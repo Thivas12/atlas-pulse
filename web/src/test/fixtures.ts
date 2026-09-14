@@ -1,4 +1,10 @@
-import type { EventEnvelope, IncidentCandidate } from "../types";
+import {
+  type EventEnvelope,
+  type IncidentCandidate,
+  SOURCE_FRESHNESS_CAVEAT,
+  type SourceFreshnessItem,
+  type SourceFreshnessResponse,
+} from "../types";
 
 interface EnvelopeOptions {
   streamId?: string;
@@ -148,6 +154,55 @@ export function makeEnvelope({
           : {}),
       },
     },
+  };
+}
+
+export function makeSourceFreshnessItem(
+  source: SourceFreshnessItem["source"],
+  overrides: Partial<Omit<SourceFreshnessItem, "source">> = {},
+): SourceFreshnessItem {
+  const interval = source === "usgs" ? 60 : source === "nws" ? 120 : 900;
+  return {
+    source,
+    interval_seconds: interval,
+    poll_stale_after_seconds: interval * 3,
+    source_stale_after_seconds:
+      source === "usgs" ? 600 : source === "nws" ? 900 : source === "firms" ? 129_600 : 3_600,
+    poll_status: "healthy",
+    source_data_status: "current",
+    last_outcome: "succeeded",
+    last_stage: "complete",
+    last_failure_code: null,
+    last_attempt_at: "2026-09-14T11:59:20Z",
+    last_success_at: "2026-09-14T11:59:30Z",
+    last_source_generated_at: "2026-09-14T11:59:00Z",
+    last_success_age_seconds: 30,
+    source_age_seconds: 60,
+    consecutive_failures: 0,
+    transport_attempts: 1,
+    timestamp_basis: "source_metadata",
+    passed: true,
+    ...overrides,
+  };
+}
+
+export function makeSourceFreshnessResponse(
+  items: SourceFreshnessItem[] = [
+    makeSourceFreshnessItem("gdelt"),
+    makeSourceFreshnessItem("nws"),
+    makeSourceFreshnessItem("usgs"),
+  ],
+  overrides: Partial<Omit<SourceFreshnessResponse, "items">> = {},
+): SourceFreshnessResponse {
+  return {
+    schema_version: "1.0.0",
+    rule_version: "source-poll-freshness-v1",
+    generated_at: "2026-09-14T12:00:00Z",
+    items,
+    passed: items.every((item) => item.passed),
+    execution_enabled: false,
+    caveat: SOURCE_FRESHNESS_CAVEAT,
+    ...overrides,
   };
 }
 

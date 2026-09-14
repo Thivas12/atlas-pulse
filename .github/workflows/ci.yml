@@ -191,7 +191,7 @@ jobs:
           response = json.load(sys.stdin)
           assert response == {
               "status": "ready",
-              "version": "0.10.0",
+              "version": "0.11.0",
               "commit_sha": os.environ["ATLAS_BUILD_COMMIT_SHA"],
           }'
           curl --fail --silent --show-error \

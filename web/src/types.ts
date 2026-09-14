@@ -59,6 +59,199 @@ export const signalsResponseSchema = eventsResponseSchema.extend({
   order: z.literal("newest_revision_first"),
 });
 
+export const SOURCE_FRESHNESS_CAVEAT =
+  "Freshness is a point-in-time evaluation of worker-written Valkey state using the API host clock. It is not independent monitoring, an availability SLA, or proof that an upstream publisher is complete.";
+
+const sourceNameSchema = z.enum(["usgs", "nws", "firms", "gdelt"]);
+const sourcePollOutcomeSchema = z.enum(["in_progress", "succeeded", "failed"]);
+const sourcePollStageSchema = z.enum(["fetch", "snapshot", "normalize", "publish", "complete"]);
+const sourcePollFailureCodeSchema = z.enum([
+  "transport_exhausted",
+  "source_rejected",
+  "source_payload_invalid",
+  "snapshot_write_failed",
+  "publication_unavailable",
+  "unexpected_failure",
+]);
+const sourcePollStatusSchema = z.enum(["healthy", "degraded", "stale", "starting", "clock_skew"]);
+const sourceDataStatusSchema = z.enum(["current", "stale", "not_reported", "future_clock_skew"]);
+const sourceTimestampBasisSchema = z.enum(["source_metadata", "latest_record", "fetch_fallback"]);
+const freshnessTimestampSchema = z
+  .string()
+  .regex(/(?:Z|[+-]00:00)$/, "timestamp must use UTC")
+  .refine(
+    (value) => Number.isFinite(Date.parse(value)),
+    "timestamp must be a valid timezone-aware instant",
+  );
+
+export const sourceFreshnessItemSchema = z
+  .object({
+    source: sourceNameSchema,
+    interval_seconds: z.number().positive().finite(),
+    poll_stale_after_seconds: z.number().positive().finite(),
+    source_stale_after_seconds: z.number().positive().finite(),
+    poll_status: sourcePollStatusSchema,
+    source_data_status: sourceDataStatusSchema,
+    last_outcome: sourcePollOutcomeSchema.nullable(),
+    last_stage: sourcePollStageSchema.nullable(),
+    last_failure_code: sourcePollFailureCodeSchema.nullable(),
+    last_attempt_at: freshnessTimestampSchema.nullable(),
+    last_success_at: freshnessTimestampSchema.nullable(),
+    last_source_generated_at: freshnessTimestampSchema.nullable(),
+    last_success_age_seconds: z.number().finite().nullable(),
+    source_age_seconds: z.number().finite().nullable(),
+    consecutive_failures: z.number().int().nonnegative(),
+    transport_attempts: z.number().int().min(0).max(20),
+    timestamp_basis: sourceTimestampBasisSchema.nullable(),
+    passed: z.boolean(),
+  })
+  .strict()
+  .superRefine((item, context) => {
+    const invariant = (valid: boolean, message: string, path: string[]) => {
+      if (!valid) context.addIssue({ code: "custom", message, path });
+    };
+    const attemptFields = [item.last_attempt_at, item.last_outcome, item.last_stage];
+    const successFields = [
+      item.last_success_at,
+      item.last_source_generated_at,
+      item.last_success_age_seconds,
+      item.source_age_seconds,
+      item.timestamp_basis,
+    ];
+    invariant(
+      attemptFields.every((value) => value === null) ||
+        attemptFields.every((value) => value !== null),
+      "last-attempt fields must be present together",
+      ["last_attempt_at"],
+    );
+    invariant(
+      successFields.every((value) => value === null) ||
+        successFields.every((value) => value !== null),
+      "last-success freshness fields must be present together",
+      ["last_success_at"],
+    );
+    invariant(
+      (item.last_failure_code !== null) === (item.last_outcome === "failed"),
+      "failure code must match a failed latest poll",
+      ["last_failure_code"],
+    );
+    invariant(
+      (item.last_success_at === null) === (item.source_data_status === "not_reported"),
+      "upstream status must match last-success evidence",
+      ["source_data_status"],
+    );
+    invariant(
+      item.poll_status !== "degraded" || item.last_outcome === "failed",
+      "degraded poll status requires a failed latest poll",
+      ["poll_status"],
+    );
+    invariant(
+      item.last_attempt_at !== null ||
+        (item.last_success_at === null &&
+          item.poll_status === "starting" &&
+          item.source_data_status === "not_reported" &&
+          item.consecutive_failures === 0 &&
+          item.transport_attempts === 0),
+      "a source without an attempt must remain in the empty starting state",
+      ["last_attempt_at"],
+    );
+    invariant(
+      item.last_outcome !== "succeeded" ||
+        (item.last_success_at !== null && item.consecutive_failures === 0),
+      "a successful latest poll must be the last success and reset failures",
+      ["last_outcome"],
+    );
+    invariant(
+      item.last_outcome !== "failed" || item.consecutive_failures > 0,
+      "a failed latest poll requires a consecutive failure",
+      ["consecutive_failures"],
+    );
+    if (item.source_age_seconds !== null) {
+      const expectedSourceStatus =
+        item.source_age_seconds < 0
+          ? "future_clock_skew"
+          : item.source_age_seconds > item.source_stale_after_seconds
+            ? "stale"
+            : "current";
+      invariant(
+        item.source_data_status === expectedSourceStatus,
+        "upstream status must match the measured source age",
+        ["source_data_status"],
+      );
+    }
+    invariant(
+      item.passed === (item.poll_status === "healthy" && item.source_data_status === "current"),
+      "source pass status must match poll and upstream states",
+      ["passed"],
+    );
+    invariant(
+      item.poll_stale_after_seconds > item.interval_seconds,
+      "poll stale threshold must exceed the configured interval",
+      ["poll_stale_after_seconds"],
+    );
+    invariant(
+      item.source_stale_after_seconds > item.interval_seconds,
+      "source stale threshold must exceed the configured interval",
+      ["source_stale_after_seconds"],
+    );
+  });
+
+export const sourceFreshnessResponseSchema = z
+  .object({
+    schema_version: z.literal("1.0.0"),
+    rule_version: z.literal("source-poll-freshness-v1"),
+    generated_at: freshnessTimestampSchema,
+    items: z.array(sourceFreshnessItemSchema).min(1).max(4),
+    passed: z.boolean(),
+    execution_enabled: z.literal(false),
+    caveat: z.literal(SOURCE_FRESHNESS_CAVEAT),
+  })
+  .strict()
+  .superRefine((response, context) => {
+    const sources = response.items.map((item) => item.source);
+    const canonicalSources = [...new Set(sources)].sort();
+    if (JSON.stringify(sources) !== JSON.stringify(canonicalSources)) {
+      context.addIssue({
+        code: "custom",
+        message: "source freshness items must be unique and canonically ordered",
+        path: ["items"],
+      });
+    }
+    if (response.passed !== response.items.every((item) => item.passed)) {
+      context.addIssue({
+        code: "custom",
+        message: "response pass status must match every source",
+        path: ["passed"],
+      });
+    }
+    const generatedAt = Date.parse(response.generated_at);
+    response.items.forEach((item, index) => {
+      if (
+        item.last_success_at !== null &&
+        item.last_source_generated_at !== null &&
+        item.last_success_age_seconds !== null &&
+        item.source_age_seconds !== null
+      ) {
+        const successAge = (generatedAt - Date.parse(item.last_success_at)) / 1_000;
+        const sourceAge = (generatedAt - Date.parse(item.last_source_generated_at)) / 1_000;
+        if (Math.abs(successAge - item.last_success_age_seconds) > 0.002) {
+          context.addIssue({
+            code: "custom",
+            message: "last-success age must match response generation time",
+            path: ["items", index, "last_success_age_seconds"],
+          });
+        }
+        if (Math.abs(sourceAge - item.source_age_seconds) > 0.002) {
+          context.addIssue({
+            code: "custom",
+            message: "source age must match response generation time",
+            path: ["items", index, "source_age_seconds"],
+          });
+        }
+      }
+    });
+  });
+
 const incidentCenterSchema = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
@@ -753,6 +946,8 @@ export type EventEnvelope = z.infer<typeof eventEnvelopeSchema>;
 export type EventsResponse = z.infer<typeof eventsResponseSchema>;
 export type ReplayResponse = z.infer<typeof replayResponseSchema>;
 export type SignalsResponse = z.infer<typeof signalsResponseSchema>;
+export type SourceFreshnessItem = z.infer<typeof sourceFreshnessItemSchema>;
+export type SourceFreshnessResponse = z.infer<typeof sourceFreshnessResponseSchema>;
 export type IncidentCandidate = z.infer<typeof incidentCandidateSchema>;
 export type IncidentsResponse = z.infer<typeof incidentsResponseSchema>;
 export type SearchHit = z.infer<typeof searchHitSchema>;

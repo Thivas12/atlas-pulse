@@ -1,6 +1,6 @@
 # Sampled operational evidence campaigns
 
-AtlasPulse v0.10 records deployment observations before making a public reliability statement. The
+AtlasPulse v0.11 records deployment observations before making a public reliability statement. The
 workflow is content-addressed, exact-commit-bound, and deliberately conservative. It does not run
 a model or agent, change an approval, restart a service, create a backup, restore data, or claim an
 SLA.
@@ -67,7 +67,7 @@ mkdir -p artifacts/operations/evidence
 uv run atlas-pulse-operations target \
   --origin "https://$ATLAS_PUBLIC_HOST" \
   --commit-sha "$ATLAS_BUILD_COMMIT_SHA" \
-  --application-version 0.10.0 \
+  --application-version 0.11.0 \
   --environment free-tier-public \
   --deployed-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --output artifacts/operations/target.json
@@ -97,6 +97,11 @@ compares the last successful source timestamp against a source-specific age boun
 poll is `degraded`; an overdue heartbeat is `stale`; missing first-success metadata is
 `not_reported`; and negative ages fail as clock skew. Raw bodies, request URLs, credentials, and
 exception messages never enter the poll ledger.
+
+The dashboard renders the same two dimensions through an independently strict browser contract.
+It shows `FRESHNESS UNKNOWN` when that contract or request fails and does not substitute event
+recency. The panel remains a first-party point-in-time view; only the content-addressed artifacts
+below count toward the sampled campaign.
 
 ```bash
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"

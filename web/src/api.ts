@@ -12,8 +12,10 @@ import {
   replayResponseSchema,
   type SearchResponse,
   type SignalsResponse,
+  type SourceFreshnessResponse,
   searchResponseSchema,
   signalsResponseSchema,
+  sourceFreshnessResponseSchema,
   type ViewportBounds,
 } from "./types";
 
@@ -34,6 +36,10 @@ async function fetchValidated<T>(
 
 export function fetchLatest(signal?: AbortSignal): Promise<EventsResponse> {
   return fetchValidated("/api/v1/events?limit=500", eventsResponseSchema, signal);
+}
+
+export function fetchSourceFreshness(signal?: AbortSignal): Promise<SourceFreshnessResponse> {
+  return fetchValidated("/api/v1/source-freshness", sourceFreshnessResponseSchema, signal);
 }
 
 export function fetchReplay(after?: string, signal?: AbortSignal): Promise<ReplayResponse> {

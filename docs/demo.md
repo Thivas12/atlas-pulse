@@ -52,7 +52,8 @@ curl -fsS --get 'http://localhost:8000/v1/agent-runs/preflight' \
   --data-urlencode 'candidate_limit=100' \
   --data-urlencode 'retrieval_limit=20' \
   | jq '{pack_id: .evidence_pack.pack_id,
-         manifest: (.manifest | {manifest_id, status, authorization, execution})}'
+         manifest: (.manifest |
+           {manifest_id, proposal_id, approval, status, authorization, execution})}'
 ```
 
 ## 33–45 seconds: prove measured correlation and claim analysis stay separate
@@ -133,9 +134,10 @@ for those future layers without bypassing evaluation. Show that semantic changes
 prediction-blind human benchmark rather than relying on synthetic examples or an LLM judge.
 Explain that public or promotion-oriented results require two exact first-pass reviews: AtlasPulse
 reports observed agreement and Cohen's kappa, sends only disagreements to a third system-blind
-adjudicator, and content-addresses the final gold pool with both review hashes. Close on the new
-default-deny preflight: it makes every missing release condition visible now without pretending
-that an agent ran or that a content hash is equivalent to human approval.
+adjudicator, and content-addresses the final gold pool with both review hashes. Close on the
+default-deny preflight and signed ledger: the proposal makes approval scope stable, Ed25519 and
+trusted key IDs make intent verifiable, expiry and revocation fail closed, and the remaining gates
+still prove that no agent ran.
 
 ```bash
 uv run atlas-pulse-evaluate --help

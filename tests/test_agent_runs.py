@@ -14,8 +14,11 @@ from atlas_pulse.agent_runs import (
     AGENT_RUN_IDENTITY_ALGORITHM,
     AGENT_RUN_RULE_VERSION,
     AGENT_RUN_SCHEMA_VERSION,
+    AgentApprovalObservation,
+    AgentApprovalStatus,
     _check,
     build_agent_run_manifest,
+    build_agent_run_proposal,
 )
 from atlas_pulse.evidence_packs import build_evidence_pack
 from atlas_pulse.identity import canonical_json_sha256
@@ -81,12 +84,14 @@ def test_manifest_binds_the_exact_pack_and_blocks_every_unmet_release_gate() -> 
     assert manifest.schema_version == AGENT_RUN_SCHEMA_VERSION
     assert manifest.rule_version == AGENT_RUN_RULE_VERSION
     assert manifest.identity_algorithm == AGENT_RUN_IDENTITY_ALGORITHM
+    assert manifest.proposal_id == build_agent_run_proposal(pack).proposal_id
     assert manifest.status == "blocked"
     assert manifest.evidence.pack_id == pack.pack_id
     assert manifest.evidence.evidence_ids == (pack.items[0].evidence_id,)
     assert manifest.evidence.item_count == 1
     assert manifest.policy.policy_version == AGENT_AUTHORIZATION_POLICY_VERSION
     assert manifest.policy.default_decision == "deny"
+    assert manifest.approval == AgentApprovalObservation()
     assert manifest.authorization.passed_check_count == 3
     assert manifest.authorization.blocked_check_count == 5
     assert manifest.authorization.blocking_reasons == (
@@ -143,6 +148,99 @@ def test_no_evidence_adds_an_explicit_block_without_changing_no_execution_state(
     assert manifest.authorization.blocking_reasons[0] == "no_traceable_evidence"
     assert manifest.authorization.checks[1].status == "blocked"
     assert manifest.execution.status == "not_started"
+
+
+def test_active_approval_clears_only_the_human_gate_and_never_execution() -> None:
+    pack = build_evidence_pack(
+        _search_result(),
+        SearchQuery(text="dangerous storm", limit=5, candidate_limit=20),
+    )
+    proposal = build_agent_run_proposal(pack)
+    issued_at = datetime(2026, 9, 14, 8, tzinfo=UTC)
+    approval = AgentApprovalObservation(
+        status="active",
+        approval_id=f"approval-{'a' * 64}",
+        approved_proposal_id=proposal.proposal_id,
+        source_manifest_id=f"manifest-{'b' * 64}",
+        approver_id="github:12345",
+        signing_key_id=f"ed25519-{'c' * 64}",
+        issued_at=issued_at,
+        expires_at=issued_at.replace(hour=9),
+        evaluated_at=issued_at.replace(minute=30),
+    )
+
+    manifest = build_agent_run_manifest(pack, proposal=proposal, approval=approval)
+    human_release = next(
+        check for check in manifest.authorization.checks if check.check_id == "human_release"
+    )
+
+    assert manifest.status == "blocked"
+    assert human_release.status == "passed"
+    assert manifest.authorization.passed_check_count == 4
+    assert manifest.authorization.blocked_check_count == 4
+    assert "human_release_not_granted" not in manifest.authorization.blocking_reasons
+    assert manifest.authorization.blocking_reasons[-1] == "execution_disabled"
+    assert manifest.execution.status == "not_started"
+
+
+@pytest.mark.parametrize(
+    ("approval_status", "blocking_reason"),
+    [
+        ("not_yet_valid", "human_release_not_yet_valid"),
+        ("expired", "human_release_expired"),
+        ("revoked", "human_release_revoked"),
+        ("scope_mismatch", "human_release_scope_mismatch"),
+        ("untrusted_signer", "human_release_untrusted"),
+        ("ledger_invalid", "approval_ledger_invalid"),
+        ("ledger_unavailable", "approval_ledger_unavailable"),
+    ],
+)
+def test_approval_failure_state_is_preserved_as_a_specific_block(
+    approval_status: AgentApprovalStatus,
+    blocking_reason: str,
+) -> None:
+    pack = build_evidence_pack(_search_result(), SearchQuery(text="dangerous storm"))
+    manifest = build_agent_run_manifest(
+        pack,
+        approval=AgentApprovalObservation(status=approval_status),
+    )
+    human_release = next(
+        check for check in manifest.authorization.checks if check.check_id == "human_release"
+    )
+
+    assert human_release.observed == approval_status
+    assert human_release.blocking_reason == blocking_reason
+
+
+def test_manifest_rejects_a_proposal_from_a_different_pack() -> None:
+    original = build_evidence_pack(_search_result(), SearchQuery(text="dangerous storm"))
+    changed = build_evidence_pack(
+        _search_result("Title: Revised warning"), SearchQuery(text="dangerous storm")
+    )
+    with pytest.raises(ValueError, match="proposal does not match"):
+        build_agent_run_manifest(original, proposal=build_agent_run_proposal(changed))
+
+
+def test_manifest_rejects_an_incomplete_or_stale_active_approval() -> None:
+    pack = build_evidence_pack(_search_result(), SearchQuery(text="dangerous storm"))
+    proposal = build_agent_run_proposal(pack)
+    with pytest.raises(ValueError, match="incomplete"):
+        build_agent_run_manifest(pack, approval=AgentApprovalObservation(status="active"))
+
+    issued_at = datetime(2026, 9, 14, 8, tzinfo=UTC)
+    stale = AgentApprovalObservation(
+        status="active",
+        approval_id=f"approval-{'a' * 64}",
+        approved_proposal_id=proposal.proposal_id,
+        source_manifest_id=f"manifest-{'b' * 64}",
+        approver_id="github:12345",
+        signing_key_id=f"ed25519-{'c' * 64}",
+        issued_at=issued_at,
+        expires_at=issued_at.replace(hour=9),
+        evaluated_at=issued_at.replace(hour=10),
+    )
+    with pytest.raises(ValueError, match="outside its lifetime"):
+        build_agent_run_manifest(pack, approval=stale)
 
 
 def test_blocked_check_requires_a_machine_readable_reason() -> None:

@@ -21,6 +21,7 @@ htmlcov/
 
 # Local configuration and source snapshots
 .env
+.secrets/
 data/raw/**
 !data/raw/.gitkeep
 artifacts/

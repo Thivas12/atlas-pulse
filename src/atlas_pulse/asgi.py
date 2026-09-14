@@ -1,5 +1,6 @@
 """Production ASGI process entry point."""
 
+from atlas_pulse.agent_ledger import PostgresAgentRunLedger
 from atlas_pulse.api import create_app
 from atlas_pulse.config import get_settings
 from atlas_pulse.logging import configure_logging
@@ -29,5 +30,9 @@ embedder = FastEmbedProvider(
     local_files_only=settings.embedding_local_files_only,
 )
 search_service = HybridSearchService(store=retrieval_store, embedder=embedder)
-app = create_app(event_bus, signal_store, search_service)
+agent_run_ledger = PostgresAgentRunLedger(
+    database_url=settings.database_url,
+    trusted_key_ids=settings.agent_approval_trusted_key_ids,
+)
+app = create_app(event_bus, signal_store, search_service, agent_run_ledger)
 instrument_fastapi(app)

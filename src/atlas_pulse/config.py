@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     retrieval_projection_name: str = Field(default="hybrid-retrieval-v1", min_length=1)
     retrieval_batch_size: int = Field(default=64, ge=1, le=512)
     retrieval_poll_seconds: float = Field(default=1.0, gt=0)
+    agent_approval_trusted_key_ids: tuple[str, ...] = ()
     embedding_model: str = Field(default="BAAI/bge-small-en-v1.5", min_length=1)
     embedding_dimensions: int = Field(default=384, ge=1, le=4_096)
     embedding_cache_dir: Path = Path(".cache/fastembed")
@@ -90,6 +91,19 @@ class Settings(BaseSettings):
         if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
             raise ValueError("firms_area must be a valid non-wrapping WGS84 bbox")
         return ",".join(format(part, "g") for part in (west, south, east, north))
+
+    @field_validator("agent_approval_trusted_key_ids")
+    @classmethod
+    def validate_agent_approval_trusted_key_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Require unique content-derived Ed25519 key identities."""
+        if len(value) != len(set(value)):
+            raise ValueError("agent approval trusted key IDs must be unique")
+        for key_id in value:
+            if len(key_id) != 72 or not key_id.startswith("ed25519-"):
+                raise ValueError("agent approval key IDs must use ed25519-<sha256>")
+            if any(character not in "0123456789abcdef" for character in key_id[8:]):
+                raise ValueError("agent approval key IDs must use ed25519-<sha256>")
+        return value
 
     @model_validator(mode="after")
     def require_firms_key_when_enabled(self) -> "Settings":

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+const awareTimestampSchema = z.string().regex(/(?:Z|[+-]\d{2}:\d{2})$/);
+
 const geoPointSchema = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
@@ -366,6 +368,13 @@ const authorizationBlockReasonSchema = z.enum([
   "live_relationship_benchmark_incomplete",
   "grounded_answer_evaluation_missing",
   "human_release_not_granted",
+  "human_release_not_yet_valid",
+  "human_release_expired",
+  "human_release_revoked",
+  "human_release_scope_mismatch",
+  "human_release_untrusted",
+  "approval_ledger_invalid",
+  "approval_ledger_unavailable",
   "execution_disabled",
 ]);
 
@@ -383,9 +392,10 @@ const authorizationCheckIdSchema = z.enum([
 export const agentRunManifestSchema = z
   .object({
     manifest_id: z.string().regex(/^manifest-[0-9a-f]{64}$/),
-    schema_version: z.literal("1.0.0"),
-    rule_version: z.literal("agent-run-manifest-v1"),
+    schema_version: z.literal("1.1.0"),
+    rule_version: z.literal("agent-run-manifest-v2"),
     identity_algorithm: z.literal("sha256-canonical-json-v1"),
+    proposal_id: z.string().regex(/^proposal-[0-9a-f]{64}$/),
     status: z.literal("blocked"),
     request: z.object({
       purpose: z.literal("evidence_triage"),
@@ -409,7 +419,7 @@ export const agentRunManifestSchema = z
       evidence_ids: z.array(z.string().regex(/^evidence-[0-9a-f]{64}$/)),
     }),
     policy: z.object({
-      policy_version: z.literal("agent-authorization-v1"),
+      policy_version: z.literal("agent-authorization-v2"),
       default_decision: z.literal("deny"),
       execution_enabled: z.literal(false),
       human_release_required: z.literal(true),
@@ -419,6 +429,44 @@ export const agentRunManifestSchema = z
       network_access_allowed: z.literal(false),
       tool_access_allowed: z.literal(false),
       external_side_effects_allowed: z.literal(false),
+    }),
+    approval: z.object({
+      status: z.enum([
+        "not_supplied",
+        "not_found",
+        "not_yet_valid",
+        "active",
+        "expired",
+        "revoked",
+        "scope_mismatch",
+        "untrusted_signer",
+        "ledger_invalid",
+        "ledger_unavailable",
+      ]),
+      approval_id: z
+        .string()
+        .regex(/^approval-[0-9a-f]{64}$/)
+        .nullable(),
+      approved_proposal_id: z
+        .string()
+        .regex(/^proposal-[0-9a-f]{64}$/)
+        .nullable(),
+      source_manifest_id: z
+        .string()
+        .regex(/^manifest-[0-9a-f]{64}$/)
+        .nullable(),
+      approver_id: z.string().min(1).nullable(),
+      signing_key_id: z
+        .string()
+        .regex(/^ed25519-[0-9a-f]{64}$/)
+        .nullable(),
+      issued_at: awareTimestampSchema.nullable(),
+      expires_at: awareTimestampSchema.nullable(),
+      revocation_id: z
+        .string()
+        .regex(/^revocation-[0-9a-f]{64}$/)
+        .nullable(),
+      evaluated_at: awareTimestampSchema.nullable(),
     }),
     authorization: z.object({
       decision: z.literal("blocked"),
@@ -492,6 +540,64 @@ export const agentRunManifestSchema = z
         ["authorization", "checks", index, "blocking_reason"],
       );
     });
+    const humanRelease = manifest.authorization.checks.find(
+      (check) => check.check_id === "human_release",
+    );
+    invariant(
+      (manifest.approval.status === "active") === (humanRelease?.status === "passed"),
+      "human release check does not match approval status",
+      ["approval", "status"],
+    );
+    if (manifest.approval.status === "active") {
+      invariant(
+        manifest.approval.approved_proposal_id === manifest.proposal_id,
+        "active approval is not bound to the manifest proposal",
+        ["approval", "approved_proposal_id"],
+      );
+    }
+    const approvalFields = [
+      manifest.approval.approval_id,
+      manifest.approval.approved_proposal_id,
+      manifest.approval.source_manifest_id,
+      manifest.approval.approver_id,
+      manifest.approval.signing_key_id,
+      manifest.approval.issued_at,
+      manifest.approval.expires_at,
+      manifest.approval.revocation_id,
+      manifest.approval.evaluated_at,
+    ];
+    if (manifest.approval.status === "not_supplied") {
+      invariant(
+        approvalFields.every((value) => value === null),
+        "not_supplied approval state cannot contain ledger fields",
+        ["approval"],
+      );
+    } else {
+      invariant(
+        manifest.approval.approval_id !== null && manifest.approval.evaluated_at !== null,
+        "resolved approval states require approval_id and evaluated_at",
+        ["approval"],
+      );
+    }
+    const detailedApproval = [
+      "not_yet_valid",
+      "active",
+      "expired",
+      "revoked",
+      "scope_mismatch",
+    ].includes(manifest.approval.status);
+    if (detailedApproval) {
+      invariant(
+        approvalFields.slice(1, 7).every((value) => value !== null),
+        "resolved approval artifact details are incomplete",
+        ["approval"],
+      );
+    }
+    invariant(
+      (manifest.approval.status === "revoked") === (manifest.approval.revocation_id !== null),
+      "revocation ID does not match approval status",
+      ["approval", "revocation_id"],
+    );
   });
 
 export const agentRunPreflightResponseSchema = z

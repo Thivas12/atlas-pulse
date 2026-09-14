@@ -389,8 +389,8 @@ describe("AtlasPulse API client", () => {
       {
         check_id: "human_release",
         status: "blocked",
-        observed: "not_granted",
-        required: "explicit_human_approval",
+        observed: "not_supplied",
+        required: "active_trusted_unrevoked_approval",
         blocking_reason: "human_release_not_granted",
       },
       {
@@ -403,9 +403,10 @@ describe("AtlasPulse API client", () => {
     ];
     const manifest = {
       manifest_id: `manifest-${"b".repeat(64)}`,
-      schema_version: "1.0.0",
-      rule_version: "agent-run-manifest-v1",
+      schema_version: "1.1.0",
+      rule_version: "agent-run-manifest-v2",
       identity_algorithm: "sha256-canonical-json-v1",
+      proposal_id: `proposal-${"e".repeat(64)}`,
       status: "blocked",
       request: {
         purpose: "evidence_triage",
@@ -429,7 +430,7 @@ describe("AtlasPulse API client", () => {
         evidence_ids: [],
       },
       policy: {
-        policy_version: "agent-authorization-v1",
+        policy_version: "agent-authorization-v2",
         default_decision: "deny",
         execution_enabled: false,
         human_release_required: true,
@@ -439,6 +440,18 @@ describe("AtlasPulse API client", () => {
         network_access_allowed: false,
         tool_access_allowed: false,
         external_side_effects_allowed: false,
+      },
+      approval: {
+        status: "not_supplied",
+        approval_id: null,
+        approved_proposal_id: null,
+        source_manifest_id: null,
+        approver_id: null,
+        signing_key_id: null,
+        issued_at: null,
+        expires_at: null,
+        revocation_id: null,
+        evaluated_at: null,
       },
       authorization: {
         decision: "blocked",
@@ -489,6 +502,22 @@ describe("AtlasPulse API client", () => {
     );
     await expect(fetchAgentRunPreflight({ query: "dangerous storm" })).rejects.toThrow(
       "manifest is not bound to the returned pack",
+    );
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({
+          ...body,
+          manifest: {
+            ...manifest,
+            approval: { ...manifest.approval, approval_id: `approval-${"a".repeat(64)}` },
+          },
+        }),
+      ),
+    );
+    await expect(fetchAgentRunPreflight({ query: "dangerous storm" })).rejects.toThrow(
+      "not_supplied approval state cannot contain ledger fields",
     );
   });
 

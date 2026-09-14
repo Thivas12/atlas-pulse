@@ -175,7 +175,13 @@ jobs:
         run: docker compose build
 
       - name: Start API, projectors, and web edge
-        run: docker compose up -d --wait --wait-timeout 120 api projector retrieval-indexer web
+        run: |
+          if ! docker compose up -d --wait --wait-timeout 120 \
+            api projector retrieval-indexer web; then
+            docker compose ps --all
+            docker compose logs --no-color migrate
+            exit 1
+          fi
 
       - name: Smoke-test edge routing
         run: |

@@ -99,6 +99,11 @@ async def test_real_valkey_source_poll_state_rejects_superseded_completion() -> 
         with pytest.raises(StaleSourcePollTransition, match="stale or duplicated"):
             await store.record_completed(success)
         state = (await store.load_states((source,)))[0]
+        first_page = await store.load_recent_transitions(before=None, limit=2)
+        second_page = await store.load_recent_transitions(
+            before=first_page[-1].stream_id,
+            limit=2,
+        )
     finally:
         await client.delete(state_key, history_stream)
         await client.aclose()
@@ -107,3 +112,5 @@ async def test_real_valkey_source_poll_state_rejects_superseded_completion() -> 
     assert state.current_attempt == second
     assert state.last_success == success
     assert state.consecutive_failures == 0
+    assert [item.transition for item in first_page] == ["started", "succeeded"]
+    assert [item.transition for item in second_page] == ["started"]

@@ -13,9 +13,11 @@ import {
   type SearchResponse,
   type SignalsResponse,
   type SourceFreshnessResponse,
+  type SourcePollHistoryResponse,
   searchResponseSchema,
   signalsResponseSchema,
   sourceFreshnessResponseSchema,
+  sourcePollHistoryResponseSchema,
   type ViewportBounds,
 } from "./types";
 
@@ -40,6 +42,10 @@ export function fetchLatest(signal?: AbortSignal): Promise<EventsResponse> {
 
 export function fetchSourceFreshness(signal?: AbortSignal): Promise<SourceFreshnessResponse> {
   return fetchValidated("/api/v1/source-freshness", sourceFreshnessResponseSchema, signal);
+}
+
+export function fetchSourcePollHistory(signal?: AbortSignal): Promise<SourcePollHistoryResponse> {
+  return fetchValidated("/api/v1/source-polls?limit=12", sourcePollHistoryResponseSchema, signal);
 }
 
 export function fetchReplay(after?: string, signal?: AbortSignal): Promise<ReplayResponse> {

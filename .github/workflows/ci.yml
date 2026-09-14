@@ -191,7 +191,7 @@ jobs:
           response = json.load(sys.stdin)
           assert response == {
               "status": "ready",
-              "version": "0.11.0",
+              "version": "0.12.0",
               "commit_sha": os.environ["ATLAS_BUILD_COMMIT_SHA"],
           }'
           curl --fail --silent --show-error \
@@ -203,6 +203,18 @@ jobs:
           assert [item["source"] for item in response["items"]] == ["gdelt", "nws", "usgs"]
           assert all(item["poll_status"] == "starting" for item in response["items"])
           assert all(item["source_data_status"] == "not_reported" for item in response["items"])'
+          curl --fail --silent --show-error \
+            'http://localhost:3000/api/v1/source-polls?limit=12' | python3 -c '
+          import json, sys
+          response = json.load(sys.stdin)
+          assert response["schema_version"] == "1.0.0"
+          assert response["rule_version"] == "source-poll-history-v1"
+          assert response["count"] == 0
+          assert response["items"] == []
+          assert response["next_cursor"] is None
+          assert response["has_more"] is False
+          assert response["order"] == "newest_first"
+          assert response["execution_enabled"] is False'
           curl --fail --silent --show-error \
             'http://localhost:3000/api/v1/search?q=earthquake' | python3 -c '
           import json, sys

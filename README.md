@@ -7,12 +7,15 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — operator-visible source freshness without inference.** Independent workers
+> **Current milestone — bounded source-poll recovery evidence without inference.** Independent
+> workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every poll now records an atomic, credential-free heartbeat,
 > bounded outcome, actual transport attempts, and upstream timestamp basis in Valkey—separately
-> from event publication. Every unmodified source response is preserved, strictly validated,
+> from event publication. A strict newest-first `/v1/source-polls` view and dashboard timeline now
+> expose the retained start-to-terminal sequence without URLs, payloads, exceptions, or secrets.
+> Every unmodified source response is preserved, strictly validated,
 > normalized, and atomically published to Valkey Streams. A restart-safe worker
 > transactionally projects every revision, current event pointer, and its checkpoint into
 > PostGIS. A bounded query-time correlation engine measures cross-source spatial and temporal
@@ -70,14 +73,15 @@ component can run without a paid API key.
 > assessment means only `eligible_for_human_review`; quality, human approval, and execution remain
 > separate gates, and execution is hard-disabled. A resource-capped Compose overlay and Caddy edge
 > now provide a reproducible free-tier HTTPS deployment path without manufacturing a live-service
-> or model-quality claim. v0.11 binds public liveness and readiness to the declared image commit and
+> or model-quality claim. v0.12 binds public liveness and readiness to the declared image commit and
 > adds content-addressed HTTPS, default-deny, resource, restart, backup, and isolated-restore
 > observations. The public `/v1/source-freshness` surface distinguishes poller health from upstream
 > data age, and the strict campaign requires both dimensions for every required source over 30
 > consecutive aligned sampled UTC dates. The dashboard now validates that exact contract and shows
 > poll heartbeat and upstream age as separate states; API errors remain explicitly unknown, while
-> bounded event recency is labelled only as visible-event age. Its strongest result is a minimum
-> observation set, never an SLA, completeness guarantee, or capacity claim.
+> bounded event recency is labelled only as visible-event age. The adjacent recovery timeline is
+> diagnostic retained history and does not count as campaign evidence. Its strongest result is a
+> minimum observation set, never an SLA, completeness guarantee, or capacity claim.
 
 ## Why this is portfolio-grade
 
@@ -86,7 +90,7 @@ component can run without a paid API key.
 | Real public data | Independent USGS, NOAA/NWS, NASA FIRMS, and GDELT 2.0 near-real-time feeds |
 | Auditability | SHA-256 content-addressed raw snapshots are written before parsing |
 | Reliable delivery | Bounded HTTP retry plus pipelined, revision-aware atomic Lua deduplication |
-| Source freshness | Atomic poll transitions, actual retry counts, source timestamp provenance, strict API/UI parity, separate heartbeat/data-age states, and stale/clock-skew detection |
+| Source freshness | Atomic poll transitions, actual retry counts, source timestamp provenance, strict API/UI parity, separate heartbeat/data-age states, stale/clock-skew detection, and bounded newest-first recovery replay |
 | Credential safety | Free FIRMS key is ingestor-only and redacted from events, errors, and spans |
 | Shared contracts | Immutable `Event` and `GeoPoint` models pinned to `agent-rag-core` commit `7732801` |
 | Deterministic replay | Exclusive Valkey Stream cursors page retained history oldest-first without boundary duplicates |
@@ -104,7 +108,7 @@ component can run without a paid API key.
 | Agent governance | Stable proposal scopes, short-lived actor-identified approvals, immutable revocations, trusted Ed25519 signatures, a PostgreSQL append-only hash chain, default-deny checks, and zero-execution proof |
 | Free-tier deployment | Resource-capped ARM Compose overlay, loopback-only internal ports, pinned Caddy HTTPS edge, cost guardrails, validation, backup, and rollback runbook |
 | Operational evidence | Declared-commit health, strict source-freshness probes, verified public TLS, bounded resource capture, drill bindings, and conservative 30-day sampled reports |
-| Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels, and an explicit source-operations beacon |
+| Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels, a source-operations beacon, and a credential-free recovery timeline |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI |
 | Supply-chain hygiene | Read-only workflow permissions, commit-pinned Actions, weekly dependency updates |
 
@@ -224,7 +228,7 @@ Solid paths are operational tooling today; they do not imply that a live candida
 review has occurred. The observatory contains isolated local evaluation workflows, not production
 inference services. Dashed paths are deliberate authority boundaries. The red airlock stays closed:
 even a passing trajectory assessment and a valid signed human approval cannot satisfy the separate
-execution-release gate in v0.11. The operations beacon is also evidence-only: it samples the
+execution-release gate in v0.12. The operations beacon is also evidence-only: it samples the
 poll heartbeat and upstream age, verifies the public boundary, and binds operator-run drills, but
 it cannot restart services, move backups, restore data, grant approval, or enable an agent.
 
@@ -275,6 +279,7 @@ projection, and indexing cycles, open the command center at
 curl -s http://localhost:8000/healthz
 curl -s http://localhost:8000/readyz
 curl -s http://localhost:8000/v1/source-freshness
+curl -s 'http://localhost:8000/v1/source-polls?limit=12'
 curl -s 'http://localhost:8000/v1/events?limit=5'
 curl -s 'http://localhost:8000/v1/events/replay?limit=5'
 curl -s 'http://localhost:8000/v1/signals?limit=5&active_only=true'
@@ -672,7 +677,10 @@ bounded public/resource observations, drill bindings, and conservative campaign 
 timestamp provenance, independent heartbeat/data-age states, and the 30-day freshness gate, and
 [ADR 0028](docs/adr/0028-source-freshness-operations-ui.md) for strict browser-side contract
 validation, explicit unknown states, and the separation of operational freshness from bounded
-event visibility.
+event visibility, and
+[ADR 0029](docs/adr/0029-bounded-source-poll-recovery-history.md) for credential-free retained
+transition history, newest-first exclusive cursors, and its separation from readiness and sampled
+campaign evidence.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 

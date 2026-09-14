@@ -74,7 +74,7 @@ Set at least these values in `.env`:
 ```dotenv
 ATLAS_ENVIRONMENT=free-tier-public
 ATLAS_BUILD_COMMIT_SHA=REPLACE_WITH_THE_FULL_40_CHARACTER_REVIEWED_COMMIT
-ATLAS_SOURCE_USER_AGENT=AtlasPulse/0.11 (+https://github.com/Thivas12/atlas-pulse)
+ATLAS_SOURCE_USER_AGENT=AtlasPulse/0.12 (+https://github.com/Thivas12/atlas-pulse)
 ATLAS_SOURCE_POLL_STALE_MULTIPLIER=3
 ATLAS_USGS_SOURCE_STALE_SECONDS=600
 ATLAS_NWS_SOURCE_STALE_SECONDS=900
@@ -117,6 +117,9 @@ curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/" | grep '<title>A
 curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/api/readyz"
 curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/api/v1/source-freshness" \
   | jq '{passed, sources: [.items[] | {source, poll_status, source_data_status, source_age_seconds}]}'
+curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/api/v1/source-polls?limit=6" \
+  | jq '{count, has_more, order, transitions: [.items[] |
+        {source, transition, stage: .attempt.stage, failure_code: .attempt.failure_code}]}'
 curl --fail --silent --show-error \
   "https://$ATLAS_PUBLIC_HOST/api/v1/agent-runs/preflight?q=earthquake" \
   | jq '{status: .manifest.status,

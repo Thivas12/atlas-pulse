@@ -12,10 +12,16 @@ from atlas_pulse.projections.base import SourceName
 
 SOURCE_POLL_SCHEMA_VERSION: Literal["1.0.0"] = "1.0.0"
 SOURCE_POLL_RULE_VERSION: Literal["source-poll-freshness-v1"] = "source-poll-freshness-v1"
+SOURCE_POLL_HISTORY_RULE_VERSION: Literal["source-poll-history-v1"] = "source-poll-history-v1"
 SOURCE_POLL_CAVEAT = (
     "Freshness is a point-in-time evaluation of worker-written Valkey state using the API host "
     "clock. It is not independent monitoring, an availability SLA, or proof that an upstream "
     "publisher is complete."
+)
+SOURCE_POLL_HISTORY_CAVEAT = (
+    "History is a bounded newest-first view of credential-free worker transitions retained in "
+    "Valkey. Retention can expire older entries; it is not independent monitoring, an "
+    "availability SLA, or proof of upstream completeness."
 )
 
 SourceTimestampBasis = Literal["source_metadata", "latest_record", "fetch_fallback"]
@@ -31,6 +37,7 @@ SourcePollFailureCode = Literal[
 ]
 SourcePollStatus = Literal["healthy", "degraded", "stale", "starting", "clock_skew"]
 SourceDataStatus = Literal["current", "stale", "not_reported", "future_clock_skew"]
+SourcePollTransitionKind = Literal["started", "succeeded", "failed"]
 
 
 class StrictModel(BaseModel):
@@ -156,6 +163,63 @@ class SourcePollState(StrictModel):
                 raise ValueError("successful current polls must also be the last success")
         elif self.current_attempt.outcome == "failed" and self.consecutive_failures < 1:
             raise ValueError("failed current polls require a positive consecutive-failure count")
+        return self
+
+
+class SourcePollTransition(StrictModel):
+    """One credential-free transition recovered from the bounded poll history."""
+
+    stream_id: str = Field(pattern=r"^[0-9]+-[0-9]+$")
+    source: SourceName
+    transition: SourcePollTransitionKind
+    attempt: SourcePollAttempt
+
+    @model_validator(mode="after")
+    def validate_transition(self) -> SourcePollTransition:
+        expected_outcome: dict[SourcePollTransitionKind, SourcePollOutcome] = {
+            "started": "in_progress",
+            "succeeded": "succeeded",
+            "failed": "failed",
+        }
+        if self.source != self.attempt.source:
+            raise ValueError("poll transition source must match its attempt")
+        if self.attempt.outcome != expected_outcome[self.transition]:
+            raise ValueError("poll transition must match its attempt outcome")
+        return self
+
+
+class SourcePollHistoryResponse(StrictModel):
+    """Bounded newest-first source-poll transition page."""
+
+    schema_version: Literal["1.0.0"] = SOURCE_POLL_SCHEMA_VERSION
+    rule_version: Literal["source-poll-history-v1"] = SOURCE_POLL_HISTORY_RULE_VERSION
+    generated_at: datetime
+    count: int = Field(ge=0)
+    items: tuple[SourcePollTransition, ...] = Field(max_length=100)
+    next_cursor: str | None = Field(default=None, pattern=r"^[0-9]+-[0-9]+$")
+    has_more: bool
+    order: Literal["newest_first"] = "newest_first"
+    execution_enabled: Literal[False] = False
+    caveat: str = SOURCE_POLL_HISTORY_CAVEAT
+
+    @model_validator(mode="after")
+    def validate_history(self) -> SourcePollHistoryResponse:
+        _require_utc(self.generated_at, "generated_at")
+        if self.count != len(self.items):
+            raise ValueError("poll history count must match its items")
+        expected_cursor = self.items[-1].stream_id if self.items else None
+        if self.next_cursor != expected_cursor:
+            raise ValueError("poll history cursor must identify the oldest returned transition")
+        if self.has_more and not self.items:
+            raise ValueError("empty poll history cannot report another page")
+        positions = [
+            tuple(int(part) for part in item.stream_id.split("-", maxsplit=1))
+            for item in self.items
+        ]
+        if len(positions) != len(set(positions)) or positions != sorted(positions, reverse=True):
+            raise ValueError("poll history transitions must be unique and newest first")
+        if self.execution_enabled is not False or self.caveat != SOURCE_POLL_HISTORY_CAVEAT:
+            raise ValueError("poll history must retain its observation-only boundary")
         return self
 
 

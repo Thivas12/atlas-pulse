@@ -61,6 +61,8 @@ export const signalsResponseSchema = eventsResponseSchema.extend({
 
 export const SOURCE_FRESHNESS_CAVEAT =
   "Freshness is a point-in-time evaluation of worker-written Valkey state using the API host clock. It is not independent monitoring, an availability SLA, or proof that an upstream publisher is complete.";
+export const SOURCE_POLL_HISTORY_CAVEAT =
+  "History is a bounded newest-first view of credential-free worker transitions retained in Valkey. Retention can expire older entries; it is not independent monitoring, an availability SLA, or proof of upstream completeness.";
 
 const sourceNameSchema = z.enum(["usgs", "nws", "firms", "gdelt"]);
 const sourcePollOutcomeSchema = z.enum(["in_progress", "succeeded", "failed"]);
@@ -250,6 +252,176 @@ export const sourceFreshnessResponseSchema = z
         }
       }
     });
+  });
+
+const sourcePollAttemptSchema = z
+  .object({
+    schema_version: z.literal("1.0.0"),
+    rule_version: z.literal("source-poll-freshness-v1"),
+    attempt_id: z.string().regex(/^source-poll-[0-9a-f]{32}$/),
+    source: sourceNameSchema,
+    started_at: freshnessTimestampSchema,
+    completed_at: freshnessTimestampSchema.nullable(),
+    outcome: sourcePollOutcomeSchema,
+    stage: sourcePollStageSchema,
+    transport_attempts: z.number().int().min(0).max(20),
+    source_generated_at: freshnessTimestampSchema.nullable(),
+    timestamp_basis: sourceTimestampBasisSchema.nullable(),
+    fetched_events: z.number().int().nonnegative().nullable(),
+    published_events: z.number().int().nonnegative().nullable(),
+    deduplicated_events: z.number().int().nonnegative().nullable(),
+    failure_code: sourcePollFailureCodeSchema.nullable(),
+    execution_enabled: z.literal(false),
+  })
+  .strict()
+  .superRefine((attempt, context) => {
+    const invariant = (valid: boolean, message: string, path: string[]) => {
+      if (!valid) context.addIssue({ code: "custom", message, path });
+    };
+    const counts = [attempt.fetched_events, attempt.published_events, attempt.deduplicated_events];
+    invariant(
+      (attempt.source_generated_at === null) === (attempt.timestamp_basis === null),
+      "source timestamp and basis must be present together",
+      ["source_generated_at"],
+    );
+    if (attempt.completed_at !== null) {
+      invariant(
+        Date.parse(attempt.completed_at) >= Date.parse(attempt.started_at),
+        "poll completion cannot precede its start",
+        ["completed_at"],
+      );
+    }
+    if (attempt.outcome === "in_progress") {
+      invariant(
+        attempt.completed_at === null &&
+          attempt.failure_code === null &&
+          attempt.stage !== "complete" &&
+          counts.every((value) => value === null) &&
+          attempt.transport_attempts === 0,
+        "in-progress polls cannot contain terminal metadata",
+        ["outcome"],
+      );
+    } else if (attempt.outcome === "succeeded") {
+      invariant(
+        attempt.completed_at !== null &&
+          attempt.stage === "complete" &&
+          attempt.failure_code === null &&
+          attempt.source_generated_at !== null &&
+          attempt.transport_attempts >= 1 &&
+          counts.every((value) => value !== null),
+        "successful polls require complete bounded result metadata",
+        ["outcome"],
+      );
+      if (
+        attempt.fetched_events !== null &&
+        attempt.published_events !== null &&
+        attempt.deduplicated_events !== null
+      ) {
+        invariant(
+          attempt.published_events + attempt.deduplicated_events === attempt.fetched_events,
+          "published and deduplicated counts must equal fetched events",
+          ["published_events"],
+        );
+      }
+    } else {
+      invariant(
+        attempt.completed_at !== null &&
+          attempt.failure_code !== null &&
+          attempt.stage !== "complete" &&
+          (counts.every((value) => value === null) || counts.every((value) => value !== null)),
+        "failed polls require bounded, internally complete terminal metadata",
+        ["outcome"],
+      );
+    }
+  });
+
+const sourcePollTransitionSchema = z
+  .object({
+    stream_id: z.string().regex(/^\d+-\d+$/),
+    source: sourceNameSchema,
+    transition: z.enum(["started", "succeeded", "failed"]),
+    attempt: sourcePollAttemptSchema,
+  })
+  .strict()
+  .superRefine((record, context) => {
+    const expectedOutcome = {
+      started: "in_progress",
+      succeeded: "succeeded",
+      failed: "failed",
+    } as const;
+    if (record.source !== record.attempt.source) {
+      context.addIssue({
+        code: "custom",
+        message: "poll transition source must match its attempt",
+        path: ["source"],
+      });
+    }
+    if (record.attempt.outcome !== expectedOutcome[record.transition]) {
+      context.addIssue({
+        code: "custom",
+        message: "poll transition must match its attempt outcome",
+        path: ["transition"],
+      });
+    }
+  });
+
+function streamPosition(value: string): [bigint, bigint] {
+  const [milliseconds, sequence] = value.split("-");
+  return [BigInt(milliseconds), BigInt(sequence)];
+}
+
+export const sourcePollHistoryResponseSchema = z
+  .object({
+    schema_version: z.literal("1.0.0"),
+    rule_version: z.literal("source-poll-history-v1"),
+    generated_at: freshnessTimestampSchema,
+    count: z.number().int().nonnegative(),
+    items: z.array(sourcePollTransitionSchema).max(100),
+    next_cursor: z
+      .string()
+      .regex(/^\d+-\d+$/)
+      .nullable(),
+    has_more: z.boolean(),
+    order: z.literal("newest_first"),
+    execution_enabled: z.literal(false),
+    caveat: z.literal(SOURCE_POLL_HISTORY_CAVEAT),
+  })
+  .strict()
+  .superRefine((response, context) => {
+    if (response.count !== response.items.length) {
+      context.addIssue({
+        code: "custom",
+        message: "poll history count must match its items",
+        path: ["count"],
+      });
+    }
+    const expectedCursor = response.items.at(-1)?.stream_id ?? null;
+    if (response.next_cursor !== expectedCursor) {
+      context.addIssue({
+        code: "custom",
+        message: "poll history cursor must identify the oldest returned transition",
+        path: ["next_cursor"],
+      });
+    }
+    if (response.has_more && response.items.length === 0) {
+      context.addIssue({
+        code: "custom",
+        message: "empty poll history cannot report another page",
+        path: ["has_more"],
+      });
+    }
+    const positions = response.items.map((item) => streamPosition(item.stream_id));
+    for (let index = 1; index < positions.length; index += 1) {
+      const previous = positions[index - 1];
+      const current = positions[index];
+      if (previous[0] < current[0] || (previous[0] === current[0] && previous[1] <= current[1])) {
+        context.addIssue({
+          code: "custom",
+          message: "poll history transitions must be unique and newest first",
+          path: ["items", index, "stream_id"],
+        });
+      }
+    }
   });
 
 const incidentCenterSchema = z.object({
@@ -948,6 +1120,9 @@ export type ReplayResponse = z.infer<typeof replayResponseSchema>;
 export type SignalsResponse = z.infer<typeof signalsResponseSchema>;
 export type SourceFreshnessItem = z.infer<typeof sourceFreshnessItemSchema>;
 export type SourceFreshnessResponse = z.infer<typeof sourceFreshnessResponseSchema>;
+export type SourcePollAttempt = z.infer<typeof sourcePollAttemptSchema>;
+export type SourcePollTransition = z.infer<typeof sourcePollTransitionSchema>;
+export type SourcePollHistoryResponse = z.infer<typeof sourcePollHistoryResponseSchema>;
 export type IncidentCandidate = z.infer<typeof incidentCandidateSchema>;
 export type IncidentsResponse = z.infer<typeof incidentsResponseSchema>;
 export type SearchHit = z.infer<typeof searchHitSchema>;

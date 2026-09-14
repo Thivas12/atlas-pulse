@@ -39,6 +39,8 @@ atlas-pulse-index = "atlas_pulse.indexer:main"
 atlas-pulse-evaluate = "atlas_pulse.evaluation.cli:main"
 atlas-pulse-evaluate-relationships = "atlas_pulse.relationship_evaluation.cli:main"
 atlas-pulse-evaluate-grounded-answers = "atlas_pulse.grounded_answer_evaluation.cli:main"
+atlas-pulse-cache-grounded-answer-model = "atlas_pulse.grounded_answer_runner_cli:cache_main"
+atlas-pulse-run-grounded-answer = "atlas_pulse.grounded_answer_runner_cli:main"
 atlas-pulse-cache-relationship-nli = "atlas_pulse.relationship_nli_cli:cache_main"
 atlas-pulse-run-relationship-nli = "atlas_pulse.relationship_nli_cli:main"
 

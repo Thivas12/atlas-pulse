@@ -62,7 +62,9 @@ run manifest but deliberately performs no model or agent execution.
 For offline candidate measurement, the
 [grounded-answer evaluation workflow](../evals/grounded-answers/README.md) captures these same
 deployed packs into gold-free tasks, independently revalidates their identities, and imports only
-atomic cited claims or explicit abstentions. It does not add an answer endpoint or relax preflight.
+atomic cited claims or explicit abstentions. Its separate pinned local runner can execute only that
+gold-free task through an owned offline llama.cpp process; it does not add an answer endpoint or
+relax preflight.
 
 The design rationale and rejected alternatives are recorded in
 [`ADR 0016`](adr/0016-content-addressed-agent-evidence-packs.md).

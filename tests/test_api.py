@@ -136,12 +136,28 @@ async def test_health_readiness_and_recent_events() -> None:
         events = await client.get("/v1/events", params={"limit": 1})
 
     assert health.status_code == 200
-    assert health.json() == {"status": "ok", "version": "0.8.0"}
+    assert health.json() == {"status": "ok", "version": "0.9.0", "commit_sha": "unknown"}
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
     assert events.status_code == 200
     assert events.json()["count"] == 1
     assert events.json()["items"][0]["event"]["event_id"] == "us7000demo"
+
+
+async def test_health_binds_a_reviewed_build_commit() -> None:
+    commit_sha = "a" * 40
+    transport = httpx.ASGITransport(app=create_app(InMemoryEventBus(), build_commit_sha=commit_sha))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        health = await client.get("/healthz")
+        ready = await client.get("/readyz")
+
+    assert health.json()["commit_sha"] == commit_sha
+    assert ready.json()["commit_sha"] == commit_sha
+
+
+def test_application_rejects_an_invalid_build_commit() -> None:
+    with pytest.raises(ValueError, match="build commit SHA"):
+        create_app(InMemoryEventBus(), build_commit_sha="moving-main")
 
 
 async def test_readiness_reports_dependency_failure() -> None:

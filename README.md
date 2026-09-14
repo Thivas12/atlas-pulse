@@ -7,7 +7,7 @@ data. AtlasPulse is designed as a production system, not a notebook: source byte
 auditable, contracts are strict, delivery is replayable, failures are observable, and every
 component can run without a paid API key.
 
-> **Current milestone — observable agent trajectories and governed release evidence.** Independent workers
+> **Current milestone — exact-deployment operational evidence.** Independent workers
 > poll official USGS earthquakes every 60 seconds, NOAA/NWS actual alerts every 120 seconds,
 > opt-in NASA FIRMS VIIRS thermal anomalies every 15 minutes, and GDELT 2.0 material-conflict
 > observations every 15 minutes. Every unmodified source response is preserved, strictly
@@ -68,7 +68,11 @@ component can run without a paid API key.
 > assessment means only `eligible_for_human_review`; quality, human approval, and execution remain
 > separate gates, and execution is hard-disabled. A resource-capped Compose overlay and Caddy edge
 > now provide a reproducible free-tier HTTPS deployment path without manufacturing a live-service
-> or model-quality claim.
+> or model-quality claim. v0.9 binds public liveness and readiness to the declared image commit and
+> adds content-addressed HTTPS, default-deny, resource, restart, backup, and isolated-restore
+> observations. A strict campaign report cross-validates those artifacts over 30 consecutive,
+> aligned, sampled UTC dates; its strongest result is a minimum observation set, never an SLA or
+> capacity claim.
 
 ## Why this is portfolio-grade
 
@@ -93,7 +97,7 @@ component can run without a paid API key.
 | Agent trajectory evaluation | Reasoning-free observable traces, exact candidate/evidence/claim bindings, capability-policy checks, joined adjudicated quality, chronological drift, and content-addressed release thresholds |
 | Agent governance | Stable proposal scopes, short-lived actor-identified approvals, immutable revocations, trusted Ed25519 signatures, a PostgreSQL append-only hash chain, default-deny checks, and zero-execution proof |
 | Free-tier deployment | Resource-capped ARM Compose overlay, loopback-only internal ports, pinned Caddy HTTPS edge, cost guardrails, validation, backup, and rollback runbook |
-| Operations | Liveness, dependency readiness, JSON logs, OpenTelemetry traces, graceful shutdown |
+| Operational evidence | Declared-commit health, verified public TLS, bounded resource capture, restart/backup/restore drill bindings, and conservative 30-day sampled reports |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI |
 | Supply-chain hygiene | Read-only workflow permissions, commit-pinned Actions, weekly dependency updates |
@@ -152,6 +156,16 @@ flowchart TB
         FUTURE["Specialist agents · locked"]:::future
     end
 
+    subgraph BEACON["◎ 06 · OPERATIONS BEACON"]
+        direction LR
+        PUBLIC["Verified HTTPS · exact commit"]:::beacon
+        SAMPLES["Probe + resource samples"]:::beacon
+        DRILLS["Restart · backup · restore"]:::drill
+        CAMPAIGN["30-day sampled report"]:::campaign
+        PUBLIC --> SAMPLES --> CAMPAIGN
+        DRILLS --> CAMPAIGN
+    end
+
     BUS --> PROJECTOR
     BUS --> INDEXER
     GRAPH --> RELATIONS
@@ -166,6 +180,7 @@ flowchart TB
     PACK --> API
     MANIFEST --> API
     MANIFEST -.-> FUTURE
+    EDGE --> PUBLIC
 
     classDef signal fill:#082f49,stroke:#38bdf8,color:#e0f2fe,stroke-width:1.5px
     classDef pulse fill:#083344,stroke:#22d3ee,color:#cffafe,stroke-width:2px
@@ -181,12 +196,16 @@ flowchart TB
     classDef human fill:#352a12,stroke:#facc15,color:#fef9c3,stroke-width:1.5px
     classDef audit fill:#0b2f2f,stroke:#2dd4bf,color:#ccfbf1,stroke-width:1.5px
     classDef surface fill:#172554,stroke:#60a5fa,color:#dbeafe,stroke-width:1.5px
+    classDef beacon fill:#0b2f36,stroke:#22d3ee,color:#cffafe,stroke-width:1.5px
+    classDef drill fill:#30260f,stroke:#fbbf24,color:#fef3c7,stroke-width:1.5px
+    classDef campaign fill:#123129,stroke:#34d399,color:#d1fae5,stroke-width:2.5px
     classDef future fill:#171b24,stroke:#94a3b8,color:#cbd5e1,stroke-width:1.5px,stroke-dasharray:6 4
     style ORBIT fill:#061521,stroke:#155e75,color:#bae6fd
     style CONSTELLATION fill:#071c1b,stroke:#166534,color:#bbf7d0
     style OBSERVATORY fill:#171329,stroke:#6d28d9,color:#ede9fe
     style AIRLOCK fill:#211116,stroke:#be123c,color:#fecdd3
     style SURFACE fill:#0d1730,stroke:#1d4ed8,color:#bfdbfe
+    style BEACON fill:#071d22,stroke:#0e7490,color:#cffafe
     linkStyle default stroke:#64748b,stroke-width:1.5px
 ```
 
@@ -194,7 +213,9 @@ Solid paths are operational tooling today; they do not imply that a live candida
 review has occurred. The observatory contains isolated local evaluation workflows, not production
 inference services. Dashed paths are deliberate authority boundaries. The red airlock stays closed:
 even a passing trajectory assessment and a valid signed human approval cannot satisfy the separate
-execution-release gate in v0.8.
+execution-release gate in v0.9. The operations beacon is also evidence-only: it verifies the
+public boundary and binds operator-run drills, but it cannot restart services, move backups,
+restore data, grant approval, or enable an agent.
 
 Each source is at-least-once and failure-isolated: a slow or unavailable source cannot stop the
 other pollers. Identical semantic content is idempotent for the configured seven-day dedupe
@@ -283,6 +304,9 @@ assessment-to-preflight binding are in
 [`docs/agent-trajectory-release.md`](docs/agent-trajectory-release.md). The free ARM host, HTTPS,
 cost, backup, and rollback path is in
 [`docs/free-tier-deployment.md`](docs/free-tier-deployment.md).
+Exact-commit public probes, bounded resource capture, restart/backup/restore bindings, and the
+sampled 30-day campaign report are documented in
+[`docs/operational-evidence.md`](docs/operational-evidence.md).
 Live mode is served from current PostGIS state, omits expired alerts/detections, and refreshes the
 map with an indexed bounding-box query after every settled pan or zoom. Geometry-less NWS alerts
 remain in the global feed without being falsely placed on the map. Replay starts
@@ -425,8 +449,8 @@ ATLAS_TEST_DATABASE_URL=postgresql+asyncpg://atlas:atlas@localhost:5432/atlas \
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/healthz` | Process liveness; does not depend on Valkey |
-| `GET` | `/readyz` | Returns `503` when Valkey or PostGIS is unavailable |
+| `GET` | `/healthz` | Process liveness plus declared image commit; does not depend on Valkey |
+| `GET` | `/readyz` | Dependency readiness plus declared image commit; returns `503` when Valkey or PostGIS is unavailable |
 | `GET` | `/v1/events?limit=50` | Newest normalized events and their replay IDs |
 | `GET` | `/v1/events/replay?limit=100&after=<stream-id>` | Oldest-first page strictly after an optional cursor |
 | `GET` | `/v1/signals?limit=100&after=<stream-id>` | Newest-first, de-duplicated current signals with keyset pagination |
@@ -629,7 +653,9 @@ the still-closed release boundary, and
 expiry/revocation, Ed25519 trust anchors, and database-enforced append-only ledger semantics, and
 [ADR 0025](docs/adr/0025-observable-agent-trajectory-release-policy.md) for reasoning-free
 trajectory evidence, longitudinal drift, content-addressed thresholds, and the still-closed
-execution boundary.
+execution boundary, and
+[ADR 0026](docs/adr/0026-content-addressed-operational-evidence.md) for exact-deployment identity,
+bounded public/resource observations, drill bindings, and conservative campaign semantics.
 A reproducible
 [60-second demo](docs/demo.md) is included for project reviews.
 
@@ -655,6 +681,7 @@ credential solely for transaction metering.
 | Grounded-answer evaluation | Pydantic, Qwen3 1.7B Q8 GGUF, llama.cpp, dual protected CSV review, per-field agreement, human adjudication | Apache-2.0/open source/local; no inference or judge API |
 | Agent governance | Versioned policy checks, canonical JSON, Ed25519 via `cryptography`, PostgreSQL ledger | Open source/local; no model or agent framework |
 | Trajectory release evidence | Strict Pydantic artifacts, observable metadata, deterministic metrics and drift | Open source/local; no telemetry or judge service |
+| Operational evidence | Strict Pydantic artifacts, verified TLS, Docker Compose state/stats, host `/proc` and filesystem metrics | Open source/local; no monitoring SaaS |
 | Web command center | React, TypeScript, TanStack Query, Zod | Open source |
 | Geospatial UI | MapLibre GL + OpenFreeMap/OpenStreetMap | Open source/public, no key |
 | Static serving | Caddy | Open source |
@@ -677,9 +704,11 @@ credential solely for transaction metering.
    two independent model-blind reviews, resolve disputed fields through the checked-in adjudication
    workflow, and populate the final descriptive report before proposing any threshold or preflight
    policy change.
-4. Deploy the resource-capped free-tier HTTPS slice, collect at least 30 days of readiness,
-   freshness, restart, certificate, resource, backup, and restore evidence, and publish only the
-   measurements actually observed.
+4. Deploy one reviewed exact commit through the resource-capped free-tier HTTPS slice, schedule the
+   checked-in probe and resource collectors, then accumulate at least 30 consecutive aligned UTC
+   sample dates plus real restart, encrypted off-host backup, and isolated restore evidence.
+   Publish only the measurements actually observed; event visibility is not source-poll freshness
+   or an SLA.
 5. Run at least three fresh grounded-answer/trajectory captures through independent review and the
    pinned release policy. Only after real evidence is eligible and an exact-scope approval exists,
    design a separately authenticated canary execution, kill switch, and rollback boundary; do not

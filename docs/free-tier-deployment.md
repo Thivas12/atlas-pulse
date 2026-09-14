@@ -73,9 +73,14 @@ Set at least these values in `.env`:
 
 ```dotenv
 ATLAS_ENVIRONMENT=free-tier-public
-ATLAS_SOURCE_USER_AGENT=AtlasPulse/0.8 (+https://github.com/Thivas12/atlas-pulse)
+ATLAS_BUILD_COMMIT_SHA=REPLACE_WITH_THE_FULL_40_CHARACTER_REVIEWED_COMMIT
+ATLAS_SOURCE_USER_AGENT=AtlasPulse/0.9 (+https://github.com/Thivas12/atlas-pulse)
 ATLAS_PUBLIC_HOST=atlas.YOUR_PUBLIC_IP_WITH_DASHES.sslip.io
 ```
+
+Confirm that `ATLAS_BUILD_COMMIT_SHA` exactly matches `git rev-parse HEAD`. Both public health
+endpoints expose it, allowing the evidence collector to reject a version-correct image built from
+the wrong revision.
 
 For example, IP `203.0.113.10` becomes `atlas.203-0-113-10.sslip.io`. A normal DNS A/AAAA record
 pointing to the VM is preferable when one is already available. The hostname must resolve publicly
@@ -138,9 +143,12 @@ Copy backups to operator-controlled storage and test restoration on a separate d
 Do not describe local-only volumes as a backup. OCI lists Always Free Object Storage, but enabling
 it requires a separately reviewed retention and credential policy.
 
-Collect at least 30 days of observed readiness, source freshness, ingest gaps, resource pressure,
-restart recovery, certificate renewal, and restore-test evidence before claiming an evidence-backed
-pilot. A process being up once is not measured availability.
+Use the checked-in [operational evidence workflow](operational-evidence.md) to bind the deployed
+commit, collect public probes and resource snapshots, and record operator-run restart, encrypted
+off-host backup, and isolated restore drills. Collect at least 30 consecutive aligned UTC sample
+dates before
+publishing even its narrow `minimum_observation_set_complete` result. Event visibility does not
+prove source-poll freshness, and a process being up once is not measured availability.
 
 ## 5. Update and roll back
 

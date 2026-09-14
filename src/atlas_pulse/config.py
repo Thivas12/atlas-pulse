@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     )
 
     environment: str = "development"
+    build_commit_sha: str = Field(default="unknown", pattern=r"^(unknown|[0-9a-f]{40})$")
     log_level: str = "INFO"
     usgs_feed_url: HttpUrl = HttpUrl(
         "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson"
@@ -50,7 +51,7 @@ class Settings(BaseSettings):
     gdelt_max_rows: int = Field(default=100_000, ge=1, le=1_000_000)
     gdelt_max_events: int = Field(default=5_000, ge=1, le=100_000)
     source_user_agent: str = Field(
-        default="AtlasPulse/0.8 (+https://github.com/Thivas12/atlas-pulse)",
+        default="AtlasPulse/0.9 (+https://github.com/Thivas12/atlas-pulse)",
         min_length=10,
     )
     source_timeout_seconds: float = Field(default=15.0, gt=0)

@@ -74,6 +74,9 @@ jobs:
       - name: Type-check
         run: uv run mypy src tests
 
+      - name: Verify operations CLI entry point
+        run: uv run atlas-pulse-operations --help
+
       - name: Test with branch coverage
         run: uv run pytest --cov=atlas_pulse --cov-branch --cov-report=term-missing
 
@@ -115,6 +118,8 @@ jobs:
     name: Containers / build and smoke test
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      ATLAS_BUILD_COMMIT_SHA: ${{ github.sha }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -154,7 +159,14 @@ jobs:
       - name: Smoke-test edge routing
         run: |
           curl --fail --silent --show-error http://localhost:3000/ | grep --fixed-strings '<title>AtlasPulse'
-          curl --fail --silent --show-error http://localhost:3000/api/readyz | grep --fixed-strings '"status":"ready"'
+          curl --fail --silent --show-error http://localhost:3000/api/readyz | python3 -c '
+          import json, os, sys
+          response = json.load(sys.stdin)
+          assert response == {
+              "status": "ready",
+              "version": "0.9.0",
+              "commit_sha": os.environ["ATLAS_BUILD_COMMIT_SHA"],
+          }'
           curl --fail --silent --show-error \
             'http://localhost:3000/api/v1/search?q=earthquake' | python3 -c '
           import json, sys

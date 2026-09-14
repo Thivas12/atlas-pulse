@@ -3,6 +3,10 @@ FROM ghcr.io/astral-sh/uv:0.12.13 AS uv
 
 FROM python:3.12-slim-bookworm AS runtime
 
+ARG ATLAS_BUILD_COMMIT_SHA=unknown
+
+LABEL org.opencontainers.image.revision=$ATLAS_BUILD_COMMIT_SHA
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
@@ -11,6 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ATLAS_EMBEDDING_CACHE_DIR=/opt/atlas-models \
     ATLAS_EMBEDDING_MODEL_PATH=/opt/atlas-models/bge-small-en-v1.5 \
     ATLAS_EMBEDDING_LOCAL_FILES_ONLY=true \
+    ATLAS_BUILD_COMMIT_SHA=$ATLAS_BUILD_COMMIT_SHA \
     PATH="/opt/venv/bin:$PATH"
 
 COPY --from=uv /uv /uvx /bin/

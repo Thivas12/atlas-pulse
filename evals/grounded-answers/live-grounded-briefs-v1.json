@@ -1,0 +1,137 @@
+{
+  "schema_version": "1.0.0",
+  "benchmark_id": "live-grounded-briefs-v1",
+  "title": "Live grounded disruption briefs",
+  "description": "Operator-shaped questions for measuring atomic claim support, citation quality, direct relevance, abstention behavior, tokenizer budgets, and local generation latency over exact deployed evidence packs.",
+  "retrieval_limit": 12,
+  "candidate_limit": 60,
+  "max_items": 6,
+  "max_characters_per_item": 1400,
+  "max_total_characters": 8000,
+  "queries": [
+    {
+      "query_id": "conflict-disruptions",
+      "question": "What recent conflict-related disruptions are reported, where did they occur, and what uncertainty remains?",
+      "slices": [
+        "conflict",
+        "multi-claim",
+        "uncertainty"
+      ],
+      "filters": {
+        "source": "gdelt",
+        "active_only": false
+      }
+    },
+    {
+      "query_id": "cross-source-evacuation",
+      "question": "Which evacuation conditions are explicitly supported by more than one source, and where do the sources differ?",
+      "slices": [
+        "cross-source",
+        "evacuation",
+        "relationship"
+      ],
+      "filters": {
+        "active_only": false
+      }
+    },
+    {
+      "query_id": "earthquake-impacts",
+      "question": "What are the most recent significant earthquake observations, including location, magnitude evidence, and any stated impact?",
+      "slices": [
+        "earthquake",
+        "multi-claim",
+        "single-source"
+      ],
+      "filters": {
+        "source": "usgs",
+        "active_only": false
+      }
+    },
+    {
+      "query_id": "fire-thermal-signals",
+      "question": "Where are recent thermal anomalies reported, and what can and cannot be concluded from those observations?",
+      "slices": [
+        "fire",
+        "single-source",
+        "uncertainty"
+      ],
+      "filters": {
+        "source": "firms",
+        "active_only": false
+      }
+    },
+    {
+      "query_id": "flood-road-access",
+      "question": "What current flood-related road access restrictions are stated, and which named locations are affected?",
+      "slices": [
+        "road-access",
+        "weather"
+      ],
+      "filters": {
+        "source": "nws",
+        "active_only": true
+      }
+    },
+    {
+      "query_id": "infrastructure-access",
+      "question": "What evidence describes disrupted transport or infrastructure access, with location and timing for each cited claim?",
+      "slices": [
+        "cross-source",
+        "infrastructure",
+        "multi-claim"
+      ],
+      "filters": {
+        "active_only": false
+      }
+    },
+    {
+      "query_id": "severe-weather-actions",
+      "question": "What protective actions are explicitly recommended by current severe-weather alerts, and for which areas?",
+      "slices": [
+        "action",
+        "single-source",
+        "weather"
+      ],
+      "filters": {
+        "source": "nws",
+        "active_only": true
+      }
+    },
+    {
+      "query_id": "source-conflicts",
+      "question": "Do any retrieved sources make mutually inconsistent statements about hazard type, evacuation status, or road access?",
+      "slices": [
+        "contradiction",
+        "cross-source",
+        "relationship"
+      ],
+      "filters": {
+        "active_only": false
+      }
+    },
+    {
+      "query_id": "uncertainty-summary",
+      "question": "What disruption evidence is available now, and which important conclusions are not supported by the retrieved records?",
+      "slices": [
+        "abstention",
+        "cross-source",
+        "uncertainty"
+      ],
+      "filters": {
+        "active_only": true
+      }
+    },
+    {
+      "query_id": "wildfire-evacuations",
+      "question": "What wildfire-related evacuation statements are currently available, with source and location for every claim?",
+      "slices": [
+        "evacuation",
+        "fire",
+        "multi-claim"
+      ],
+      "filters": {
+        "active_only": true
+      }
+    }
+  ]
+}

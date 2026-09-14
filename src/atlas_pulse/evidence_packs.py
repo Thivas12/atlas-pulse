@@ -219,6 +219,79 @@ def _pack_identity(
     return f"pack-{digest}"
 
 
+def validate_evidence_pack_identity(pack: EvidencePack) -> None:
+    """Reject a deserialized pack whose claimed ID does not match its exact contents."""
+    if (
+        pack.schema_version != EVIDENCE_PACK_SCHEMA_VERSION
+        or pack.rule_version != EVIDENCE_PACK_RULE_VERSION
+        or pack.identity_algorithm != EVIDENCE_PACK_IDENTITY_ALGORITHM
+        or pack.trust_boundary != EVIDENCE_PACK_TRUST_BOUNDARY
+        or pack.caveat != EVIDENCE_PACK_CAVEAT
+    ):
+        raise ValueError("evidence pack metadata does not match the executable contract")
+    expected_status: EvidencePackStatus = (
+        "traceable_evidence_available" if pack.items else "no_traceable_evidence"
+    )
+    if pack.status != expected_status:
+        raise ValueError("evidence pack status must match its included evidence")
+    if pack.source_text_characters != sum(item.text_characters for item in pack.items):
+        raise ValueError("evidence pack source-text count must match its items")
+    item_ranks = [item.retrieval_rank for item in pack.items]
+    exclusion_ranks = [item.retrieval_rank for item in pack.exclusions]
+    if item_ranks != sorted(item_ranks) or exclusion_ranks != sorted(exclusion_ranks):
+        raise ValueError("evidence pack items and exclusions must preserve retrieval order")
+    returned_ranks = [*item_ranks, *exclusion_ranks]
+    if pack.retrieval.returned_hits != len(returned_ranks):
+        raise ValueError("evidence pack retrieval count must cover items and exclusions")
+    if sorted(returned_ranks) != list(range(1, pack.retrieval.returned_hits + 1)):
+        raise ValueError("evidence pack retrieval ranks must exactly cover returned hits")
+    if pack.retrieval.candidates_considered < pack.retrieval.returned_hits:
+        raise ValueError("evidence pack candidate count cannot be smaller than returned hits")
+    if (
+        len(pack.items) > pack.budget.max_items
+        or pack.source_text_characters > pack.budget.max_total_characters
+        or any(item.text_characters > pack.budget.max_characters_per_item for item in pack.items)
+    ):
+        raise ValueError("evidence pack items must remain within their declared budget")
+    evidence_ids: set[str] = set()
+    retrieval_ranks: set[int] = set()
+    for item in pack.items:
+        if item.evidence_id in evidence_ids or item.retrieval_rank in retrieval_ranks:
+            raise ValueError("evidence pack items must use unique identities and retrieval ranks")
+        evidence_ids.add(item.evidence_id)
+        retrieval_ranks.add(item.retrieval_rank)
+        if item.citation.status != "traceable" or not item.citation.url:
+            raise ValueError("evidence pack items require traceable citations")
+        if item.text_characters != len(item.text) or item.text_sha256 != document_hash(item.text):
+            raise ValueError("evidence pack item text measurements must match exact text")
+        if item.document_characters < item.text_characters:
+            raise ValueError(
+                "evidence pack item document length cannot be smaller than its excerpt"
+            )
+        if item.truncated != (item.document_characters > item.text_characters):
+            raise ValueError("evidence pack item truncation flag must match its text measurements")
+        expected_evidence_id = _evidence_id(
+            stream_id=item.stream_id,
+            event_id=item.event_id,
+            source=item.source,
+            document_sha256=item.document_sha256,
+            text_sha256=item.text_sha256,
+            citation=item.citation,
+        )
+        if item.evidence_id != expected_evidence_id:
+            raise ValueError("evidence pack item ID must match its exact evidence identity")
+    expected = _pack_identity(
+        status=pack.status,
+        budget=pack.budget,
+        retrieval=pack.retrieval,
+        items=pack.items,
+        exclusions=pack.exclusions,
+        source_text_characters=pack.source_text_characters,
+    )
+    if pack.pack_id != expected:
+        raise ValueError("evidence pack ID must match its exact retrieval and evidence contents")
+
+
 def build_evidence_pack(
     result: SearchResult,
     query: SearchQuery,

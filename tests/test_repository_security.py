@@ -222,6 +222,7 @@ def test_compose_trust_graph_is_machine_checked() -> None:
     workstation = (ROOT / "deploy" / "workstation-funnel" / "compose.yaml").read_text(
         encoding="utf-8"
     )
+    workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")
     assert free_tier.count("${ATLAS_POSTGRES_PASSWORD:?") == 5
     assert free_tier.count("${ATLAS_API_RATE_LIMIT_CLIENT_SECRET:?") == 1
     assert workstation.count("${ATLAS_POSTGRES_PASSWORD:?") == 5
@@ -230,11 +231,16 @@ def test_compose_trust_graph_is_machine_checked() -> None:
     assert '"127.0.0.1:8443:8080"' in workstation
     assert '"80:80"' not in workstation
     assert '"443:443"' not in workstation
+    edge_dockerfile = (ROOT / "deploy" / "free-tier" / "Dockerfile").read_text(encoding="utf-8")
+    assert "setcap -r /usr/bin/caddy" in edge_dockerfile
+    assert "cap_add:\n      - NET_BIND_SERVICE" in free_tier
+    assert "cap_add:" not in workstation
+    assert "docker run --rm --entrypoint caddy \\\n            --cap-drop ALL" in workflow
+    assert "--security-opt no-new-privileges=true" in workflow
     assert (ROOT / "compose.yaml").read_text(encoding="utf-8").count("gw_priority: 1") == 5
     assert free_tier.count("gw_priority: 1") == 1
     assert workstation.count("gw_priority: 1") == 1
 
-    workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")
     assert "verify_compose_security.py --deployment base" in workflow
     assert "verify_compose_security.py --deployment free-tier" in workflow
     assert "verify_compose_security.py --deployment workstation-funnel" in workflow

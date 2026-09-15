@@ -35,7 +35,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: "24.19.0"
+          node-version: "24.21.0"
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -45,6 +45,77 @@ jobs:
       - name: Audit locked npm dependencies
         working-directory: web
         run: npm audit --package-lock-only --audit-level=moderate
+
+  container-vulnerability-scan:
+    name: Container vulnerability scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source without retaining credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build runtime images from immutable inputs
+        run: |
+          docker build --tag "atlas-pulse-api:${{ github.sha }}" .
+          docker build --tag "atlas-pulse-web:${{ github.sha }}" web
+          docker build \
+            --tag "atlas-pulse-postgres:${{ github.sha }}" \
+            --file docker/postgres/Dockerfile \
+            .
+          valkey_image="$(
+            python3 -c \
+              'import json; print(json.load(open("deploy/container-images.json"))["valkey"])'
+          )"
+          docker pull "$valkey_image"
+
+      - name: Install pinned Trivy scanner
+        uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514 # v0.2.6
+        with:
+          version: v0.74.0
+          cache: false
+
+      - name: Report all high and critical runtime findings
+        run: |
+          valkey_image="$(
+            python3 -c \
+              'import json; print(json.load(open("deploy/container-images.json"))["valkey"])'
+          )"
+          for image in \
+            "atlas-pulse-api:${{ github.sha }}" \
+            "atlas-pulse-web:${{ github.sha }}" \
+            "atlas-pulse-postgres:${{ github.sha }}" \
+            "$valkey_image"; do
+            trivy image \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --exit-code 0 \
+              --no-progress \
+              "$image"
+          done
+
+      - name: Reject fixable high and critical runtime findings
+        run: |
+          valkey_image="$(
+            python3 -c \
+              'import json; print(json.load(open("deploy/container-images.json"))["valkey"])'
+          )"
+          scan_status=0
+          for image in \
+            "atlas-pulse-api:${{ github.sha }}" \
+            "atlas-pulse-web:${{ github.sha }}" \
+            "atlas-pulse-postgres:${{ github.sha }}" \
+            "$valkey_image"; do
+            trivy image \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --exit-code 1 \
+              --no-progress \
+              "$image" || scan_status=1
+          done
+          exit "$scan_status"
 
   codeql:
     name: CodeQL / ${{ matrix.language }}

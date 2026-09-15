@@ -115,9 +115,9 @@ component can run without a paid API key.
 | Free-tier deployment | Resource-capped ARM Compose overlay, loopback-only internal ports, pinned Caddy HTTPS edge, cost guardrails, validation, backup, and rollback runbook |
 | Operational evidence | Declared-commit health, strict source-freshness probes, verified public TLS, bounded resource capture, read-only restart/source-recovery drill bindings, and conservative 30-day sampled reports |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels, a source-operations beacon, and a credential-free recovery timeline |
-| Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI, a deterministic Chromium smoke test of production assets, and static repository-policy tests |
-| Security governance | Explicit code ownership, private-reporting guidance, a versioned threat model, synchronized browser security headers exercised under Chromium, CodeQL for Python and TypeScript, and locked Python/npm vulnerability audits |
-| Supply-chain hygiene | Read-only workflow permissions, credential-free checkout, commit-pinned Actions, weekly dependency updates |
+| Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI, a deterministic Chromium smoke test of production assets, and static browser/container repository-policy tests |
+| Security governance | Explicit code ownership, private-reporting guidance, a versioned threat model, synchronized browser security headers exercised under Chromium, CodeQL for Python and TypeScript, locked Python/npm audits, and a fixable HIGH/CRITICAL runtime-image gate |
+| Supply-chain hygiene | Read-only workflow permissions, credential-free checkout, commit-pinned Actions, tag-plus-digest container inputs, and weekly dependency/image updates |
 
 ## Architecture
 
@@ -692,7 +692,13 @@ event visibility, and
 transition history, newest-first exclusive cursors, and its separation from readiness and sampled
 campaign evidence, and
 [ADR 0030](docs/adr/0030-content-addressed-source-poll-recovery-drill.md) for exact fault-window,
-probe, and transition binding without giving the recorder mutation authority or inferring causality.
+probe, and transition binding without giving the recorder mutation authority or inferring
+causality, and
+[ADR 0031](docs/adr/0031-synchronized-browser-response-policy.md) for one browser-response
+contract enforced across preview, internal, and public edges, and
+[ADR 0032](docs/adr/0032-immutable-container-inputs-and-vulnerability-gate.md) for readable
+digest-pinned image inputs, synchronized update coverage, and the actionable runtime vulnerability
+gate.
 A repository-level [security policy](SECURITY.md) and versioned
 [threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current
 controls, residual risks, and owner-configured branch protections.

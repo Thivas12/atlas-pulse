@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 20
     services:
       valkey:
-        image: valkey/valkey:9.1.2-alpine
+        image: valkey/valkey:9.1.2-alpine@sha256:a0dbf4c1d5708782907c10e2c72deff317518518b5288a58416981d9db95d30b
         ports:
           - 6379:6379
         options: >-
@@ -102,7 +102,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: "24.19.0"
+          node-version: "24.21.0"
           cache: npm
           cache-dependency-path: web/package-lock.json
 

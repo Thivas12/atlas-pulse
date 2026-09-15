@@ -32,7 +32,7 @@ x-atlas-environment: &atlas-environment
 
 services:
   valkey:
-    image: valkey/valkey:9.1.2-alpine
+    image: valkey/valkey:9.1.2-alpine@sha256:a0dbf4c1d5708782907c10e2c72deff317518518b5288a58416981d9db95d30b
     command: ["valkey-server", "--appendonly", "yes"]
     restart: unless-stopped
     ports:

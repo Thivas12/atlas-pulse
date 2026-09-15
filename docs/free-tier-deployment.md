@@ -99,6 +99,17 @@ approval keys on this public host.
 
 ## 3. Validate and start
 
+Every external image reference includes a readable release tag and an immutable multi-platform
+digest. `deploy/container-images.json` is the review inventory, and repository-policy tests keep
+the Dockerfiles, base Compose model, free-tier overlay, and CI service image synchronized with it.
+The locally named `atlas-pulse-postgres` image is a build output; its external PostGIS parent is
+pinned in `docker/postgres/Dockerfile`.
+
+Review image digest updates like source changes. The Security workflow builds the deployable
+runtime images, reports all HIGH/CRITICAL Trivy findings, and rejects findings that have an
+available fix. An unfixed finding remains visible and requires risk review, but does not claim an
+application-side remediation exists.
+
 Render the merged Compose model before building:
 
 ```bash
@@ -172,7 +183,8 @@ prove source-poll freshness, and a process being up once is not measured availab
 ## 5. Update and roll back
 
 Before an update, record the current commit, create an off-host backup, and review the target diff.
-Then rebuild the pinned target:
+For an image update, require the tag, digest, inventory, and use sites to change together and verify
+the hosted container vulnerability scan. Then rebuild the pinned target:
 
 ```bash
 git fetch --tags origin

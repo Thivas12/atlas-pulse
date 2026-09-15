@@ -112,7 +112,7 @@ component can run without a paid API key.
 | Grounded-answer evaluation | Gold-free live tasks, a revision-pinned local Qwen/llama.cpp runner, case-local citation schemas, tokenizer/context checks, dual model-blind reviews, per-field agreement, disagreement-only blind adjudication, descriptive metrics, and a closed promotion boundary |
 | Agent trajectory evaluation | Reasoning-free observable traces, exact candidate/evidence/claim bindings, capability-policy checks, joined adjudicated quality, chronological drift, and content-addressed release thresholds |
 | Agent governance | Stable proposal scopes, short-lived actor-identified approvals, immutable revocations, trusted Ed25519 signatures, a PostgreSQL append-only hash chain, default-deny checks, and zero-execution proof |
-| Free-tier deployment | Resource-capped ARM Compose overlay, loopback-only internal ports, pinned Caddy HTTPS edge, cost guardrails, validation, backup, and rollback runbook |
+| Free-tier deployment | Resource-capped ARM Compose overlay, per-client internal networks, isolated source/edge egress, a required non-default database credential, pinned Caddy HTTPS edge, cost guardrails, validation, backup, and rollback runbook |
 | Operational evidence | Declared-commit health, strict source-freshness probes, verified public TLS, bounded resource capture, read-only restart/source-recovery drill bindings, and conservative 30-day sampled reports |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels, a source-operations beacon, and a credential-free recovery timeline |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI, a deterministic Chromium smoke test of production assets, and static browser/container repository-policy tests |
@@ -698,6 +698,9 @@ causality, and
 contract enforced across preview, internal, and public edges, and
 [ADR 0032](docs/adr/0032-immutable-container-inputs-and-vulnerability-gate.md) for readable
 digest-pinned image inputs, synchronized update coverage, and the actionable runtime vulnerability
+gate, and
+[ADR 0033](docs/adr/0033-segmented-runtime-trust-boundaries.md) for exact per-client networks,
+single-service egress, least-privilege environment injection, and the public database-credential
 gate.
 A repository-level [security policy](SECURITY.md) and versioned
 [threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current

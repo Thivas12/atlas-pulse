@@ -87,9 +87,9 @@ jobs:
         run: docker rm --force atlas-pulse-postgres-ci || true
 
   frontend:
-    name: Frontend / lint, test, build
+    name: Frontend / lint, test, build, browser smoke
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web
@@ -115,8 +115,17 @@ jobs:
       - name: Test with coverage thresholds
         run: npm run test:coverage
 
+      - name: Type-check browser smoke
+        run: npm run typecheck:e2e
+
       - name: Type-check and build production assets
         run: npm run build
+
+      - name: Install Chromium and operating-system dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke-test production assets in Chromium
+        run: npm run test:e2e
 
   containers:
     name: Containers / build and smoke test

@@ -79,7 +79,10 @@ component can run without a paid API key.
 > assessment means only `eligible_for_human_review`; quality, human approval, and execution remain
 > separate gates, and execution is hard-disabled. A resource-capped Compose overlay and Caddy edge
 > now provide a reproducible free-tier HTTPS deployment path without manufacturing a live-service
-> or model-quality claim. v0.12 binds public liveness and readiness to the declared image commit and
+> or model-quality claim. Every public `/v1/*` request now consumes an atomic, pseudonymous
+> Valkey-backed client budget; expensive retrieval/correlation routes consume a second tighter
+> budget, exhausted quotas return `429`, and unavailable quota state fails closed without storing
+> raw client addresses. v0.12 binds public liveness and readiness to the declared image commit and
 > adds content-addressed HTTPS, default-deny, resource, restart, backup, and isolated-restore
 > observations. The public `/v1/source-freshness` surface distinguishes poller health from upstream
 > data age, and the strict campaign requires both dimensions for every required source over 30
@@ -98,6 +101,7 @@ component can run without a paid API key.
 | Reliable delivery | Bounded HTTP retry plus pipelined, revision-aware atomic Lua deduplication |
 | Source freshness | Atomic poll transitions, actual retry counts, source timestamp provenance, strict API/UI parity, separate heartbeat/data-age states, bounded newest-first replay, and content-addressed operator-scoped recovery drills |
 | Credential safety | Free FIRMS key is ingestor-only and redacted from events, errors, and spans |
+| Public API abuse boundary | Proxy-normalized client identity, HMAC-pseudonymous Valkey keys, atomic general/expensive quotas, explicit `429`/`Retry-After`, and fail-closed quota errors |
 | Shared contracts | Immutable `Event` and `GeoPoint` models pinned to `agent-rag-core` commit `7732801` |
 | Deterministic replay | Exclusive Valkey Stream cursors page retained history oldest-first without boundary duplicates |
 | Durable current state | Immutable PostgreSQL revisions plus atomic current pointers and restart-safe checkpoint |
@@ -595,6 +599,10 @@ deterministic for retained entries rather than an indefinite event archive.
   failed batch is retried from the unchanged cursor and duplicate revision inserts are harmless.
 - Readiness fails closed when the stream or durable query store is unavailable; liveness remains
   available.
+- Public `/v1/*` requests consume a shared 120-per-60-second pseudonymous client budget. Search,
+  incident correlation, evidence-pack, and agent-preflight routes also consume a 20-per-60-second
+  budget. Health checks are exempt; exhausted budgets return `429`, and unavailable quota state
+  returns `503`. These configurable defaults are abuse bounds, not measured capacity claims.
 - Correlation reads only projected current state inside explicit time, distance, viewport, edge,
   and component bounds. Truncation is part of the response contract; widening a dense query can
   change component membership when the candidate-edge cap is reached.
@@ -701,7 +709,9 @@ digest-pinned image inputs, synchronized update coverage, and the actionable run
 gate, and
 [ADR 0033](docs/adr/0033-segmented-runtime-trust-boundaries.md) for exact per-client networks,
 single-service egress, least-privilege environment injection, and the public database-credential
-gate.
+gate, and
+[ADR 0034](docs/adr/0034-pseudonymous-api-request-budgets.md) for proxy-normalized client identity,
+pseudonymous shared quotas, fail-closed enforcement, and the remaining distributed-denial boundary.
 A repository-level [security policy](SECURITY.md) and versioned
 [threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current
 controls, residual risks, and owner-configured branch protections.

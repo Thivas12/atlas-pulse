@@ -1,3 +1,12 @@
+{
+  servers {
+    # The public edge appends the direct client to X-Forwarded-For. Only private proxy peers and
+    # the trusted loopback host path may contribute to the right-to-left client-IP chain.
+    trusted_proxies static private_ranges
+    trusted_proxies_strict
+  }
+}
+
 :8080 {
   encode zstd gzip
 
@@ -17,7 +26,10 @@
 
   handle /api/* {
     uri strip_prefix /api
-    reverse_proxy api:8000
+    reverse_proxy api:8000 {
+      # Always replace any incoming value with Caddy's normalized trusted client address.
+      header_up X-Atlas-Client-IP {client_ip}
+    }
   }
 
   handle {

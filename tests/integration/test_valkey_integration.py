@@ -1,7 +1,9 @@
 """Real Valkey Streams contract test, enabled in CI and Docker workstations."""
 
+import asyncio
 import os
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from uuid import uuid4
 
 import pytest
@@ -9,11 +11,38 @@ from agent_rag_core import Event
 from valkey.asyncio import Valkey
 
 from atlas_pulse.projections.base import SourceName
+from atlas_pulse.rate_limit import RateLimitPolicy, ValkeyRateLimiter
 from atlas_pulse.source_poll_store import StaleSourcePollTransition, ValkeySourcePollStore
 from atlas_pulse.source_polling import SourcePollAttempt, SourcePollPolicy, new_source_poll_attempt
 from atlas_pulse.streams import ValkeyEventBus
 
 VALKEY_URL = os.getenv("ATLAS_TEST_VALKEY_URL")
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(VALKEY_URL is None, reason="ATLAS_TEST_VALKEY_URL is not set")
+async def test_real_valkey_rate_limit_is_atomic_and_expires() -> None:
+    assert VALKEY_URL is not None
+    limiter = ValkeyRateLimiter(url=VALKEY_URL)
+    client_key = sha256(uuid4().bytes).hexdigest()
+    policy = RateLimitPolicy("integration", 2, 1)
+
+    try:
+        first = await limiter.consume(client_key, policy)
+        second = await limiter.consume(client_key, policy)
+        denied = await limiter.consume(client_key, policy)
+        await asyncio.sleep(1.1)
+        reset = await limiter.consume(client_key, policy)
+    finally:
+        await limiter.close()
+
+    assert first.allowed is True
+    assert first.remaining == 1
+    assert second.allowed is True
+    assert second.remaining == 0
+    assert denied.allowed is False
+    assert reset.allowed is True
+    assert reset.remaining == 1
 
 
 @pytest.mark.integration

@@ -1,5 +1,6 @@
 """Typed application configuration loaded from environment variables."""
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -67,6 +68,10 @@ class Settings(BaseSettings):
     source_poll_history_max_length: int = Field(default=50_000, ge=100)
     raw_data_dir: Path = Path("data/raw")
     valkey_url: str = "valkey://localhost:6379/0"
+    api_rate_limit_client_secret: SecretStr = SecretStr("local-development-only-rate-limit-secret")
+    api_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3_600)
+    api_rate_limit_requests: int = Field(default=120, ge=1, le=100_000)
+    api_expensive_rate_limit_requests: int = Field(default=20, ge=1, le=100_000)
     event_stream: str = "{atlas}:events"
     stream_max_length: int = Field(default=100_000, ge=100)
     dedupe_ttl_seconds: int = Field(default=604_800, ge=60)
@@ -116,6 +121,17 @@ class Settings(BaseSettings):
                 raise ValueError("agent approval key IDs must use ed25519-<sha256>")
         return value
 
+    @field_validator("api_rate_limit_client_secret")
+    @classmethod
+    def validate_api_rate_limit_client_secret(cls, value: SecretStr) -> SecretStr:
+        """Keep the per-deployment HMAC key bounded and safe for environment files."""
+        secret = value.get_secret_value()
+        if re.fullmatch(r"[A-Za-z0-9_-]{32,128}", secret) is None:
+            raise ValueError(
+                "API rate-limit client secret must be 32-128 URL-safe ASCII characters"
+            )
+        return value
+
     @model_validator(mode="after")
     def require_firms_key_when_enabled(self) -> "Settings":
         """Fail fast when a deployed FIRMS poller has no free API credential."""
@@ -128,6 +144,11 @@ class Settings(BaseSettings):
             )
         if self.gdelt_max_events > self.gdelt_max_rows:
             raise ValueError("ATLAS_GDELT_MAX_EVENTS must not exceed ATLAS_GDELT_MAX_ROWS")
+        if self.api_expensive_rate_limit_requests > self.api_rate_limit_requests:
+            raise ValueError(
+                "ATLAS_API_EXPENSIVE_RATE_LIMIT_REQUESTS must not exceed "
+                "ATLAS_API_RATE_LIMIT_REQUESTS"
+            )
         self.source_poll_policies()
         return self
 

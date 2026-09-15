@@ -148,6 +148,7 @@ jobs:
         run: |
           ATLAS_PUBLIC_HOST=atlas.203-0-113-10.sslip.io \
           ATLAS_POSTGRES_PASSWORD=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+          ATLAS_API_RATE_LIMIT_CLIENT_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
             docker compose -f compose.yaml -f deploy/free-tier/compose.yaml config --format json \
               | python3 scripts/verify_compose_security.py --deployment free-tier
           ATLAS_AGENT_RELEASE_ASSESSMENT_HOST_PATH=/tmp/atlas-release-assessment.json \
@@ -195,7 +196,8 @@ jobs:
 
       - name: Start API, projectors, and web edge
         run: |
-          if ! docker compose up -d --wait --wait-timeout 120 \
+          if ! ATLAS_API_EXPENSIVE_RATE_LIMIT_REQUESTS=4 \
+            docker compose up -d --wait --wait-timeout 120 \
             api projector retrieval-indexer web; then
             docker compose ps --all
             docker compose logs --no-color migrate
@@ -285,6 +287,24 @@ jobs:
               "agent_tools_invoked": False,
               "answer_generated": False,
               "agent_side_effects_performed": False,
+          }'
+          curl --fail --silent --show-error \
+            --dump-header /tmp/atlas-rate-limit-allowed-headers \
+            'http://localhost:3000/api/v1/search?q=earthquake' > /dev/null
+          grep --ignore-case --fixed-strings 'x-ratelimit-policy: expensive' \
+            /tmp/atlas-rate-limit-allowed-headers
+          test "$(curl --silent --show-error \
+            --dump-header /tmp/atlas-rate-limit-denied-headers \
+            --output /tmp/atlas-rate-limit-denied-body \
+            --write-out '%{http_code}' \
+            'http://localhost:3000/api/v1/search?q=earthquake')" = 429
+          grep --ignore-case --fixed-strings 'retry-after:' \
+            /tmp/atlas-rate-limit-denied-headers
+          python3 -c '
+          import json
+          from pathlib import Path
+          assert json.loads(Path("/tmp/atlas-rate-limit-denied-body").read_text()) == {
+              "detail": "request rate limit exceeded",
           }'
 
       - name: Stop containers

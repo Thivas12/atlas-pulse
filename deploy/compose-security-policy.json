@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "deployments": {
     "base": {
       "networks": {
@@ -52,12 +52,17 @@
       },
       "environment_owners": {
         "ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS": ["api"],
+        "ATLAS_API_EXPENSIVE_RATE_LIMIT_REQUESTS": ["api"],
+        "ATLAS_API_RATE_LIMIT_CLIENT_SECRET": ["api"],
+        "ATLAS_API_RATE_LIMIT_REQUESTS": ["api"],
+        "ATLAS_API_RATE_LIMIT_WINDOW_SECONDS": ["api"],
         "ATLAS_DATABASE_URL": ["api", "migrate", "projector", "retrieval-indexer"],
         "ATLAS_FIRMS_MAP_KEY": ["ingestor"],
         "ATLAS_VALKEY_URL": ["api", "ingestor", "projector", "retrieval-indexer"],
         "POSTGRES_PASSWORD": ["postgres"]
       },
-      "require_public_database_password": false
+      "require_public_database_password": false,
+      "require_public_rate_limit_secret": false
     },
     "free-tier": {
       "networks": {
@@ -116,13 +121,18 @@
       },
       "environment_owners": {
         "ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS": ["api"],
+        "ATLAS_API_EXPENSIVE_RATE_LIMIT_REQUESTS": ["api"],
+        "ATLAS_API_RATE_LIMIT_CLIENT_SECRET": ["api"],
+        "ATLAS_API_RATE_LIMIT_REQUESTS": ["api"],
+        "ATLAS_API_RATE_LIMIT_WINDOW_SECONDS": ["api"],
         "ATLAS_DATABASE_URL": ["api", "migrate", "projector", "retrieval-indexer"],
         "ATLAS_FIRMS_MAP_KEY": ["ingestor"],
         "ATLAS_PUBLIC_HOST": ["edge"],
         "ATLAS_VALKEY_URL": ["api", "ingestor", "projector", "retrieval-indexer"],
         "POSTGRES_PASSWORD": ["postgres"]
       },
-      "require_public_database_password": true
+      "require_public_database_password": true,
+      "require_public_rate_limit_secret": true
     }
   }
 }

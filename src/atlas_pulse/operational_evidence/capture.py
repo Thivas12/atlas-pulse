@@ -681,15 +681,30 @@ def capture_resource_snapshot(
     container_ids = tuple(
         _required_string(record.get("ID"), "ID").casefold() for record in ps_records
     )
+    state_values = tuple(
+        _required_string(record.get("State"), "State").casefold() for record in ps_records
+    )
+    running_container_ids = tuple(
+        container_id
+        for container_id, state in zip(container_ids, state_values, strict=True)
+        if state == "running"
+    )
     stats_records = (
         _json_records(
             command_runner(
-                ("docker", "stats", "--no-stream", "--format", "{{json .}}", *container_ids),
+                (
+                    "docker",
+                    "stats",
+                    "--no-stream",
+                    "--format",
+                    "{{json .}}",
+                    *running_container_ids,
+                ),
                 root,
             ),
             "docker stats",
         )
-        if container_ids
+        if running_container_ids
         else ()
     )
     stats_by_id: dict[str, Mapping[str, object]] = {}
@@ -703,12 +718,13 @@ def capture_resource_snapshot(
     seen_services: set[str] = set()
     valid_states = {"created", "running", "restarting", "exited", "paused", "dead"}
     valid_health = {"healthy", "unhealthy", "starting"}
-    for record, container_id in zip(ps_records, container_ids, strict=True):
+    for record, container_id, state_value in zip(
+        ps_records, container_ids, state_values, strict=True
+    ):
         service = _required_string(record.get("Service"), "Service")
         if service in seen_services:
             raise ValueError("Docker Compose contains duplicate service observations")
         seen_services.add(service)
-        state_value = _required_string(record.get("State"), "State").casefold()
         state = cast(ServiceState, state_value if state_value in valid_states else "unknown")
         health_value = record.get("Health")
         health_text = health_value.casefold() if isinstance(health_value, str) else ""
@@ -720,13 +736,17 @@ def capture_resource_snapshot(
             if not health_text
             else "unknown",
         )
-        stats = next(
-            (
-                value
-                for identifier, value in stats_by_id.items()
-                if identifier.startswith(container_id) or container_id.startswith(identifier)
-            ),
-            None,
+        stats = (
+            next(
+                (
+                    value
+                    for identifier, value in stats_by_id.items()
+                    if identifier.startswith(container_id) or container_id.startswith(identifier)
+                ),
+                None,
+            )
+            if state == "running"
+            else None
         )
         if stats is None:
             cpu_percent = None

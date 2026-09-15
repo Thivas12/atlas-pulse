@@ -138,9 +138,11 @@ uv run atlas-pulse-operations capture-resource \
   --output "artifacts/operations/evidence/${stamp}-resource.evidence.json"
 ```
 
-The collector calls only `docker compose ... ps --format json` and `docker stats --no-stream`. It
-does not call `docker inspect`, read container logs, or retain environment values. Docker authority
-is effectively root-equivalent; restrict access to the deployment account and evidence directory.
+The collector calls only `docker compose ... ps --format json` and `docker stats --no-stream` for
+running containers. Exited one-shot services remain in the snapshot without live resource metrics.
+It does not call `docker inspect`, read container logs, or retain environment values. Docker
+authority is effectively root-equivalent; restrict access to the deployment account and evidence
+directory.
 
 Run both commands at a fixed cadence using the host's timer facility. Keep failed samples rather
 than deleting them. The repository intentionally does not pretend that one daily sample is an SLA;

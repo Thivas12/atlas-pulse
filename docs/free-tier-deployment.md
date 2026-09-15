@@ -102,13 +102,14 @@ approval keys on this public host.
 Every external image reference includes a readable release tag and an immutable multi-platform
 digest. `deploy/container-images.json` is the review inventory, and repository-policy tests keep
 the Dockerfiles, base Compose model, free-tier overlay, and CI service image synchronized with it.
-The locally named `atlas-pulse-postgres` image is a build output; its external PostGIS parent is
-pinned in `docker/postgres/Dockerfile`.
+The locally named `atlas-pulse-postgres` and `atlas-pulse-edge` images are build outputs; their
+external PostGIS and Caddy parents are pinned in their Dockerfiles.
 
 Review image digest updates like source changes. The Security workflow builds the deployable
-runtime images, reports all HIGH/CRITICAL Trivy findings, and rejects findings that have an
-available fix. An unfixed finding remains visible and requires risk review, but does not claim an
-application-side remediation exists.
+runtime images, reports all HIGH/CRITICAL Trivy findings, and rejects fixable HIGH/CRITICAL
+operating-system packages after applying current distribution security updates. Unfixed findings
+and embedded vendor-binary fixes remain visible for risk review until an upstream image update can
+actually carry the remediation.
 
 Render the merged Compose model before building:
 

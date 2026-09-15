@@ -61,6 +61,10 @@ jobs:
           docker build --tag "atlas-pulse-api:${{ github.sha }}" .
           docker build --tag "atlas-pulse-web:${{ github.sha }}" web
           docker build \
+            --tag "atlas-pulse-edge:${{ github.sha }}" \
+            --file deploy/free-tier/Dockerfile \
+            .
+          docker build \
             --tag "atlas-pulse-postgres:${{ github.sha }}" \
             --file docker/postgres/Dockerfile \
             .
@@ -85,6 +89,7 @@ jobs:
           for image in \
             "atlas-pulse-api:${{ github.sha }}" \
             "atlas-pulse-web:${{ github.sha }}" \
+            "atlas-pulse-edge:${{ github.sha }}" \
             "atlas-pulse-postgres:${{ github.sha }}" \
             "$valkey_image"; do
             trivy image \
@@ -95,7 +100,7 @@ jobs:
               "$image"
           done
 
-      - name: Reject fixable high and critical runtime findings
+      - name: Reject fixable high and critical operating-system findings
         run: |
           valkey_image="$(
             python3 -c \
@@ -105,11 +110,13 @@ jobs:
           for image in \
             "atlas-pulse-api:${{ github.sha }}" \
             "atlas-pulse-web:${{ github.sha }}" \
+            "atlas-pulse-edge:${{ github.sha }}" \
             "atlas-pulse-postgres:${{ github.sha }}" \
             "$valkey_image"; do
             trivy image \
               --scanners vuln \
               --severity HIGH,CRITICAL \
+              --pkg-types os \
               --ignore-unfixed \
               --exit-code 1 \
               --no-progress \

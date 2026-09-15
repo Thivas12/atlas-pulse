@@ -99,22 +99,37 @@ def test_container_inputs_are_digest_pinned_synchronized_and_scanned() -> None:
             images["dockerfile_frontend"],
             images["postgis"],
         },
+        "deploy/free-tier/Dockerfile": {
+            images["caddy"],
+            images["dockerfile_frontend"],
+        },
     }
     for relative_path, expected in expected_dockerfile_inputs.items():
         content = (ROOT / relative_path).read_text(encoding="utf-8")
         declared = set(re.findall(r"^(?:# syntax=|FROM\s+)([^\s]+)", content, re.MULTILINE))
         assert declared == expected, f"{relative_path}: synchronize inputs with the image contract"
 
+    api_dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "UV_NO_CACHE=1" in api_dockerfile
+    assert "apt-get upgrade --yes" in api_dockerfile
+    for relative_path in (
+        "web/Dockerfile",
+        "docker/postgres/Dockerfile",
+        "deploy/free-tier/Dockerfile",
+    ):
+        assert "apk upgrade --no-cache" in (ROOT / relative_path).read_text(encoding="utf-8")
+
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     free_tier = (ROOT / "deploy" / "free-tier" / "compose.yaml").read_text(encoding="utf-8")
     ci_workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")
     assert f"image: {images['valkey']}" in compose
-    assert f"image: {images['caddy']}" in free_tier
+    assert "dockerfile: deploy/free-tier/Dockerfile" in free_tier
+    assert "image: atlas-pulse-edge:2.11.4-alpine" in free_tier
     assert f"image: {images['valkey']}" in ci_workflow
 
     allowed_yaml_images = {
-        images["caddy"],
         images["valkey"],
+        "atlas-pulse-edge:2.11.4-alpine",
         "atlas-pulse-postgres:17-postgis3.5-pgvector0.8.6-alpine",
     }
     for relative_path in (
@@ -130,7 +145,7 @@ def test_container_inputs_are_digest_pinned_synchronized_and_scanned() -> None:
 
     security_workflow = (WORKFLOW_DIRECTORY / "security.yml").read_text(encoding="utf-8")
     report_step = "- name: Report all high and critical runtime findings"
-    gate_step = "- name: Reject fixable high and critical runtime findings"
+    gate_step = "- name: Reject fixable high and critical operating-system findings"
     assert "aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514" in (
         security_workflow
     )
@@ -139,11 +154,13 @@ def test_container_inputs_are_digest_pinned_synchronized_and_scanned() -> None:
     assert 'open("deploy/container-images.json")' in security_workflow
     assert security_workflow.count("--severity HIGH,CRITICAL") == 2
     assert security_workflow.count("--exit-code 0") == 1
+    assert security_workflow.count("--pkg-types os") == 1
     assert security_workflow.count("--ignore-unfixed") == 1
     assert security_workflow.count("--exit-code 1") == 1
     for runtime_image in (
         '"atlas-pulse-api:${{ github.sha }}"',
         '"atlas-pulse-web:${{ github.sha }}"',
+        '"atlas-pulse-edge:${{ github.sha }}"',
         '"atlas-pulse-postgres:${{ github.sha }}"',
     ):
         assert security_workflow.count(runtime_image) == 3

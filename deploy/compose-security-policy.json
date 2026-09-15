@@ -4,6 +4,11 @@
     "base": {
       "networks": {
         "api-postgres": {"internal": true, "services": ["api", "postgres"]},
+        "api-host": {
+          "internal": false,
+          "services": ["api"],
+          "gateway_priority": 1
+        },
         "api-valkey": {"internal": true, "services": ["api", "valkey"]},
         "api-web": {"internal": true, "services": ["api", "web"]},
         "indexer-postgres": {
@@ -24,9 +29,24 @@
           "internal": true,
           "services": ["projector", "valkey"]
         },
+        "postgres-host": {
+          "internal": false,
+          "services": ["postgres"],
+          "gateway_priority": 1
+        },
         "source-egress": {
           "internal": false,
           "services": ["ingestor"],
+          "gateway_priority": 1
+        },
+        "valkey-host": {
+          "internal": false,
+          "services": ["valkey"],
+          "gateway_priority": 1
+        },
+        "web-host": {
+          "internal": false,
+          "services": ["web"],
           "gateway_priority": 1
         }
       },
@@ -42,6 +62,11 @@
     "free-tier": {
       "networks": {
         "api-postgres": {"internal": true, "services": ["api", "postgres"]},
+        "api-host": {
+          "internal": false,
+          "services": ["api"],
+          "gateway_priority": 1
+        },
         "api-valkey": {"internal": true, "services": ["api", "valkey"]},
         "api-web": {"internal": true, "services": ["api", "web"]},
         "edge-egress": {
@@ -68,9 +93,24 @@
           "internal": true,
           "services": ["projector", "valkey"]
         },
+        "postgres-host": {
+          "internal": false,
+          "services": ["postgres"],
+          "gateway_priority": 1
+        },
         "source-egress": {
           "internal": false,
           "services": ["ingestor"],
+          "gateway_priority": 1
+        },
+        "valkey-host": {
+          "internal": false,
+          "services": ["valkey"],
+          "gateway_priority": 1
+        },
+        "web-host": {
+          "internal": false,
+          "services": ["web"],
           "gateway_priority": 1
         }
       },

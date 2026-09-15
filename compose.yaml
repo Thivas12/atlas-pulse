@@ -46,10 +46,12 @@ services:
       timeout: 2s
       retries: 10
     networks:
-      - api-valkey
-      - ingestor-valkey
-      - projector-valkey
-      - indexer-valkey
+      api-valkey:
+      ingestor-valkey:
+      projector-valkey:
+      indexer-valkey:
+      valkey-host:
+        gw_priority: 1
 
   postgres:
     build:
@@ -71,10 +73,12 @@ services:
       timeout: 3s
       retries: 20
     networks:
-      - api-postgres
-      - migrate-postgres
-      - projector-postgres
-      - indexer-postgres
+      api-postgres:
+      migrate-postgres:
+      projector-postgres:
+      indexer-postgres:
+      postgres-host:
+        gw_priority: 1
 
   migrate:
     build: *atlas-python-build
@@ -119,9 +123,11 @@ services:
       timeout: 3s
       retries: 5
     networks:
-      - api-valkey
-      - api-postgres
-      - api-web
+      api-valkey:
+      api-postgres:
+      api-web:
+      api-host:
+        gw_priority: 1
 
   ingestor:
     build: *atlas-python-build
@@ -206,6 +212,8 @@ services:
       retries: 5
     networks:
       api-web:
+      web-host:
+        gw_priority: 1
 
 networks:
   api-valkey:
@@ -226,6 +234,10 @@ networks:
     internal: true
   api-web:
     internal: true
+  valkey-host:
+  postgres-host:
+  api-host:
+  web-host:
   source-egress:
 
 volumes:

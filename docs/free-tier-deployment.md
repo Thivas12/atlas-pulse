@@ -151,12 +151,15 @@ docker compose -f compose.yaml -f deploy/free-tier/compose.yaml up -d --build --
 The validator rejects a new service, an undeclared network path, widened egress, misplaced FIRMS or
 database credentials, mismatched database passwords, and a weak public password. PostgreSQL and
 Valkey expose a separate internal network to each client. The API and web tier share one internal
-link; the public edge and web tier share another. Only the ingestor and edge receive outbound
-networks, and those networks are distinct so the two services cannot contact each other directly.
+link; the public edge and web tier share another. The four loopback-published services each receive
+their own non-internal host bridge because Docker does not publish ports through an internal-only
+bridge. The ingestor and edge use separate purpose-specific egress networks. Every non-internal
+network has exactly one service, so none creates a shared container-to-container path.
 
-This default-deny egress also means an external OpenTelemetry collector is not reachable from the
-API or internal workers. Add a collector through a separately reviewed Compose overlay and a
-dedicated internal network instead of widening an existing data-plane network.
+The host bridges can also provide outbound routing to the API, web, PostgreSQL, and Valkey
+containers. Projector, retrieval-indexer, and migration containers remain internal-only. Treat
+host-level outbound firewall policy as a separate deployment control, and attach any future
+telemetry collector through a reviewed dedicated network rather than widening a data-plane link.
 
 The first build downloads the pinned local BGE embedding artifact and can take several minutes.
 The service restart policies bring the stack back after a normal host reboot.

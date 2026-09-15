@@ -204,7 +204,7 @@ def test_compose_trust_graph_is_machine_checked() -> None:
 
     free_tier = (ROOT / "deploy" / "free-tier" / "compose.yaml").read_text(encoding="utf-8")
     assert free_tier.count("${ATLAS_POSTGRES_PASSWORD:?") == 5
-    assert (ROOT / "compose.yaml").read_text(encoding="utf-8").count("gw_priority: 1") == 1
+    assert (ROOT / "compose.yaml").read_text(encoding="utf-8").count("gw_priority: 1") == 5
     assert free_tier.count("gw_priority: 1") == 1
 
     workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")

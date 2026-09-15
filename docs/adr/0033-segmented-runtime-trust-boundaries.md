@@ -24,9 +24,8 @@ access, real PostGIS/Valkey integration, ARM compatibility, and a zero-cost depl
    clients do not share those networks with one another.
 2. Put the API and internal web proxy on one dedicated internal network. In the public overlay, put
    the web proxy and Caddy edge on a separate internal network.
-3. Give only the ingestor and public edge outbound connectivity. Each receives its own
-   single-service egress network, so source polling and ACME do not create a shared lateral path.
-   Set each egress attachment's `gw_priority` to make it the deterministic default gateway.
+3. Give the ingestor and public edge separate single-service purpose-specific egress networks, so
+   source polling and ACME do not create a shared lateral path.
 4. Split the Compose environment anchor into runtime, source-policy, Valkey, and database maps.
    Inject database, Valkey, FIRMS, and approval settings only into processes that consume them. The
    API and ingestor retain an identical source-freshness policy without sharing the ingestor's
@@ -42,8 +41,12 @@ access, real PostGIS/Valkey integration, ARM compatibility, and a zero-cost depl
    models in CI. Reject unknown services or networks, changed memberships, widened credential
    scope, mismatched database credentials, and weak public passwords.
 8. Keep the API, database, cache, and internal web ports bound to host loopback for development and
-   operator diagnostics. Network segmentation is additive to host-port policy, not a replacement.
-9. Do not add a model, agent, executable side effect, external secrets service, service mesh, paid
+   operator diagnostics. Attach each published service to its own non-internal host bridge because
+   Docker does not route a published port through an internal-only bridge. These networks have no
+   container peers but can provide outbound routing.
+9. Set `gw_priority` on every purpose-specific egress and host attachment so it is the deterministic
+   default gateway instead of relying on network attachment order.
+10. Do not add a model, agent, executable side effect, external secrets service, service mesh, paid
    firewall, or hosted control plane.
 
 ## Consequences
@@ -59,8 +62,9 @@ access, real PostGIS/Valkey integration, ARM compatibility, and a zero-cost depl
   values regardless of container segmentation.
 - Four database clients still share one application role. Separate read, write, migration, and
   projection roles require a later schema-privilege design and migration plan.
-- Internal application containers have no default external route. An optional external telemetry
-  collector now requires an explicit reviewed overlay and dedicated network.
+- Migration, projection, and retrieval-indexer containers have no non-internal network. The API,
+  web, PostgreSQL, and Valkey host bridges may permit outbound traffic; host firewall egress policy
+  remains a separate control.
 - Existing local workflows retain the convenient loopback credential. It must never be represented
   as suitable for a public deployment.
 - PostgreSQL applies `POSTGRES_PASSWORD` only when initializing an empty data directory. The runbook
@@ -75,8 +79,9 @@ access, real PostGIS/Valkey integration, ARM compatibility, and a zero-cost depl
   lateral movement on that network.
 - **Use one database network and one Valkey network.** This blocks cross-datastore access but still
   lets every client on a datastore network address every other client.
-- **Give all runtime services one outbound network.** It preserves optional external telemetry but
-  recreates a broad lateral path. A reviewed collector network is narrower.
+- **Give runtime services one shared outbound network.** It preserves optional external telemetry
+  but recreates a broad lateral path. Single-service host bridges and reviewed dedicated networks
+  are narrower.
 - **Remove loopback database and cache ports.** That would unnecessarily break the documented local
   development and operator workflow; loopback exposure is a separate host boundary.
 - **Put the public password directly in the repository.** A non-default checked-in secret is still

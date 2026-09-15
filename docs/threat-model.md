@@ -47,7 +47,7 @@ flowchart TB
 | PostgreSQL/Valkey → API | Public events, graph, search, freshness, evidence packs, blocked run manifests | Read-only HTTP surface, typed response contracts, strict query limits and cursors, no arbitrary server-side URL fetch | There is no user authentication, per-client quota, or application-layer rate limit |
 | API → browser/user | Public-source text, coordinates, links, operational state | React text escaping, Zod validation, credential-safe citation rules, HTTPS edge, and synchronized browser security headers | Source text can still be deceptive; external evidence links, map tiles, and web fonts leave the site boundary |
 | Operator → governance ledger | Proposal approvals, revocations, public keys | Exact proposal scope, Ed25519 signatures, trusted key IDs, expiry, append-only hash chain, PostgreSQL constraints | Private-key or operator-host compromise defeats the human-authenticity assumption |
-| Pull request → GitHub Actions | Repository code and dependency changes | `pull_request` rather than `pull_request_target`, read-only default token, commit-pinned actions, no retained checkout credentials, CodeQL and locked dependency audits | GitHub-hosted runners and pinned third-party action commits remain trusted dependencies |
+| Pull request → GitHub Actions | Repository code and dependency changes | `pull_request` rather than `pull_request_target`, read-only default token, commit-pinned actions, digest-pinned container inputs, no retained checkout credentials, CodeQL, locked dependency audits, and runtime image scanning | GitHub-hosted runners, pinned third-party action commits, image registries, and vulnerability databases remain trusted dependencies |
 
 ## Threat register
 
@@ -61,7 +61,7 @@ flowchart TB
 | T6 | Unsafe evidence URLs expose credentials or direct users to private/local targets | Citation validation rejects embedded credentials and private/local targets; evidence packs never fetch citations server-side | A structurally public URL is not a safe or truthful destination. The UI must not describe `traceable` as verified |
 | T7 | Prompt injection in public-source text controls a model or tool | Evidence text is explicitly untrusted; production search creates no answer; model runners are offline, bounded, and promotion-blocked; agent execution is hard-disabled | Any future tool-using model requires a new authenticated canary boundary, capability allowlist, kill switch, and rollback plan |
 | T8 | Forged, replayed, stale, or over-broad approval bypasses agent governance | Exact proposal binding, actor identity, 24-hour maximum approval, revocation events, trusted Ed25519 keys, 11 default-deny checks | The ledger proves configured-key authorization, not the real-world identity or judgment of the key holder |
-| T9 | Vulnerable dependencies or mutable CI actions compromise builds | Locked Python/npm dependencies, commit-pinned GitHub Actions, Dependabot, `uv audit`, `npm audit`, CodeQL | Container base images use version tags rather than immutable digests; add digest pinning and image scanning as a separate reviewed change |
+| T9 | Vulnerable or mutable dependencies compromise builds or runtime images | Locked Python/npm dependencies, commit-pinned GitHub Actions, tag-plus-digest container inputs, expanded Dependabot coverage, `uv audit`, `npm audit`, CodeQL, and Trivy reporting all serious runtime findings while rejecting fixable HIGH/CRITICAL operating-system packages | Registries, package repositories, scanner databases, and pinned third-party code remain trusted; scans detect only known vulnerabilities at one point in time, while unfixed findings and embedded vendor-binary remediations remain visible but non-blocking |
 | T10 | A compromised internal service moves laterally through shared infrastructure | Public host ports bind to loopback; only the edge publishes ports; edge drops capabilities and uses a read-only filesystem | Compose uses shared network reachability and local-development database credentials. It is a single-operator deployment, not zero trust |
 | T11 | XSS or hostile source text compromises a browser session | React escapes rendered strings; client responses are schema-validated; both Caddy layers enforce the same restrictive CSP; the production-build browser smoke fails on policy violations | MapLibre requires blob workers and inline styles, while map tiles and web fonts remain allowlisted external origins. Revisit these exceptions before adding authenticated browser state |
 | T12 | CI configuration gains excessive authority or runs attacker-controlled code with secrets | Workflow-level `contents: read`, narrowly scoped CodeQL upload permission, SHA-pinned actions, checkout credentials disabled, no `pull_request_target` | Repository rules must require the security checks and block force pushes; workflow files alone cannot enforce merge policy |
@@ -76,7 +76,7 @@ flowchart TB
 | Credential handling | FIRMS redaction and scoping tests plus credential-free source-poll contracts |
 | Model and agent containment | Gold-blind/offline runner tests, blocked promotion traces, signed-ledger tests, and default-deny preflight tests |
 | Operational claims | Content-addressed probe/resource samples and read-only restart, backup, restore, and source-recovery drill bindings |
-| Change security | Static repository-policy tests, CodeQL for Python and JavaScript/TypeScript, and locked Python/npm vulnerability audits |
+| Change security | Static repository-policy tests, CodeQL for Python and JavaScript/TypeScript, locked Python/npm vulnerability audits, immutable container-input parity, complete serious runtime-image reporting, and a fixable HIGH/CRITICAL operating-system package gate |
 
 Passing tests or scans reduce known risk; they do not prove that a deployment is secure, live,
 complete, or available.
@@ -92,7 +92,10 @@ author cannot provide independent review of their own change.
 Enable private vulnerability reporting and secret scanning in repository settings when available.
 Enable the dependency graph before adding GitHub's diff-scoped dependency-review action; until
 then, the security workflow audits both complete lockfiles on every pull request, `main` push, and
-weekly run. Treat every alert as a lead to validate, not as proof of exploitability.
+weekly run. Weekly Docker updates cover every directory with an external image declaration; the
+repository policy requires those declarations to stay synchronized with
+`deploy/container-images.json`. Treat every alert as a lead to validate, not as proof of
+exploitability.
 
 ## Review triggers
 

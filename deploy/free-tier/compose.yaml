@@ -32,7 +32,10 @@ services:
     cpus: 0.50
 
   edge:
-    image: caddy:2.10.2-alpine
+    build:
+      context: .
+      dockerfile: deploy/free-tier/Dockerfile
+    image: atlas-pulse-edge:2.11.4-alpine
     restart: unless-stopped
     environment:
       ATLAS_PUBLIC_HOST: ${ATLAS_PUBLIC_HOST:?set ATLAS_PUBLIC_HOST to a public DNS name}

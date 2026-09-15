@@ -13,6 +13,9 @@ REMOTE_ACTION = re.compile(
     re.MULTILINE,
 )
 FULL_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+IMMUTABLE_IMAGE_REFERENCE = re.compile(
+    r"[a-z0-9][a-z0-9./_-]*:[A-Za-z0-9][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}"
+)
 
 
 def _workflows() -> tuple[Path, ...]:
@@ -62,6 +65,120 @@ def test_security_workflow_covers_source_and_dependency_changes() -> None:
     assert "queries: security-extended" in content
     assert "run: uv audit --frozen" in content
     assert "run: npm audit --package-lock-only --audit-level=moderate" in content
+
+
+def test_container_inputs_are_digest_pinned_synchronized_and_scanned() -> None:
+    images = json.loads((ROOT / "deploy" / "container-images.json").read_text(encoding="utf-8"))
+    assert set(images) == {
+        "caddy",
+        "dockerfile_frontend",
+        "node",
+        "postgis",
+        "python",
+        "uv",
+        "valkey",
+    }
+    assert len(set(images.values())) == len(images)
+    for name, reference in images.items():
+        assert IMMUTABLE_IMAGE_REFERENCE.fullmatch(reference), (
+            f"{name}: image must include a readable tag and immutable SHA-256 digest"
+        )
+
+    expected_dockerfile_inputs = {
+        "Dockerfile": {
+            images["dockerfile_frontend"],
+            images["python"],
+            images["uv"],
+        },
+        "web/Dockerfile": {
+            images["caddy"],
+            images["dockerfile_frontend"],
+            images["node"],
+        },
+        "docker/postgres/Dockerfile": {
+            images["dockerfile_frontend"],
+            images["postgis"],
+        },
+        "deploy/free-tier/Dockerfile": {
+            images["caddy"],
+            images["dockerfile_frontend"],
+        },
+    }
+    for relative_path, expected in expected_dockerfile_inputs.items():
+        content = (ROOT / relative_path).read_text(encoding="utf-8")
+        declared = set(re.findall(r"^(?:# syntax=|FROM\s+)([^\s]+)", content, re.MULTILINE))
+        assert declared == expected, f"{relative_path}: synchronize inputs with the image contract"
+
+    api_dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "UV_NO_CACHE=1" in api_dockerfile
+    assert "apt-get upgrade --yes" in api_dockerfile
+    for relative_path in (
+        "web/Dockerfile",
+        "docker/postgres/Dockerfile",
+        "deploy/free-tier/Dockerfile",
+    ):
+        assert "apk upgrade --no-cache" in (ROOT / relative_path).read_text(encoding="utf-8")
+
+    compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    free_tier = (ROOT / "deploy" / "free-tier" / "compose.yaml").read_text(encoding="utf-8")
+    ci_workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")
+    assert f"image: {images['valkey']}" in compose
+    assert "dockerfile: deploy/free-tier/Dockerfile" in free_tier
+    assert "image: atlas-pulse-edge:2.11.4-alpine" in free_tier
+    assert f"image: {images['valkey']}" in ci_workflow
+
+    allowed_yaml_images = {
+        images["valkey"],
+        "atlas-pulse-edge:2.11.4-alpine",
+        "atlas-pulse-postgres:17-postgis3.5-pgvector0.8.6-alpine",
+    }
+    for relative_path in (
+        "compose.yaml",
+        "deploy/free-tier/compose.yaml",
+        ".github/workflows/ci.yml",
+    ):
+        content = (ROOT / relative_path).read_text(encoding="utf-8")
+        declared_images = re.findall(r"^\s+image:\s+([^\s]+)", content, re.MULTILINE)
+        assert set(declared_images) <= allowed_yaml_images, (
+            f"{relative_path}: external images must use the immutable image contract"
+        )
+
+    security_workflow = (WORKFLOW_DIRECTORY / "security.yml").read_text(encoding="utf-8")
+    report_step = "- name: Report all high and critical runtime findings"
+    gate_step = "- name: Reject fixable high and critical operating-system findings"
+    assert "aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514" in (
+        security_workflow
+    )
+    assert "version: v0.74.0" in security_workflow
+    assert "cache: false" in security_workflow
+    assert 'open("deploy/container-images.json")' in security_workflow
+    assert security_workflow.count("--severity HIGH,CRITICAL") == 2
+    assert security_workflow.count("--exit-code 0") == 1
+    assert security_workflow.count("--pkg-types os") == 1
+    assert security_workflow.count("--ignore-unfixed") == 1
+    assert security_workflow.count("--exit-code 1") == 1
+    for runtime_image in (
+        '"atlas-pulse-api:${{ github.sha }}"',
+        '"atlas-pulse-web:${{ github.sha }}"',
+        '"atlas-pulse-edge:${{ github.sha }}"',
+        '"atlas-pulse-postgres:${{ github.sha }}"',
+    ):
+        assert security_workflow.count(runtime_image) == 3
+    assert security_workflow.count('open("deploy/container-images.json")') == 3
+    assert "scan_status=0" in security_workflow
+    assert "|| scan_status=1" in security_workflow
+    assert 'exit "$scan_status"' in security_workflow
+    assert report_step in security_workflow
+    assert gate_step in security_workflow
+    assert security_workflow.index(report_step) < security_workflow.index(gate_step)
+
+    dependabot = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    for directory in ("/", "/web", "/docker/postgres", "/deploy/free-tier"):
+        assert re.search(
+            rf"package-ecosystem: docker\n\s+directory: {re.escape(directory)}\s*$",
+            dependabot,
+            re.MULTILINE,
+        )
 
 
 def test_frontend_ci_smoke_tests_the_production_bundle() -> None:

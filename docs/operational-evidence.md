@@ -6,6 +6,13 @@ a model or agent, change an approval, restart a service, create a backup, restor
 SLA. Its source-poll drill recorder also does not inject or clear faults; it only validates
 operator-supplied artifacts.
 
+The command examples below use the direct-host `free-tier` overlay. A card-free workstation
+deployment must use the exact substitutions in
+[`workstation-funnel-deployment.md`](workstation-funnel-deployment.md): the
+`deploy/workstation-funnel/compose.yaml` overlay, `workstation-funnel-public` environment, and its
+Tailscale `*.ts.net` origin. The immutable target records the selected Compose files, so resource,
+restart, backup, and restore evidence cannot silently switch profiles later.
+
 ## Claim boundary
 
 The strongest status produced by this workflow is `minimum_observation_set_complete`. It means

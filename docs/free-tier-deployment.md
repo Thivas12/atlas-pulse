@@ -114,6 +114,8 @@ Verify the public edge and the closed agent boundary:
 ```bash
 export ATLAS_PUBLIC_HOST='atlas.YOUR_PUBLIC_IP_WITH_DASHES.sslip.io'
 curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/" | grep '<title>AtlasPulse'
+curl --fail --silent --show-error --head "https://$ATLAS_PUBLIC_HOST/" \
+  | grep -Ei '^(content-security-policy|cross-origin-opener-policy|permissions-policy|referrer-policy|x-content-type-options|x-frame-options):'
 curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/api/readyz"
 curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/api/v1/source-freshness" \
   | jq '{passed, sources: [.items[] | {source, poll_status, source_data_status, source_age_seconds}]}'
@@ -130,6 +132,10 @@ curl --fail --silent --show-error \
 
 Expected boundary: manifest `blocked`, release `not_supplied`, 11 checks, execution `not_started`,
 and every execution boolean false.
+
+The six browser-response headers must match `web/security-headers.json`. The internal web server,
+public Caddy edge, local production preview, Chromium smoke test, and container smoke test share and
+verify that contract. HSTS remains public-edge-only because local and internal traffic uses HTTP.
 
 Inspect container health and confirm that only the intended sockets listen publicly:
 

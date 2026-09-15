@@ -116,7 +116,7 @@ component can run without a paid API key.
 | Operational evidence | Declared-commit health, strict source-freshness probes, verified public TLS, bounded resource capture, read-only restart/source-recovery drill bindings, and conservative 30-day sampled reports |
 | Decision UI | Mixed-geometry map, graph inspection, semantic search ranks, four source filters, replay, evidence links, uncertainty labels, a source-operations beacon, and a credential-free recovery timeline |
 | Engineering quality | Strict mypy/TypeScript, locked dependencies, branch coverage, real Valkey/PostGIS/pgvector CI, a deterministic Chromium smoke test of production assets, and static repository-policy tests |
-| Security governance | Explicit code ownership, private-reporting guidance, a versioned threat model, CodeQL for Python and TypeScript, and locked Python/npm vulnerability audits |
+| Security governance | Explicit code ownership, private-reporting guidance, a versioned threat model, synchronized browser security headers exercised under Chromium, CodeQL for Python and TypeScript, and locked Python/npm vulnerability audits |
 | Supply-chain hygiene | Read-only workflow permissions, credential-free checkout, commit-pinned Actions, weekly dependency updates |
 
 ## Architecture

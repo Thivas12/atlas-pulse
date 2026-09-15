@@ -200,7 +200,22 @@ jobs:
 
       - name: Smoke-test edge routing
         run: |
-          curl --fail --silent --show-error http://localhost:3000/ | grep --fixed-strings '<title>AtlasPulse'
+          curl --fail --silent --show-error \
+            --dump-header /tmp/atlas-response-headers \
+            --output /tmp/atlas-index \
+            http://localhost:3000/
+          grep --fixed-strings '<title>AtlasPulse' /tmp/atlas-index
+          python3 -c '
+          import json
+          from pathlib import Path
+          expected = json.loads(Path("web/security-headers.json").read_text())
+          observed = {}
+          for line in Path("/tmp/atlas-response-headers").read_text().splitlines():
+              if ":" in line:
+                  name, value = line.split(":", 1)
+                  observed[name.lower()] = value.strip()
+          assert "server" not in observed
+          assert {name: observed.get(name.lower()) for name in expected} == expected'
           curl --fail --silent --show-error http://localhost:3000/api/readyz | python3 -c '
           import json, os, sys
           response = json.load(sys.stdin)

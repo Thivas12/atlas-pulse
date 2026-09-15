@@ -84,6 +84,36 @@ def test_frontend_ci_smoke_tests_the_production_bundle() -> None:
     assert "npm run dev" not in config
 
 
+def test_browser_security_headers_are_synchronized_and_enforced() -> None:
+    expected = json.loads((ROOT / "web" / "security-headers.json").read_text(encoding="utf-8"))
+    policy = expected["Content-Security-Policy"]
+    for directive in (
+        "base-uri 'none'",
+        "connect-src 'self' https://tiles.openfreemap.org",
+        "font-src 'self' data: https://fonts.gstatic.com",
+        "form-action 'none'",
+        "frame-ancestors 'none'",
+        "object-src 'none'",
+        "script-src 'self'",
+        "worker-src 'self' blob:",
+    ):
+        assert directive in policy
+
+    for relative_path in ("web/Caddyfile", "deploy/free-tier/Caddyfile"):
+        content = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "-Server" in content
+        for name, value in expected.items():
+            assert f'{name} "{value}"' in content
+
+    vite = (ROOT / "web" / "vite.config.ts").read_text(encoding="utf-8")
+    assert 'import securityHeaders from "./security-headers.json"' in vite
+    assert "headers: securityHeaders" in vite
+
+    workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")
+    assert "--dump-header /tmp/atlas-response-headers" in workflow
+    assert 'Path("web/security-headers.json")' in workflow
+
+
 def test_default_code_owner_is_explicit() -> None:
     rules = (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8").splitlines()
     assert "* @Thivas12" in rules

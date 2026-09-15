@@ -1,5 +1,6 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
+import securityHeaders from "./security-headers.json" with { type: "json" };
 
 export default defineConfig({
   plugins: [react()],
@@ -17,6 +18,9 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
+  },
+  preview: {
+    headers: securityHeaders,
   },
   test: {
     include: ["src/**/*.test.{ts,tsx}"],

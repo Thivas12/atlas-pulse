@@ -168,6 +168,8 @@ jobs:
               | python3 scripts/verify_compose_security.py --deployment workstation-funnel
           docker compose -f compose.yaml -f deploy/workstation-funnel/compose.yaml build edge
           docker run --rm --entrypoint caddy \
+            --cap-drop ALL \
+            --security-opt no-new-privileges=true \
             --env ATLAS_PUBLIC_HOST="$ATLAS_PUBLIC_HOST" \
             --volume "$PWD/deploy/workstation-funnel/Caddyfile:/etc/caddy/Caddyfile:ro" \
             atlas-pulse-edge:2.11.4-alpine \

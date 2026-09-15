@@ -140,12 +140,16 @@ jobs:
           persist-credentials: false
 
       - name: Validate Compose model
-        run: docker compose config --quiet
+        run: |
+          docker compose config --format json \
+            | python3 scripts/verify_compose_security.py --deployment base
 
       - name: Validate free-tier HTTPS overlay
         run: |
           ATLAS_PUBLIC_HOST=atlas.203-0-113-10.sslip.io \
-            docker compose -f compose.yaml -f deploy/free-tier/compose.yaml config --quiet
+          ATLAS_POSTGRES_PASSWORD=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+            docker compose -f compose.yaml -f deploy/free-tier/compose.yaml config --format json \
+              | python3 scripts/verify_compose_security.py --deployment free-tier
           ATLAS_AGENT_RELEASE_ASSESSMENT_HOST_PATH=/tmp/atlas-release-assessment.json \
             docker compose \
               -f compose.yaml \

@@ -181,6 +181,37 @@ def test_container_inputs_are_digest_pinned_synchronized_and_scanned() -> None:
         )
 
 
+def test_compose_trust_graph_is_machine_checked() -> None:
+    policy = json.loads(
+        (ROOT / "deploy" / "compose-security-policy.json").read_text(encoding="utf-8")
+    )
+    assert policy["schema_version"] == "1.0.0"
+    assert set(policy["deployments"]) == {"base", "free-tier"}
+
+    for deployment in policy["deployments"].values():
+        networks = deployment["networks"]
+        assert all(
+            specification["internal"] or len(specification["services"]) == 1
+            for specification in networks.values()
+        )
+        assert deployment["environment_owners"]["ATLAS_FIRMS_MAP_KEY"] == ["ingestor"]
+        assert set(deployment["environment_owners"]["ATLAS_DATABASE_URL"]) == {
+            "api",
+            "migrate",
+            "projector",
+            "retrieval-indexer",
+        }
+
+    free_tier = (ROOT / "deploy" / "free-tier" / "compose.yaml").read_text(encoding="utf-8")
+    assert free_tier.count("${ATLAS_POSTGRES_PASSWORD:?") == 5
+    assert (ROOT / "compose.yaml").read_text(encoding="utf-8").count("gw_priority: 1") == 5
+    assert free_tier.count("gw_priority: 1") == 1
+
+    workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")
+    assert "verify_compose_security.py --deployment base" in workflow
+    assert "verify_compose_security.py --deployment free-tier" in workflow
+
+
 def test_frontend_ci_smoke_tests_the_production_bundle() -> None:
     workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")
     build_step = "run: npm run build"

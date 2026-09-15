@@ -1,0 +1,128 @@
+{
+  "schema_version": "1.0.0",
+  "deployments": {
+    "base": {
+      "networks": {
+        "api-postgres": {"internal": true, "services": ["api", "postgres"]},
+        "api-host": {
+          "internal": false,
+          "services": ["api"],
+          "gateway_priority": 1
+        },
+        "api-valkey": {"internal": true, "services": ["api", "valkey"]},
+        "api-web": {"internal": true, "services": ["api", "web"]},
+        "indexer-postgres": {
+          "internal": true,
+          "services": ["postgres", "retrieval-indexer"]
+        },
+        "indexer-valkey": {
+          "internal": true,
+          "services": ["retrieval-indexer", "valkey"]
+        },
+        "ingestor-valkey": {"internal": true, "services": ["ingestor", "valkey"]},
+        "migrate-postgres": {"internal": true, "services": ["migrate", "postgres"]},
+        "projector-postgres": {
+          "internal": true,
+          "services": ["postgres", "projector"]
+        },
+        "projector-valkey": {
+          "internal": true,
+          "services": ["projector", "valkey"]
+        },
+        "postgres-host": {
+          "internal": false,
+          "services": ["postgres"],
+          "gateway_priority": 1
+        },
+        "source-egress": {
+          "internal": false,
+          "services": ["ingestor"],
+          "gateway_priority": 1
+        },
+        "valkey-host": {
+          "internal": false,
+          "services": ["valkey"],
+          "gateway_priority": 1
+        },
+        "web-host": {
+          "internal": false,
+          "services": ["web"],
+          "gateway_priority": 1
+        }
+      },
+      "environment_owners": {
+        "ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS": ["api"],
+        "ATLAS_DATABASE_URL": ["api", "migrate", "projector", "retrieval-indexer"],
+        "ATLAS_FIRMS_MAP_KEY": ["ingestor"],
+        "ATLAS_VALKEY_URL": ["api", "ingestor", "projector", "retrieval-indexer"],
+        "POSTGRES_PASSWORD": ["postgres"]
+      },
+      "require_public_database_password": false
+    },
+    "free-tier": {
+      "networks": {
+        "api-postgres": {"internal": true, "services": ["api", "postgres"]},
+        "api-host": {
+          "internal": false,
+          "services": ["api"],
+          "gateway_priority": 1
+        },
+        "api-valkey": {"internal": true, "services": ["api", "valkey"]},
+        "api-web": {"internal": true, "services": ["api", "web"]},
+        "edge-egress": {
+          "internal": false,
+          "services": ["edge"],
+          "gateway_priority": 1
+        },
+        "edge-web": {"internal": true, "services": ["edge", "web"]},
+        "indexer-postgres": {
+          "internal": true,
+          "services": ["postgres", "retrieval-indexer"]
+        },
+        "indexer-valkey": {
+          "internal": true,
+          "services": ["retrieval-indexer", "valkey"]
+        },
+        "ingestor-valkey": {"internal": true, "services": ["ingestor", "valkey"]},
+        "migrate-postgres": {"internal": true, "services": ["migrate", "postgres"]},
+        "projector-postgres": {
+          "internal": true,
+          "services": ["postgres", "projector"]
+        },
+        "projector-valkey": {
+          "internal": true,
+          "services": ["projector", "valkey"]
+        },
+        "postgres-host": {
+          "internal": false,
+          "services": ["postgres"],
+          "gateway_priority": 1
+        },
+        "source-egress": {
+          "internal": false,
+          "services": ["ingestor"],
+          "gateway_priority": 1
+        },
+        "valkey-host": {
+          "internal": false,
+          "services": ["valkey"],
+          "gateway_priority": 1
+        },
+        "web-host": {
+          "internal": false,
+          "services": ["web"],
+          "gateway_priority": 1
+        }
+      },
+      "environment_owners": {
+        "ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS": ["api"],
+        "ATLAS_DATABASE_URL": ["api", "migrate", "projector", "retrieval-indexer"],
+        "ATLAS_FIRMS_MAP_KEY": ["ingestor"],
+        "ATLAS_PUBLIC_HOST": ["edge"],
+        "ATLAS_VALKEY_URL": ["api", "ingestor", "projector", "retrieval-indexer"],
+        "POSTGRES_PASSWORD": ["postgres"]
+      },
+      "require_public_database_password": true
+    }
+  }
+}

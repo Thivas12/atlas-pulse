@@ -19,7 +19,7 @@ provisioning. Do not create a paid fallback resource.
 | Host | OCI Ampere A1, 2 OCPUs / 12 GB | SSH from operator IP only | Keep the total within the documented Always Free allocation |
 | Edge | Pinned Caddy container | TCP 80/443 and UDP 443 | Open source; no managed load balancer |
 | UI/API | AtlasPulse web proxy and FastAPI | Through Caddy only | Host ports 3000/8000 bind to loopback |
-| State | Local PostgreSQL/PostGIS and Valkey volumes | None | No managed database or cache |
+| State | Local PostgreSQL/PostGIS and Valkey volumes on per-client internal networks | None | No managed database or cache |
 | DNS | A user-owned hostname or IP-derived `sslip.io` hostname | Resolves to the VM | `sslip.io` is optional third-party convenience, not an AtlasPulse dependency |
 | TLS | Caddy automatic HTTPS | Browser-facing | Automated public certificate; no paid certificate service |
 | CI | Standard GitHub-hosted runner on this public repository | None | GitHub documents public-repository standard runners as free |
@@ -53,9 +53,11 @@ sudo ufw enable
 Replace `YOUR_OPERATOR_IP` before running the command. Keep the current SSH session open until a
 second session proves that the rule is correct.
 
-Install Docker Engine plus Compose v2 from a trusted package source, enable security updates, and
-allow the deployment user to run Docker. Reconnect after changing group membership. The deployment
-user effectively has root-equivalent Docker authority and must be protected accordingly.
+Install Docker Engine plus Compose v2.33.1 or later from a trusted package source, enable security
+updates, and allow the deployment user to run Docker. The minimum Compose version supports the
+explicit [`gw_priority`](https://docs.docker.com/reference/compose-file/services/#gw_priority)
+egress default-gateway policy. Reconnect after changing group membership. The deployment user
+effectively has root-equivalent Docker authority and must be protected accordingly.
 
 ## 2. Pin code and configure the public name
 
@@ -80,7 +82,33 @@ ATLAS_USGS_SOURCE_STALE_SECONDS=600
 ATLAS_NWS_SOURCE_STALE_SECONDS=900
 ATLAS_GDELT_SOURCE_STALE_SECONDS=3600
 ATLAS_PUBLIC_HOST=atlas.YOUR_PUBLIC_IP_WITH_DASHES.sslip.io
+ATLAS_POSTGRES_PASSWORD=REPLACE_WITH_64_RANDOM_HEXADECIMAL_CHARACTERS
 ```
+
+Generate the database value with `openssl rand -hex 32`. The public overlay and checked-in policy
+reject an absent, short, development-default, or URL-unsafe value. The same value is injected into
+PostgreSQL and only the API, migration, projection, and retrieval-indexer database URLs; it is not
+available to the ingestor, web server, edge, or Valkey. Keep `.env` outside version control and
+restrict it to the deployment account, for example with `chmod 600 .env`.
+
+`POSTGRES_PASSWORD` initializes a new data volume but does not alter an existing PostgreSQL role.
+When upgrading a pre-segmentation deployment with retained data, generate and place the new value
+in `.env`, then change the existing role immediately before switching commits:
+
+```bash
+read -r -s -p 'Paste the new database password from .env: ' ATLAS_POSTGRES_PASSWORD
+printf '\n'
+docker compose exec -T postgres \
+  psql --username atlas --dbname atlas --set=ON_ERROR_STOP=1 <<SQL
+ALTER ROLE atlas PASSWORD '$ATLAS_POSTGRES_PASSWORD';
+SQL
+unset ATLAS_POSTGRES_PASSWORD
+```
+
+The documented generator produces hexadecimal text, so this statement cannot introduce SQL
+metacharacters. Run the rendered-model validator and start the new overlay immediately afterward;
+old application containers cannot reconnect once the role changes. Take a current off-host backup
+before rotating the credential. A fresh deployment with an empty data volume skips this step.
 
 Confirm that `ATLAS_BUILD_COMMIT_SHA` exactly matches `git rev-parse HEAD`. Both public health
 endpoints expose it, allowing the evidence collector to reject a version-correct image built from
@@ -114,9 +142,24 @@ actually carry the remediation.
 Render the merged Compose model before building:
 
 ```bash
-docker compose -f compose.yaml -f deploy/free-tier/compose.yaml config --quiet
+docker compose -f compose.yaml -f deploy/free-tier/compose.yaml config --format json \
+  | python3 scripts/verify_compose_security.py --deployment free-tier
 docker compose -f compose.yaml -f deploy/free-tier/compose.yaml up -d --build --wait
 ```
+
+`deploy/compose-security-policy.json` is the reviewed connectivity and credential-scope contract.
+The validator rejects a new service, an undeclared network path, widened egress, misplaced FIRMS or
+database credentials, mismatched database passwords, and a weak public password. PostgreSQL and
+Valkey expose a separate internal network to each client. The API and web tier share one internal
+link; the public edge and web tier share another. The four loopback-published services each receive
+their own non-internal host bridge because Docker does not publish ports through an internal-only
+bridge. The ingestor and edge use separate purpose-specific egress networks. Every non-internal
+network has exactly one service, so none creates a shared container-to-container path.
+
+The host bridges can also provide outbound routing to the API, web, PostgreSQL, and Valkey
+containers. Projector, retrieval-indexer, and migration containers remain internal-only. Treat
+host-level outbound firewall policy as a separate deployment control, and attach any future
+telemetry collector through a reviewed dedicated network rather than widening a data-plane link.
 
 The first build downloads the pinned local BGE embedding artifact and can take several minutes.
 The service restart policies bring the stack back after a normal host reboot.

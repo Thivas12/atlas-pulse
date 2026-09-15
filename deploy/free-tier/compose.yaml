@@ -6,14 +6,20 @@ services:
   postgres:
     mem_limit: 2g
     cpus: 1.00
+    environment:
+      POSTGRES_PASSWORD: ${ATLAS_POSTGRES_PASSWORD:?set a random public-deployment database password}
 
   migrate:
     mem_limit: 1g
     cpus: 0.75
+    environment:
+      ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:${ATLAS_POSTGRES_PASSWORD:?set a random public-deployment database password}@postgres:5432/atlas
 
   api:
     mem_limit: 2g
     cpus: 1.00
+    environment:
+      ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:${ATLAS_POSTGRES_PASSWORD:?set a random public-deployment database password}@postgres:5432/atlas
 
   ingestor:
     mem_limit: 1g
@@ -22,14 +28,21 @@ services:
   projector:
     mem_limit: 1g
     cpus: 0.75
+    environment:
+      ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:${ATLAS_POSTGRES_PASSWORD:?set a random public-deployment database password}@postgres:5432/atlas
 
   retrieval-indexer:
     mem_limit: 2g
     cpus: 1.25
+    environment:
+      ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:${ATLAS_POSTGRES_PASSWORD:?set a random public-deployment database password}@postgres:5432/atlas
 
   web:
     mem_limit: 256m
     cpus: 0.50
+    networks:
+      api-web:
+      edge-web:
 
   edge:
     build:
@@ -61,6 +74,15 @@ services:
       - no-new-privileges:true
     mem_limit: 256m
     cpus: 0.50
+    networks:
+      edge-web:
+      edge-egress:
+        gw_priority: 1
+
+networks:
+  edge-web:
+    internal: true
+  edge-egress:
 
 volumes:
   caddy-data:

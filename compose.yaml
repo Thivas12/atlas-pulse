@@ -5,10 +5,11 @@ x-atlas-python-build: &atlas-python-build
   args:
     ATLAS_BUILD_COMMIT_SHA: ${ATLAS_BUILD_COMMIT_SHA:-unknown}
 
-x-atlas-environment: &atlas-environment
+x-atlas-runtime-environment: &atlas-runtime-environment
   ATLAS_ENVIRONMENT: ${ATLAS_ENVIRONMENT:-local-compose}
   ATLAS_LOG_LEVEL: INFO
-  ATLAS_VALKEY_URL: valkey://valkey:6379/0
+
+x-atlas-source-policy: &atlas-source-policy
   # The API and ingestor must evaluate the exact same enabled-source polling policy.
   ATLAS_USGS_POLL_SECONDS: ${ATLAS_USGS_POLL_SECONDS:-60}
   ATLAS_USGS_SOURCE_STALE_SECONDS: ${ATLAS_USGS_SOURCE_STALE_SECONDS:-600}
@@ -23,12 +24,12 @@ x-atlas-environment: &atlas-environment
   ATLAS_SOURCE_POLL_STALE_MULTIPLIER: ${ATLAS_SOURCE_POLL_STALE_MULTIPLIER:-3}
   ATLAS_SOURCE_POLL_HISTORY_STREAM: "${ATLAS_SOURCE_POLL_HISTORY_STREAM:-{atlas}:source-polls}"
   ATLAS_SOURCE_POLL_HISTORY_MAX_LENGTH: ${ATLAS_SOURCE_POLL_HISTORY_MAX_LENGTH:-50000}
+
+x-atlas-valkey-environment: &atlas-valkey-environment
+  ATLAS_VALKEY_URL: valkey://valkey:6379/0
+
+x-atlas-database-environment: &atlas-database-environment
   ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:atlas@postgres:5432/atlas
-  ATLAS_RAW_DATA_DIR: /app/data/raw
-  ATLAS_EMBEDDING_CACHE_DIR: /opt/atlas-models
-  ATLAS_EMBEDDING_MODEL_PATH: /opt/atlas-models/bge-small-en-v1.5
-  ATLAS_EMBEDDING_LOCAL_FILES_ONLY: "true"
-  ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS: ${ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS:-[]}
 
 services:
   valkey:
@@ -44,6 +45,13 @@ services:
       interval: 3s
       timeout: 2s
       retries: 10
+    networks:
+      api-valkey:
+      ingestor-valkey:
+      projector-valkey:
+      indexer-valkey:
+      valkey-host:
+        gw_priority: 1
 
   postgres:
     build:
@@ -64,20 +72,38 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+    networks:
+      api-postgres:
+      migrate-postgres:
+      projector-postgres:
+      indexer-postgres:
+      postgres-host:
+        gw_priority: 1
 
   migrate:
     build: *atlas-python-build
     command: ["alembic", "upgrade", "head"]
     restart: "no"
-    environment: *atlas-environment
+    environment:
+      <<: [*atlas-runtime-environment, *atlas-database-environment]
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - migrate-postgres
 
   api:
     build: *atlas-python-build
     restart: unless-stopped
-    environment: *atlas-environment
+    environment:
+      <<:
+        [
+          *atlas-runtime-environment,
+          *atlas-source-policy,
+          *atlas-valkey-environment,
+          *atlas-database-environment,
+        ]
+      ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS: ${ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS:-[]}
     depends_on:
       valkey:
         condition: service_healthy
@@ -96,13 +122,20 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    networks:
+      api-valkey:
+      api-postgres:
+      api-web:
+      api-host:
+        gw_priority: 1
 
   ingestor:
     build: *atlas-python-build
     command: ["atlas-pulse-ingest"]
     restart: unless-stopped
     environment:
-      <<: *atlas-environment
+      <<: [*atlas-runtime-environment, *atlas-source-policy, *atlas-valkey-environment]
+      ATLAS_RAW_DATA_DIR: /app/data/raw
       # The FIRMS credential is intentionally available only to this source-facing process.
       ATLAS_FIRMS_MAP_KEY: ${ATLAS_FIRMS_MAP_KEY:-}
       ATLAS_FIRMS_PRODUCT: ${ATLAS_FIRMS_PRODUCT:-VIIRS_NOAA20_NRT}
@@ -123,28 +156,46 @@ services:
         condition: service_healthy
     volumes:
       - raw-snapshots:/app/data/raw
+    networks:
+      ingestor-valkey:
+      source-egress:
+        gw_priority: 1
 
   projector:
     build: *atlas-python-build
     command: ["atlas-pulse-project"]
     restart: unless-stopped
-    environment: *atlas-environment
+    environment:
+      <<:
+        [*atlas-runtime-environment, *atlas-valkey-environment, *atlas-database-environment]
     depends_on:
       valkey:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    networks:
+      - projector-valkey
+      - projector-postgres
 
   retrieval-indexer:
     build: *atlas-python-build
     command: ["atlas-pulse-index"]
     restart: unless-stopped
-    environment: *atlas-environment
+    environment:
+      <<:
+        [
+          *atlas-runtime-environment,
+          *atlas-valkey-environment,
+          *atlas-database-environment,
+        ]
     depends_on:
       valkey:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    networks:
+      - indexer-valkey
+      - indexer-postgres
 
   web:
     build: ./web
@@ -159,6 +210,35 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    networks:
+      api-web:
+      web-host:
+        gw_priority: 1
+
+networks:
+  api-valkey:
+    internal: true
+  ingestor-valkey:
+    internal: true
+  projector-valkey:
+    internal: true
+  indexer-valkey:
+    internal: true
+  api-postgres:
+    internal: true
+  migrate-postgres:
+    internal: true
+  projector-postgres:
+    internal: true
+  indexer-postgres:
+    internal: true
+  api-web:
+    internal: true
+  valkey-host:
+  postgres-host:
+  api-host:
+  web-host:
+  source-egress:
 
 volumes:
   postgis-data:

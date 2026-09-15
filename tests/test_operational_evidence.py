@@ -508,6 +508,67 @@ def test_resource_collector_uses_bounded_compose_and_stats_fields(tmp_path: Path
     assert all("logs" not in command for command in commands)
 
 
+def test_resource_collector_skips_stats_for_exited_one_shot_service(tmp_path: Path) -> None:
+    target = _target()
+    (tmp_path / "deploy/free-tier").mkdir(parents=True)
+    (tmp_path / "compose.yaml").write_text("services: {}\n")
+    (tmp_path / "deploy/free-tier/compose.yaml").write_text("services: {}\n")
+    ps = [
+        {
+            "ID": f"{index + 1:012x}",
+            "Service": service,
+            "State": "running",
+            "Health": "healthy" if service in {"api", "postgres", "valkey", "web"} else "",
+        }
+        for index, service in enumerate(target.required_services)
+    ]
+    migrate_id = "f" * 12
+    ps.append(
+        {
+            "ID": migrate_id,
+            "Service": "migrate",
+            "State": "exited",
+            "Health": "",
+        }
+    )
+    stats = "\n".join(
+        json.dumps(
+            {
+                "ID": row["ID"],
+                "CPUPerc": "1.25%",
+                "MemUsage": "128MiB / 512MiB",
+                "PIDs": "9",
+            }
+        )
+        for row in ps
+        if row["State"] == "running"
+    )
+    commands: list[tuple[str, ...]] = []
+
+    def runner(arguments: Sequence[str], _cwd: Path) -> str:
+        command = tuple(arguments)
+        commands.append(command)
+        return json.dumps(ps) if command[1] == "compose" else stats
+
+    evidence = capture_resource_snapshot(
+        target,
+        tmp_path,
+        observed_at=_START + timedelta(minutes=1),
+        command_runner=runner,
+        host_loader=lambda _root: _resource_submission(target, _START).host,
+    )
+
+    migrate = next(item for item in evidence.services if item.service == "migrate")
+    stats_command = next(command for command in commands if command[1] == "stats")
+    assert evidence.passed is True
+    assert migrate.state == "exited"
+    assert migrate.cpu_percent is None
+    assert migrate.memory_used_bytes is None
+    assert migrate.memory_limit_bytes is None
+    assert migrate.pids is None
+    assert migrate_id not in stats_command
+
+
 @pytest.mark.parametrize(
     "bad_output",
     ["not-json", "[1]", json.dumps({"ID": "a" * 12, "State": "running"})],

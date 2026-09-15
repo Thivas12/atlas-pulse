@@ -83,13 +83,21 @@ ATLAS_NWS_SOURCE_STALE_SECONDS=900
 ATLAS_GDELT_SOURCE_STALE_SECONDS=3600
 ATLAS_PUBLIC_HOST=atlas.YOUR_PUBLIC_IP_WITH_DASHES.sslip.io
 ATLAS_POSTGRES_PASSWORD=REPLACE_WITH_64_RANDOM_HEXADECIMAL_CHARACTERS
+ATLAS_API_RATE_LIMIT_CLIENT_SECRET=REPLACE_WITH_A_DIFFERENT_64_RANDOM_HEXADECIMAL_VALUE
 ```
 
-Generate the database value with `openssl rand -hex 32`. The public overlay and checked-in policy
-reject an absent, short, development-default, or URL-unsafe value. The same value is injected into
-PostgreSQL and only the API, migration, projection, and retrieval-indexer database URLs; it is not
+Generate each secret separately with `openssl rand -hex 32`; never reuse the database password as
+the rate-limit client secret. The public overlay and checked-in policy reject either value when it
+is absent, short, development-default, or URL-unsafe. The database value is injected into PostgreSQL and only
+the API, migration, projection, and retrieval-indexer database URLs; it is not
 available to the ingestor, web server, edge, or Valkey. Keep `.env` outside version control and
 restrict it to the deployment account, for example with `chmod 600 .env`.
+
+The rate-limit secret is injected only into the API and HMAC-pseudonymizes normalized client
+addresses before short-lived quota keys enter Valkey. It is not an access token. The defaults allow
+120 total `/v1/*` requests and 20 expensive search, correlation, evidence-pack, or preflight
+requests per client per 60-second window. Keep them until observed latency and resource evidence
+justifies a reviewed change; they are not measured capacity or availability claims.
 
 `POSTGRES_PASSWORD` initializes a new data volume but does not alter an existing PostgreSQL role.
 When upgrading a pre-segmentation deployment with retained data, generate and place the new value
@@ -172,6 +180,9 @@ curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/" | grep '<title>A
 curl --fail --silent --show-error --head "https://$ATLAS_PUBLIC_HOST/" \
   | grep -Ei '^(content-security-policy|cross-origin-opener-policy|permissions-policy|referrer-policy|x-content-type-options|x-frame-options):'
 curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/api/readyz"
+curl --fail --silent --show-error --dump-header - --output /dev/null \
+  "https://$ATLAS_PUBLIC_HOST/api/v1/events?limit=1" \
+  | grep -Ei '^(x-ratelimit-limit|x-ratelimit-remaining|x-ratelimit-reset-after|x-ratelimit-policy):'
 curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/api/v1/source-freshness" \
   | jq '{passed, sources: [.items[] | {source, poll_status, source_data_status, source_age_seconds}]}'
 curl --fail --silent --show-error "https://$ATLAS_PUBLIC_HOST/api/v1/source-polls?limit=6" \
@@ -191,6 +202,11 @@ and every execution boolean false.
 The six browser-response headers must match `web/security-headers.json`. The internal web server,
 public Caddy edge, local production preview, Chromium smoke test, and container smoke test share and
 verify that contract. HSTS remains public-edge-only because local and internal traffic uses HTTP.
+The outer Caddy edge discards spoofed forwarded-address values by default. The internal proxy trusts
+only private proxy/loopback peers, parses the chain from right to left, and replaces the API's
+client-address header with its normalized result. Exhausted application budgets return `429` with
+`Retry-After`; quota-backend failures return `503`. This does not rate-limit static/TLS work or stop
+a distributed-address denial-of-service attack, so do not describe it as a WAF.
 
 Inspect container health and confirm that only the intended sockets listen publicly:
 

@@ -8,8 +8,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, Self
 
 from agent_rag_core import Event
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
+from starlette.types import ASGIApp
 from valkey.exceptions import ValkeyError
 
 from atlas_pulse import __version__
@@ -53,6 +57,12 @@ from atlas_pulse.evidence_packs import (
 )
 from atlas_pulse.projections import CorrelationQuery, GeoBounds, SignalQuery, SignalStore
 from atlas_pulse.projections.base import SourceName
+from atlas_pulse.rate_limit import (
+    ApiRateLimitConfig,
+    RateLimitDecision,
+    RateLimiter,
+    RateLimiterUnavailable,
+)
 from atlas_pulse.relationships import (
     RELATIONSHIP_CAVEAT,
     RELATIONSHIP_RULE_VERSION,
@@ -720,6 +730,71 @@ class AgentRunPreflightResponse(BaseModel):
         return self
 
 
+def _rate_limit_headers(decision: RateLimitDecision) -> dict[str, str]:
+    return {
+        "X-RateLimit-Limit": str(decision.limit),
+        "X-RateLimit-Remaining": str(decision.remaining),
+        "X-RateLimit-Reset-After": str(decision.reset_after_seconds),
+        "X-RateLimit-Policy": decision.policy,
+    }
+
+
+class ApiRateLimitMiddleware(BaseHTTPMiddleware):
+    """Apply pseudonymous shared budgets before public API handlers run."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        limiter: RateLimiter,
+        config: ApiRateLimitConfig,
+    ) -> None:
+        super().__init__(app)
+        self._limiter = limiter
+        self._config = config
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        policies = self._config.policies_for_path(request.url.path)
+        if not policies:
+            return await call_next(request)
+
+        peer_address = request.client.host if request.client is not None else None
+        client_key = self._config.client_key(
+            forwarded_address=request.headers.get(self._config.client_header),
+            peer_address=peer_address,
+        )
+        decisions: list[RateLimitDecision] = []
+        try:
+            for policy in policies:
+                decision = await self._limiter.consume(client_key, policy)
+                decisions.append(decision)
+                if not decision.allowed:
+                    return JSONResponse(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        content={"detail": "request rate limit exceeded"},
+                        headers={
+                            **_rate_limit_headers(decision),
+                            "Retry-After": str(decision.reset_after_seconds),
+                            "Cache-Control": "no-store",
+                        },
+                    )
+        except RateLimiterUnavailable:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": "request rate limit unavailable"},
+                headers={"Retry-After": "1", "Cache-Control": "no-store"},
+            )
+
+        response = await call_next(request)
+        effective = min(decisions, key=lambda decision: decision.remaining)
+        response.headers.update(_rate_limit_headers(effective))
+        return response
+
+
 def _claim_response(claim: EvidenceClaim) -> EvidenceClaimResponse:
     return EvidenceClaimResponse(
         claim_id=claim.claim_id,
@@ -1185,6 +1260,8 @@ def create_app(
     source_poll_store: SourcePollStore | None = None,
     source_poll_policies: tuple[SourcePollPolicy, ...] = (),
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    rate_limiter: RateLimiter | None = None,
+    rate_limit_config: ApiRateLimitConfig | None = None,
 ) -> FastAPI:
     """Create an application with an injected stream implementation."""
     if build_commit_sha != "unknown" and (
@@ -1194,6 +1271,8 @@ def create_app(
         raise ValueError(
             "build commit SHA must be 'unknown' or 40 lowercase hexadecimal characters"
         )
+    if (rate_limiter is None) != (rate_limit_config is None):
+        raise ValueError("rate limiter and rate-limit configuration must be supplied together")
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -1215,8 +1294,12 @@ def create_app(
                             if agent_run_ledger is not None:
                                 await agent_run_ledger.close()
                         finally:
-                            if source_poll_store is not None:
-                                await source_poll_store.close()
+                            try:
+                                if source_poll_store is not None:
+                                    await source_poll_store.close()
+                            finally:
+                                if rate_limiter is not None:
+                                    await rate_limiter.close()
 
     app = FastAPI(
         title="AtlasPulse API",
@@ -1224,6 +1307,12 @@ def create_app(
         version=__version__,
         lifespan=lifespan,
     )
+    if rate_limiter is not None and rate_limit_config is not None:
+        app.add_middleware(
+            ApiRateLimitMiddleware,
+            limiter=rate_limiter,
+            config=rate_limit_config,
+        )
 
     @app.get("/healthz", response_model=HealthResponse, tags=["operations"])
     async def health() -> HealthResponse:

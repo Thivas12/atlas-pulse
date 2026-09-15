@@ -20,6 +20,8 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     key_id = f"ed25519-{'a' * 64}"
     monkeypatch.setenv("ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS", f'["{key_id}"]')
     monkeypatch.setenv("ATLAS_BUILD_COMMIT_SHA", "a" * 40)
+    monkeypatch.setenv("ATLAS_API_RATE_LIMIT_CLIENT_SECRET", "b" * 64)
+    monkeypatch.setenv("ATLAS_API_EXPENSIVE_RATE_LIMIT_REQUESTS", "10")
 
     settings = Settings()
 
@@ -34,6 +36,7 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.gdelt_minimum_geo_precision == 3
     assert settings.agent_approval_trusted_key_ids == (key_id,)
     assert settings.build_commit_sha == "a" * 40
+    assert settings.api_expensive_rate_limit_requests == 10
     assert tuple(policy.source for policy in settings.source_poll_policies()) == (
         "firms",
         "gdelt",
@@ -42,6 +45,7 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     )
     assert settings.source_poll_history_stream == "{atlas}:source-polls"
     assert "top-secret" not in repr(settings)
+    assert "b" * 64 not in repr(settings)
 
 
 def test_firms_requires_a_key_only_when_enabled() -> None:
@@ -72,6 +76,23 @@ def test_settings_rejects_source_freshness_threshold_at_or_below_poll_interval()
 )
 def test_settings_reject_inconsistent_gdelt_resource_limits(
     overrides: dict[str, int], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        Settings.model_validate(overrides)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"api_rate_limit_client_secret": "short"}, "client secret"),
+        (
+            {"api_rate_limit_requests": 5, "api_expensive_rate_limit_requests": 6},
+            "EXPENSIVE_RATE_LIMIT_REQUESTS",
+        ),
+    ],
+)
+def test_settings_reject_invalid_api_rate_limit_policy(
+    overrides: dict[str, str | int], message: str
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         Settings.model_validate(overrides)

@@ -20,6 +20,7 @@ services:
     cpus: 1.00
     environment:
       ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:${ATLAS_POSTGRES_PASSWORD:?set a random public-deployment database password}@postgres:5432/atlas
+      ATLAS_API_RATE_LIMIT_CLIENT_SECRET: ${ATLAS_API_RATE_LIMIT_CLIENT_SECRET:?set a random public-deployment rate-limit client secret}
 
   ingestor:
     mem_limit: 1g

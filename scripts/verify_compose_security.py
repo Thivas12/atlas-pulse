@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import unquote, urlsplit
 
-STRONG_URL_SAFE_PASSWORD = re.compile(r"[A-Za-z0-9_-]{32,128}")
+STRONG_URL_SAFE_VALUE = re.compile(r"[A-Za-z0-9_-]{32,128}")
+LOCAL_RATE_LIMIT_SECRET = "local-development-only-rate-limit-secret"
 
 
 def _mapping(value: object, label: str, errors: list[str]) -> Mapping[str, object]:
@@ -80,7 +81,7 @@ def _database_errors(
     if not isinstance(password_value, str):
         errors.append("services.postgres.POSTGRES_PASSWORD must be a string")
         return
-    if require_public_password and STRONG_URL_SAFE_PASSWORD.fullmatch(password_value) is None:
+    if require_public_password and STRONG_URL_SAFE_VALUE.fullmatch(password_value) is None:
         errors.append(
             "public POSTGRES_PASSWORD must be 32-128 URL-safe ASCII letters, digits, '_' or '-'"
         )
@@ -112,6 +113,29 @@ def _database_errors(
         if not secrets.compare_digest(client_password, password_value):
             errors.append(
                 f"services.{client_name}.ATLAS_DATABASE_URL password does not match PostgreSQL"
+            )
+
+
+def _rate_limit_errors(
+    services: Mapping[str, object], *, require_public_secret: bool, errors: list[str]
+) -> None:
+    api = _mapping(services.get("api"), "services.api", errors)
+    environment = _environment(api, "services.api", errors)
+    secret = environment.get("ATLAS_API_RATE_LIMIT_CLIENT_SECRET")
+    if not isinstance(secret, str):
+        errors.append("services.api.ATLAS_API_RATE_LIMIT_CLIENT_SECRET must be a string")
+    elif require_public_secret:
+        if STRONG_URL_SAFE_VALUE.fullmatch(secret) is None or secret == LOCAL_RATE_LIMIT_SECRET:
+            errors.append(
+                "public ATLAS_API_RATE_LIMIT_CLIENT_SECRET must be a non-default 32-128 "
+                "character URL-safe value"
+            )
+        postgres = _mapping(services.get("postgres"), "services.postgres", errors)
+        postgres_environment = _environment(postgres, "services.postgres", errors)
+        password = postgres_environment.get("POSTGRES_PASSWORD")
+        if isinstance(password, str) and secrets.compare_digest(secret, password):
+            errors.append(
+                "public ATLAS_API_RATE_LIMIT_CLIENT_SECRET must differ from POSTGRES_PASSWORD"
             )
 
 
@@ -252,6 +276,17 @@ def validate_compose_model(
             services,
             database_clients,
             require_public_password=require_public_password,
+            errors=errors,
+        )
+    require_public_rate_limit_secret = deployment_policy.get("require_public_rate_limit_secret")
+    if not isinstance(require_public_rate_limit_secret, bool):
+        errors.append(
+            f"policy.deployments.{deployment}.require_public_rate_limit_secret must be boolean"
+        )
+    else:
+        _rate_limit_errors(
+            services,
+            require_public_secret=require_public_rate_limit_secret,
             errors=errors,
         )
     return errors

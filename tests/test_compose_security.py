@@ -34,6 +34,10 @@ def _compliant_model(deployment: str) -> dict[str, Any]:
     password = "atlas" if deployment == "base" else "a1_" * 16
     values = {
         "ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS": "[]",
+        "ATLAS_API_EXPENSIVE_RATE_LIMIT_REQUESTS": "20",
+        "ATLAS_API_RATE_LIMIT_CLIENT_SECRET": "rate_limit_client_secret_value_123456",
+        "ATLAS_API_RATE_LIMIT_REQUESTS": "120",
+        "ATLAS_API_RATE_LIMIT_WINDOW_SECONDS": "60",
         "ATLAS_DATABASE_URL": (f"postgresql+asyncpg://atlas:{password}@postgres:5432/atlas"),
         "ATLAS_FIRMS_MAP_KEY": "",
         "ATLAS_PUBLIC_HOST": "atlas.example.test",
@@ -117,3 +121,37 @@ def test_database_clients_must_use_the_server_password() -> None:
 
     assert result.returncode == 1
     assert "services.api.ATLAS_DATABASE_URL password does not match" in result.stderr
+
+
+def test_public_rate_limit_secret_must_be_strong_and_url_safe() -> None:
+    model = _compliant_model("free-tier")
+    model["services"]["api"]["environment"]["ATLAS_API_RATE_LIMIT_CLIENT_SECRET"] = "short"
+
+    result = _validate(model, "free-tier")
+
+    assert result.returncode == 1
+    assert "public ATLAS_API_RATE_LIMIT_CLIENT_SECRET must be a non-default 32-128" in result.stderr
+
+
+def test_public_rate_limit_secret_must_not_reuse_database_password() -> None:
+    model = _compliant_model("free-tier")
+    model["services"]["api"]["environment"]["ATLAS_API_RATE_LIMIT_CLIENT_SECRET"] = model[
+        "services"
+    ]["postgres"]["environment"]["POSTGRES_PASSWORD"]
+
+    result = _validate(model, "free-tier")
+
+    assert result.returncode == 1
+    assert "must differ from POSTGRES_PASSWORD" in result.stderr
+
+
+def test_rate_limit_secret_exposure_is_rejected() -> None:
+    model = _compliant_model("base")
+    model["services"]["web"]["environment"]["ATLAS_API_RATE_LIMIT_CLIENT_SECRET"] = (
+        "rate_limit_client_secret_value_123456"
+    )
+
+    result = _validate(model, "base")
+
+    assert result.returncode == 1
+    assert "ATLAS_API_RATE_LIMIT_CLIENT_SECRET owners differ" in result.stderr

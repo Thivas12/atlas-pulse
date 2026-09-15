@@ -9,6 +9,7 @@ from atlas_pulse.api import create_app
 from atlas_pulse.config import get_settings
 from atlas_pulse.logging import configure_logging
 from atlas_pulse.projections import PostgresSignalStore
+from atlas_pulse.rate_limit import ApiRateLimitConfig, RateLimitPolicy, ValkeyRateLimiter
 from atlas_pulse.retrieval import FastEmbedProvider, HybridSearchService, PostgresRetrievalStore
 from atlas_pulse.source_poll_store import ValkeySourcePollStore
 from atlas_pulse.streams import ValkeyEventBus
@@ -56,6 +57,20 @@ source_poll_store = ValkeySourcePollStore(
     history_stream=settings.source_poll_history_stream,
     history_max_length=settings.source_poll_history_max_length,
 )
+rate_limiter = ValkeyRateLimiter(url=settings.valkey_url)
+rate_limit_config = ApiRateLimitConfig(
+    client_secret=settings.api_rate_limit_client_secret.get_secret_value().encode(),
+    general_policy=RateLimitPolicy(
+        name="general",
+        requests=settings.api_rate_limit_requests,
+        window_seconds=settings.api_rate_limit_window_seconds,
+    ),
+    expensive_policy=RateLimitPolicy(
+        name="expensive",
+        requests=settings.api_expensive_rate_limit_requests,
+        window_seconds=settings.api_rate_limit_window_seconds,
+    ),
+)
 agent_release_assessment = _load_agent_release_assessment()
 app = create_app(
     event_bus,
@@ -66,5 +81,7 @@ app = create_app(
     build_commit_sha=settings.build_commit_sha,
     source_poll_store=source_poll_store,
     source_poll_policies=settings.source_poll_policies(),
+    rate_limiter=rate_limiter,
+    rate_limit_config=rate_limit_config,
 )
 instrument_fastapi(app)

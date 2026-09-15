@@ -185,7 +185,7 @@ def test_compose_trust_graph_is_machine_checked() -> None:
     policy = json.loads(
         (ROOT / "deploy" / "compose-security-policy.json").read_text(encoding="utf-8")
     )
-    assert policy["schema_version"] == "1.0.0"
+    assert policy["schema_version"] == "1.1.0"
     assert set(policy["deployments"]) == {"base", "free-tier"}
 
     for deployment in policy["deployments"].values():
@@ -195,6 +195,7 @@ def test_compose_trust_graph_is_machine_checked() -> None:
             for specification in networks.values()
         )
         assert deployment["environment_owners"]["ATLAS_FIRMS_MAP_KEY"] == ["ingestor"]
+        assert deployment["environment_owners"]["ATLAS_API_RATE_LIMIT_CLIENT_SECRET"] == ["api"]
         assert set(deployment["environment_owners"]["ATLAS_DATABASE_URL"]) == {
             "api",
             "migrate",
@@ -204,6 +205,7 @@ def test_compose_trust_graph_is_machine_checked() -> None:
 
     free_tier = (ROOT / "deploy" / "free-tier" / "compose.yaml").read_text(encoding="utf-8")
     assert free_tier.count("${ATLAS_POSTGRES_PASSWORD:?") == 5
+    assert free_tier.count("${ATLAS_API_RATE_LIMIT_CLIENT_SECRET:?") == 1
     assert (ROOT / "compose.yaml").read_text(encoding="utf-8").count("gw_priority: 1") == 5
     assert free_tier.count("gw_priority: 1") == 1
 
@@ -252,6 +254,13 @@ def test_browser_security_headers_are_synchronized_and_enforced() -> None:
         assert "-Server" in content
         for name, value in expected.items():
             assert f'{name} "{value}"' in content
+
+    web_caddy = (ROOT / "web" / "Caddyfile").read_text(encoding="utf-8")
+    edge_caddy = (ROOT / "deploy" / "free-tier" / "Caddyfile").read_text(encoding="utf-8")
+    assert "trusted_proxies static private_ranges" in web_caddy
+    assert "trusted_proxies_strict" in web_caddy
+    assert "header_up X-Atlas-Client-IP {client_ip}" in web_caddy
+    assert "trusted_proxies" not in edge_caddy
 
     vite = (ROOT / "web" / "vite.config.ts").read_text(encoding="utf-8")
     assert 'import securityHeaders from "./security-headers.json"' in vite

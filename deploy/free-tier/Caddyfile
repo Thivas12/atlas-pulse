@@ -3,10 +3,13 @@
 
 	header {
 		-Server
+		Content-Security-Policy "default-src 'self'; base-uri 'none'; connect-src 'self' https://tiles.openfreemap.org; font-src 'self' data: https://fonts.gstatic.com; form-action 'none'; frame-ancestors 'none'; frame-src 'none'; img-src 'self' data: blob: https://tiles.openfreemap.org; manifest-src 'self'; media-src 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; worker-src 'self' blob:"
+		Cross-Origin-Opener-Policy "same-origin"
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+		X-Frame-Options "DENY"
 	}
 
 	reverse_proxy web:8080

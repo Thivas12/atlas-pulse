@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import securityHeaders from "../security-headers.json" with { type: "json" };
 import {
   makeEnvelope,
   makeSourceFreshnessResponse,
@@ -38,6 +39,15 @@ async function installContractRoutes(page: Page): Promise<ContractRouteState> {
       return;
     }
     await route.abort();
+  });
+
+  await page.route("https://fonts.googleapis.com/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/css",
+      headers: { "access-control-allow-origin": "*" },
+      body: "",
+    });
   });
 
   await page.route("**/api/**", async (route) => {
@@ -102,10 +112,25 @@ async function installContractRoutes(page: Page): Promise<ContractRouteState> {
 
 test("production dashboard boots against strict public contracts", async ({ page }) => {
   const pageErrors: string[] = [];
+  const policyViolations: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("console", (message) => {
+    const text = message.text();
+    if (
+      message.type() === "error" &&
+      (text.includes("Content Security Policy") || text.includes("violates the following"))
+    ) {
+      policyViolations.push(text);
+    }
+  });
   const routes = await installContractRoutes(page);
 
-  await page.goto("/");
+  const documentResponse = await page.goto("/");
+  if (!documentResponse) throw new Error("dashboard navigation returned no document response");
+  const documentHeaders = documentResponse.headers();
+  for (const [name, expected] of Object.entries(securityHeaders)) {
+    expect(documentHeaders[name.toLowerCase()]).toBe(expected);
+  }
 
   await expect(page.getByRole("link", { name: "AtlasPulse home" })).toBeVisible();
   await expect(page.getByText("SOURCES CURRENT", { exact: true })).toBeVisible();
@@ -144,5 +169,6 @@ test("production dashboard boots against strict public contracts", async ({ page
     )
     .toBe(true);
   expect(routes.unexpectedApiPaths).toEqual([]);
+  expect(policyViolations).toEqual([]);
   expect(pageErrors).toEqual([]);
 });

@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.1.0",
+  "schema_version": "1.3.0",
   "deployments": {
     "base": {
       "networks": {
@@ -49,6 +49,20 @@
           "services": ["web"],
           "gateway_priority": 1
         }
+      },
+      "published_ports": {
+        "api": [
+          {"host_ip": "127.0.0.1", "published": 8000, "target": 8000, "protocol": "tcp"}
+        ],
+        "postgres": [
+          {"host_ip": "127.0.0.1", "published": 5432, "target": 5432, "protocol": "tcp"}
+        ],
+        "valkey": [
+          {"host_ip": "127.0.0.1", "published": 6379, "target": 6379, "protocol": "tcp"}
+        ],
+        "web": [
+          {"host_ip": "127.0.0.1", "published": 3000, "target": 8080, "protocol": "tcp"}
+        ]
       },
       "environment_owners": {
         "ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS": ["api"],
@@ -118,6 +132,112 @@
           "services": ["web"],
           "gateway_priority": 1
         }
+      },
+      "published_ports": {
+        "api": [
+          {"host_ip": "127.0.0.1", "published": 8000, "target": 8000, "protocol": "tcp"}
+        ],
+        "edge": [
+          {"host_ip": "*", "published": 80, "target": 80, "protocol": "tcp"},
+          {"host_ip": "*", "published": 443, "target": 443, "protocol": "tcp"},
+          {"host_ip": "*", "published": 443, "target": 443, "protocol": "udp"}
+        ],
+        "postgres": [
+          {"host_ip": "127.0.0.1", "published": 5432, "target": 5432, "protocol": "tcp"}
+        ],
+        "valkey": [
+          {"host_ip": "127.0.0.1", "published": 6379, "target": 6379, "protocol": "tcp"}
+        ],
+        "web": [
+          {"host_ip": "127.0.0.1", "published": 3000, "target": 8080, "protocol": "tcp"}
+        ]
+      },
+      "environment_owners": {
+        "ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS": ["api"],
+        "ATLAS_API_EXPENSIVE_RATE_LIMIT_REQUESTS": ["api"],
+        "ATLAS_API_RATE_LIMIT_CLIENT_SECRET": ["api"],
+        "ATLAS_API_RATE_LIMIT_REQUESTS": ["api"],
+        "ATLAS_API_RATE_LIMIT_WINDOW_SECONDS": ["api"],
+        "ATLAS_DATABASE_URL": ["api", "migrate", "projector", "retrieval-indexer"],
+        "ATLAS_FIRMS_MAP_KEY": ["ingestor"],
+        "ATLAS_PUBLIC_HOST": ["edge"],
+        "ATLAS_VALKEY_URL": ["api", "ingestor", "projector", "retrieval-indexer"],
+        "POSTGRES_PASSWORD": ["postgres"]
+      },
+      "require_public_database_password": true,
+      "require_public_rate_limit_secret": true
+    },
+    "workstation-funnel": {
+      "networks": {
+        "api-postgres": {"internal": true, "services": ["api", "postgres"]},
+        "api-host": {
+          "internal": false,
+          "services": ["api"],
+          "gateway_priority": 1
+        },
+        "api-valkey": {"internal": true, "services": ["api", "valkey"]},
+        "api-web": {"internal": true, "services": ["api", "web"]},
+        "edge-host": {
+          "internal": false,
+          "services": ["edge"],
+          "gateway_priority": 1
+        },
+        "edge-web": {"internal": true, "services": ["edge", "web"]},
+        "indexer-postgres": {
+          "internal": true,
+          "services": ["postgres", "retrieval-indexer"]
+        },
+        "indexer-valkey": {
+          "internal": true,
+          "services": ["retrieval-indexer", "valkey"]
+        },
+        "ingestor-valkey": {"internal": true, "services": ["ingestor", "valkey"]},
+        "migrate-postgres": {"internal": true, "services": ["migrate", "postgres"]},
+        "projector-postgres": {
+          "internal": true,
+          "services": ["postgres", "projector"]
+        },
+        "projector-valkey": {
+          "internal": true,
+          "services": ["projector", "valkey"]
+        },
+        "postgres-host": {
+          "internal": false,
+          "services": ["postgres"],
+          "gateway_priority": 1
+        },
+        "source-egress": {
+          "internal": false,
+          "services": ["ingestor"],
+          "gateway_priority": 1
+        },
+        "valkey-host": {
+          "internal": false,
+          "services": ["valkey"],
+          "gateway_priority": 1
+        },
+        "web-host": {
+          "internal": false,
+          "services": ["web"],
+          "gateway_priority": 1
+        }
+      },
+      "published_ports": {
+        "api": [
+          {"host_ip": "127.0.0.1", "published": 8000, "target": 8000, "protocol": "tcp"}
+        ],
+        "edge": [
+          {"host_ip": "127.0.0.1", "published": 8443, "target": 8080, "protocol": "tcp"}
+        ],
+        "postgres": [
+          {"host_ip": "127.0.0.1", "published": 5432, "target": 5432, "protocol": "tcp"}
+        ],
+        "valkey": [
+          {"host_ip": "127.0.0.1", "published": 6379, "target": 6379, "protocol": "tcp"}
+        ],
+        "web": [
+          {"host_ip": "127.0.0.1", "published": 3000, "target": 8080, "protocol": "tcp"}
+        ]
       },
       "environment_owners": {
         "ATLAS_AGENT_APPROVAL_TRUSTED_KEY_IDS": ["api"],

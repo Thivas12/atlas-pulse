@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlsplit
 
 STRONG_URL_SAFE_VALUE = re.compile(r"[A-Za-z0-9_-]{32,128}")
 LOCAL_RATE_LIMIT_SECRET = "local-development-only-rate-limit-secret"
+PublishedPort = tuple[str, int, int, str]
 
 
 def _mapping(value: object, label: str, errors: list[str]) -> Mapping[str, object]:
@@ -66,6 +67,51 @@ def _environment(
     service: Mapping[str, object], label: str, errors: list[str]
 ) -> Mapping[str, object]:
     return _mapping(service.get("environment", {}), f"{label}.environment", errors)
+
+
+def _port_number(value: object, label: str, errors: list[str]) -> int | None:
+    if isinstance(value, str) and value.isdecimal():
+        value = int(value)
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 65535:
+        errors.append(f"{label} must be an integer from 1 through 65535")
+        return None
+    return value
+
+
+def _published_ports(
+    service: Mapping[str, object], label: str, errors: list[str]
+) -> set[PublishedPort]:
+    value = service.get("ports", [])
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        errors.append(f"{label}.ports must be an array")
+        return set()
+    publications: set[PublishedPort] = set()
+    for index, raw_publication in enumerate(value):
+        port_label = f"{label}.ports[{index}]"
+        publication = _mapping(raw_publication, port_label, errors)
+        host_ip = publication.get("host_ip", "*")
+        if not isinstance(host_ip, str):
+            errors.append(f"{port_label}.host_ip must be a string")
+            continue
+        if host_ip in {"", "0.0.0.0", "::"}:
+            host_ip = "*"
+        published = _port_number(publication.get("published"), f"{port_label}.published", errors)
+        target = _port_number(publication.get("target"), f"{port_label}.target", errors)
+        protocol = publication.get("protocol", "tcp")
+        if not isinstance(protocol, str) or protocol not in {"tcp", "udp"}:
+            errors.append(f"{port_label}.protocol must be tcp or udp")
+            continue
+        mode = publication.get("mode", "ingress")
+        if mode != "ingress":
+            errors.append(f"{port_label}.mode must be ingress")
+            continue
+        if published is None or target is None:
+            continue
+        normalized = (host_ip, published, target, protocol)
+        if normalized in publications:
+            errors.append(f"{port_label} duplicates another published port")
+        publications.add(normalized)
+    return publications
 
 
 def _database_errors(
@@ -180,7 +226,7 @@ def validate_compose_model(
             f"networks differ: expected {sorted(expected_networks)}, got {sorted(networks)}"
         )
 
-    actual_members_by_network = {name: set() for name in networks}
+    actual_members_by_network: dict[str, set[str]] = {name: set() for name in networks}
     for service_name, raw_service in services.items():
         service = _mapping(raw_service, f"services.{service_name}", errors)
         for network_name in _service_networks(service, f"services.{service_name}", errors):
@@ -261,6 +307,30 @@ def validate_compose_model(
                 f"got {sorted(actual_owners)}"
             )
 
+    expected_publications = _mapping(
+        deployment_policy.get("published_ports"),
+        f"policy.deployments.{deployment}.published_ports",
+        errors,
+    )
+    unknown_port_owners = set(expected_publications) - set(services)
+    if unknown_port_owners:
+        errors.append(
+            "published port owners are not services: " + ", ".join(sorted(unknown_port_owners))
+        )
+    for service_name, raw_service in services.items():
+        service = _mapping(raw_service, f"services.{service_name}", errors)
+        actual_ports = _published_ports(service, f"services.{service_name}", errors)
+        expected_ports = _published_ports(
+            {"ports": expected_publications.get(service_name, [])},
+            f"policy.deployments.{deployment}.published_ports.{service_name}",
+            errors,
+        )
+        if actual_ports != expected_ports:
+            errors.append(
+                f"services.{service_name} published ports differ: "
+                f"expected {sorted(expected_ports)}, got {sorted(actual_ports)}"
+            )
+
     database_clients = _string_set(
         environment_owners.get("ATLAS_DATABASE_URL"),
         f"policy.deployments.{deployment}.environment_owners.ATLAS_DATABASE_URL",
@@ -303,7 +373,11 @@ def main() -> int:
     """Validate one JSON Compose model read from standard input."""
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--deployment", required=True, choices=("base", "free-tier"))
+    parser.add_argument(
+        "--deployment",
+        required=True,
+        choices=("base", "free-tier", "workstation-funnel"),
+    )
     parser.add_argument(
         "--policy",
         type=Path,
@@ -318,14 +392,14 @@ def main() -> int:
             raise ValueError("standard input must contain a JSON object")
         model = cast(dict[str, object], model_value)
         policy = _load_object(args.policy)
-    except (OSError, json.JSONDecodeError, ValueError) as error:
-        print(f"compose security validation error: {error}", file=sys.stderr)
+    except (OSError, json.JSONDecodeError, ValueError) as load_error:
+        print(f"compose security validation error: {load_error}", file=sys.stderr)
         return 2
 
     errors = validate_compose_model(model, policy, args.deployment)
     if errors:
-        for error in errors:
-            print(f"compose security policy violation: {error}", file=sys.stderr)
+        for violation in errors:
+            print(f"compose security policy violation: {violation}", file=sys.stderr)
         return 1
     print(f"Compose security policy passed for {args.deployment}.")
     return 0

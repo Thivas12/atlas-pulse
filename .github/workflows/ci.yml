@@ -157,6 +157,22 @@ jobs:
               -f deploy/release-assessment.compose.yaml \
               config --quiet
 
+      - name: Validate workstation Funnel overlay and edge configuration
+        env:
+          ATLAS_PUBLIC_HOST: atlas-pulse.example-tailnet.ts.net
+          ATLAS_POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          ATLAS_API_RATE_LIMIT_CLIENT_SECRET: abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+        run: |
+          docker compose -f compose.yaml -f deploy/workstation-funnel/compose.yaml \
+            config --format json \
+              | python3 scripts/verify_compose_security.py --deployment workstation-funnel
+          docker compose -f compose.yaml -f deploy/workstation-funnel/compose.yaml build edge
+          docker run --rm --entrypoint caddy \
+            --env ATLAS_PUBLIC_HOST="$ATLAS_PUBLIC_HOST" \
+            --volume "$PWD/deploy/workstation-funnel/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            atlas-pulse-edge:2.11.4-alpine \
+            validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
       - name: Verify polling policy parity and FIRMS credential scope
         run: |
           ATLAS_FIRMS_ENABLED=true ATLAS_FIRMS_MAP_KEY=ci-sentinel \

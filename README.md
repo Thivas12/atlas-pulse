@@ -77,9 +77,10 @@ component can run without a paid API key.
 > reasoning—to exact grounded-answer candidates, joins it to independent adjudication, detects
 > longitudinal drift, and evaluates a content-addressed conservative threshold policy. A passing
 > assessment means only `eligible_for_human_review`; quality, human approval, and execution remain
-> separate gates, and execution is hard-disabled. A resource-capped Compose overlay and Caddy edge
-> now provide a reproducible free-tier HTTPS deployment path without manufacturing a live-service
-> or model-quality claim. Every public `/v1/*` request now consumes an atomic, pseudonymous
+> separate gates, and execution is hard-disabled. Resource-capped Compose overlays now provide
+> reviewed HTTPS paths for either a free VM or a card-free workstation/Tailscale Funnel deployment
+> without manufacturing a live-service or model-quality claim. Every public `/v1/*` request now
+> consumes an atomic, pseudonymous
 > Valkey-backed client budget; expensive retrieval/correlation routes consume a second tighter
 > budget, exhausted quotas return `429`, and unavailable quota state fails closed without storing
 > raw client addresses. v0.12 binds public liveness and readiness to the declared image commit and
@@ -331,7 +332,9 @@ Observable trajectory capture, joined scoring, chronological drift, threshold as
 assessment-to-preflight binding are in
 [`docs/agent-trajectory-release.md`](docs/agent-trajectory-release.md). The free ARM host, HTTPS,
 cost, backup, and rollback path is in
-[`docs/free-tier-deployment.md`](docs/free-tier-deployment.md).
+[`docs/free-tier-deployment.md`](docs/free-tier-deployment.md). The no-card Windows/WSL path,
+including its loopback-only PROXY-aware edge and Tailscale Funnel boundary, is in
+[`docs/workstation-funnel-deployment.md`](docs/workstation-funnel-deployment.md).
 Exact-commit public probes, bounded resource capture, restart/backup/restore bindings, and the
 sampled 30-day campaign report are documented in
 [`docs/operational-evidence.md`](docs/operational-evidence.md).
@@ -747,8 +750,8 @@ credential solely for transaction metering.
 | Observability | OpenTelemetry | Open source; console export by default |
 | Toolchain | uv, Ruff, mypy, pytest, Vite, Vitest, Biome | Open source |
 | Runtime | Docker Engine/Compose or Podman | Free/open-source options |
-| Public reference host | OCI Ampere A1 Always Free allocation, subject to provider eligibility and capacity | No paid fallback in the documented path |
-| Public HTTPS | Pinned Caddy edge plus user DNS or optional `sslip.io` hostname | Open source/free path; provider terms still apply |
+| Public reference host | OCI Ampere A1 Always Free, or an existing workstation with a separately reviewed profile | No paid fallback; provider eligibility or workstation uptime still applies |
+| Public HTTPS | Pinned Caddy edge with DNS, or Tailscale Funnel to a loopback-only PROXY-aware edge | Free paths; provider terms and Funnel beta limits still apply |
 | CI | GitHub Actions on this public repository | Free hosted runners for public repos |
 | Security analysis | GitHub CodeQL, `uv audit`, and `npm audit` | Free for this public repository |
 
@@ -764,7 +767,7 @@ credential solely for transaction metering.
    two independent model-blind reviews, resolve disputed fields through the checked-in adjudication
    workflow, and populate the final descriptive report before proposing any threshold or preflight
    policy change.
-4. Deploy one reviewed exact commit through the resource-capped free-tier HTTPS slice, schedule the
+4. Deploy one reviewed exact commit through a resource-capped public HTTPS slice, schedule the
    checked-in probe and resource collectors, then accumulate at least 30 consecutive aligned UTC
    sample dates with passing poll-heartbeat and upstream-age checks for every required source, plus
    real restart, encrypted off-host backup, and isolated restore evidence. Publish only the

@@ -1,0 +1,84 @@
+name: atlas-pulse-workstation-funnel
+
+services:
+  valkey:
+    mem_limit: 512m
+    cpus: 0.50
+
+  postgres:
+    mem_limit: 2g
+    cpus: 1.00
+    environment:
+      POSTGRES_PASSWORD: ${ATLAS_POSTGRES_PASSWORD:?set a random public-deployment database password}
+
+  migrate:
+    mem_limit: 1g
+    cpus: 0.75
+    environment:
+      ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:${ATLAS_POSTGRES_PASSWORD:?set a random public-deployment database password}@postgres:5432/atlas
+
+  api:
+    mem_limit: 2g
+    cpus: 1.00
+    environment:
+      ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:${ATLAS_POSTGRES_PASSWORD:?set a random public-deployment database password}@postgres:5432/atlas
+      ATLAS_API_RATE_LIMIT_CLIENT_SECRET: ${ATLAS_API_RATE_LIMIT_CLIENT_SECRET:?set a random public-deployment rate-limit client secret}
+
+  ingestor:
+    mem_limit: 1g
+    cpus: 0.75
+
+  projector:
+    mem_limit: 1g
+    cpus: 0.75
+    environment:
+      ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:${ATLAS_POSTGRES_PASSWORD:?set a random public-deployment database password}@postgres:5432/atlas
+
+  retrieval-indexer:
+    mem_limit: 2g
+    cpus: 1.25
+    environment:
+      ATLAS_DATABASE_URL: postgresql+asyncpg://atlas:${ATLAS_POSTGRES_PASSWORD:?set a random public-deployment database password}@postgres:5432/atlas
+
+  web:
+    mem_limit: 256m
+    cpus: 0.50
+    networks:
+      api-web:
+      edge-web:
+
+  edge:
+    build:
+      context: .
+      dockerfile: deploy/free-tier/Dockerfile
+    image: atlas-pulse-edge:2.11.4-alpine
+    restart: unless-stopped
+    environment:
+      ATLAS_PUBLIC_HOST: ${ATLAS_PUBLIC_HOST:?set ATLAS_PUBLIC_HOST to the Tailscale Funnel DNS name}
+    depends_on:
+      web:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8443:8080"
+    volumes:
+      - ./deploy/workstation-funnel/Caddyfile:/etc/caddy/Caddyfile:ro
+    read_only: true
+    tmpfs:
+      - /config
+      - /data
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 0.50
+    networks:
+      edge-web:
+      edge-host:
+        gw_priority: 1
+
+networks:
+  edge-web:
+    internal: true
+  edge-host:

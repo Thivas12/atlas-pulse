@@ -121,10 +121,15 @@ def test_container_inputs_are_digest_pinned_synchronized_and_scanned() -> None:
 
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     free_tier = (ROOT / "deploy" / "free-tier" / "compose.yaml").read_text(encoding="utf-8")
+    workstation = (ROOT / "deploy" / "workstation-funnel" / "compose.yaml").read_text(
+        encoding="utf-8"
+    )
     ci_workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")
     assert f"image: {images['valkey']}" in compose
     assert "dockerfile: deploy/free-tier/Dockerfile" in free_tier
     assert "image: atlas-pulse-edge:2.11.4-alpine" in free_tier
+    assert "dockerfile: deploy/free-tier/Dockerfile" in workstation
+    assert "image: atlas-pulse-edge:2.11.4-alpine" in workstation
     assert f"image: {images['valkey']}" in ci_workflow
 
     allowed_yaml_images = {
@@ -135,6 +140,7 @@ def test_container_inputs_are_digest_pinned_synchronized_and_scanned() -> None:
     for relative_path in (
         "compose.yaml",
         "deploy/free-tier/compose.yaml",
+        "deploy/workstation-funnel/compose.yaml",
         ".github/workflows/ci.yml",
     ):
         content = (ROOT / relative_path).read_text(encoding="utf-8")
@@ -185,10 +191,10 @@ def test_compose_trust_graph_is_machine_checked() -> None:
     policy = json.loads(
         (ROOT / "deploy" / "compose-security-policy.json").read_text(encoding="utf-8")
     )
-    assert policy["schema_version"] == "1.1.0"
-    assert set(policy["deployments"]) == {"base", "free-tier"}
+    assert policy["schema_version"] == "1.3.0"
+    assert set(policy["deployments"]) == {"base", "free-tier", "workstation-funnel"}
 
-    for deployment in policy["deployments"].values():
+    for deployment_name, deployment in policy["deployments"].items():
         networks = deployment["networks"]
         assert all(
             specification["internal"] or len(specification["services"]) == 1
@@ -202,16 +208,36 @@ def test_compose_trust_graph_is_machine_checked() -> None:
             "projector",
             "retrieval-indexer",
         }
+        expected_port_owners = {"api", "postgres", "valkey", "web"}
+        if deployment_name != "base":
+            expected_port_owners.add("edge")
+        assert set(deployment["published_ports"]) == expected_port_owners
+
+    workstation_policy = policy["deployments"]["workstation-funnel"]
+    assert workstation_policy["published_ports"]["edge"] == [
+        {"host_ip": "127.0.0.1", "published": 8443, "target": 8080, "protocol": "tcp"}
+    ]
 
     free_tier = (ROOT / "deploy" / "free-tier" / "compose.yaml").read_text(encoding="utf-8")
+    workstation = (ROOT / "deploy" / "workstation-funnel" / "compose.yaml").read_text(
+        encoding="utf-8"
+    )
     assert free_tier.count("${ATLAS_POSTGRES_PASSWORD:?") == 5
     assert free_tier.count("${ATLAS_API_RATE_LIMIT_CLIENT_SECRET:?") == 1
+    assert workstation.count("${ATLAS_POSTGRES_PASSWORD:?") == 5
+    assert workstation.count("${ATLAS_API_RATE_LIMIT_CLIENT_SECRET:?") == 1
+    assert "name: atlas-pulse-workstation-funnel" in workstation
+    assert '"127.0.0.1:8443:8080"' in workstation
+    assert '"80:80"' not in workstation
+    assert '"443:443"' not in workstation
     assert (ROOT / "compose.yaml").read_text(encoding="utf-8").count("gw_priority: 1") == 5
     assert free_tier.count("gw_priority: 1") == 1
+    assert workstation.count("gw_priority: 1") == 1
 
     workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")
     assert "verify_compose_security.py --deployment base" in workflow
     assert "verify_compose_security.py --deployment free-tier" in workflow
+    assert "verify_compose_security.py --deployment workstation-funnel" in workflow
 
 
 def test_frontend_ci_smoke_tests_the_production_bundle() -> None:
@@ -249,7 +275,11 @@ def test_browser_security_headers_are_synchronized_and_enforced() -> None:
     ):
         assert directive in policy
 
-    for relative_path in ("web/Caddyfile", "deploy/free-tier/Caddyfile"):
+    for relative_path in (
+        "web/Caddyfile",
+        "deploy/free-tier/Caddyfile",
+        "deploy/workstation-funnel/Caddyfile",
+    ):
         content = (ROOT / relative_path).read_text(encoding="utf-8")
         assert "-Server" in content
         for name, value in expected.items():
@@ -257,10 +287,18 @@ def test_browser_security_headers_are_synchronized_and_enforced() -> None:
 
     web_caddy = (ROOT / "web" / "Caddyfile").read_text(encoding="utf-8")
     edge_caddy = (ROOT / "deploy" / "free-tier" / "Caddyfile").read_text(encoding="utf-8")
+    workstation_caddy = (ROOT / "deploy" / "workstation-funnel" / "Caddyfile").read_text(
+        encoding="utf-8"
+    )
     assert "trusted_proxies static private_ranges" in web_caddy
     assert "trusted_proxies_strict" in web_caddy
     assert "header_up X-Atlas-Client-IP {client_ip}" in web_caddy
     assert "trusted_proxies" not in edge_caddy
+    assert "proxy_protocol" in workstation_caddy
+    assert "fallback_policy require" in workstation_caddy
+    assert "\n\t\t\t\tallow " not in workstation_caddy
+    assert "trusted_proxies" not in workstation_caddy
+    assert "header_up X-Forwarded-Proto https" in workstation_caddy
 
     vite = (ROOT / "web" / "vite.config.ts").read_text(encoding="utf-8")
     assert 'import securityHeaders from "./security-headers.json"' in vite

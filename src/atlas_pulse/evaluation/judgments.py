@@ -123,9 +123,15 @@ def render_judgment_rows(rows: Sequence[Mapping[str, str]]) -> str:
     return output.getvalue()
 
 
-def _candidate_metadata(query_id: str, candidate: PooledCandidate) -> dict[str, str]:
+def judgment_metadata(
+    query_id: str,
+    query_text: str,
+    candidate: PooledCandidate,
+) -> dict[str, str]:
+    """Render every protected reviewer-visible field for one candidate."""
     return {
         "query_id": query_id,
+        "query_text": spreadsheet_safe_text(query_text),
         "document_id": candidate.document_id,
         "document_hash": candidate.document_hash,
         "source": candidate.source,
@@ -166,8 +172,7 @@ def _parse_judgment_rows(
         if key in grades:
             raise ValueError(f"judgment row {line_number} duplicates {key[0]} / {key[1]}")
         query_text, candidate = expected[key]
-        metadata = _candidate_metadata(key[0], candidate)
-        metadata["query_text"] = spreadsheet_safe_text(query_text)
+        metadata = judgment_metadata(key[0], query_text, candidate)
         changed = [field for field, value in metadata.items() if row[field] != value]
         if changed:
             raise ValueError(

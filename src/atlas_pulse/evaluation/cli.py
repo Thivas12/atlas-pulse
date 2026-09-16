@@ -10,6 +10,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
 
+from atlas_pulse.evaluation.adjudication import (
+    apply_retrieval_adjudication,
+    build_retrieval_adjudication_sheet,
+)
 from atlas_pulse.evaluation.base import (
     CandidatePool,
     EvaluationQuerySet,
@@ -19,10 +23,17 @@ from atlas_pulse.evaluation.base import (
 from atlas_pulse.evaluation.campaign import build_campaign, render_campaign_markdown
 from atlas_pulse.evaluation.capture import capture_pool
 from atlas_pulse.evaluation.comparison import compare_pools, render_comparison_markdown
-from atlas_pulse.evaluation.judging import run_judgment_session
+from atlas_pulse.evaluation.judging import (
+    run_judgment_session,
+    run_retrieval_adjudication_session,
+)
 from atlas_pulse.evaluation.judgments import apply_judgments, build_judgment_sheet
 from atlas_pulse.evaluation.metrics import evaluate_gates, score_pool
-from atlas_pulse.evaluation.report import render_markdown
+from atlas_pulse.evaluation.report import (
+    render_markdown,
+    render_retrieval_adjudication_markdown,
+    render_retrieval_review_agreement_markdown,
+)
 
 
 def _json_model[ModelT: BaseModel](path: Path, model: type[ModelT]) -> ModelT:
@@ -34,9 +45,17 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _ensure_writable(paths: Sequence[Path], *, force: bool) -> None:
-    if len(set(paths)) != len(paths):
+def _ensure_writable(
+    paths: Sequence[Path],
+    *,
+    force: bool,
+    inputs: Sequence[Path] = (),
+) -> None:
+    resolved_outputs = {path.resolve() for path in paths}
+    if len(resolved_outputs) != len(paths):
         raise ValueError("output paths must be distinct")
+    if resolved_outputs & {path.resolve() for path in inputs}:
+        raise ValueError("output paths must not replace input artifacts")
     existing = [path for path in paths if path.exists()]
     if existing and not force:
         targets = ", ".join(str(path) for path in existing)
@@ -107,6 +126,80 @@ def _judge(args: argparse.Namespace) -> int:
     return 0
 
 
+def _review_sheet(args: argparse.Namespace) -> int:
+    _ensure_writable((args.output,), force=args.force, inputs=(args.pool,))
+    pool = _json_model(args.pool, CandidatePool)
+    if pool.judgment_status != "unjudged":
+        raise ValueError("an independent review sheet requires the original unjudged pool")
+    sheet = build_judgment_sheet(pool)
+    _write(args.output, sheet.content)
+    print(f"Wrote {sheet.pending_count} rank-blind candidate(s) to {args.output}")
+    return 0
+
+
+def _agreement(args: argparse.Namespace) -> int:
+    _ensure_writable(
+        (args.output_json, args.output_markdown, args.adjudication_output),
+        force=args.force,
+        inputs=(args.first_pool, args.second_pool),
+    )
+    first = _json_model(args.first_pool, CandidatePool)
+    second = _json_model(args.second_pool, CandidatePool)
+    sheet = build_retrieval_adjudication_sheet(first, second)
+    report = sheet.agreement_report
+    _write(args.output_json, report.model_dump_json(indent=2) + "\n")
+    _write(args.output_markdown, render_retrieval_review_agreement_markdown(report))
+    _write(args.adjudication_output, sheet.content)
+    print(
+        f"Compared {report.overall.judgment_count} judgments from two independent reviewers: "
+        f"{report.overall.agreement_count} agreement(s), "
+        f"{report.overall.disagreement_count} disagreement(s)"
+    )
+    if sheet.pending_count:
+        print(
+            "Resolve the blinded disagreements with the judge-adjudication command: "
+            f"{args.adjudication_output}"
+        )
+    else:
+        print("The reviewers agreed on every candidate; the adjudication sheet has only a header")
+    return 0
+
+
+def _judge_adjudication(args: argparse.Namespace) -> int:
+    first = _json_model(args.first_pool, CandidatePool)
+    second = _json_model(args.second_pool, CandidatePool)
+    run_retrieval_adjudication_session(
+        first,
+        second,
+        args.adjudication_sheet,
+    )
+    return 0
+
+
+def _adjudicate(args: argparse.Namespace) -> int:
+    _ensure_writable(
+        (args.output_pool, args.output_json, args.output_markdown),
+        force=args.force,
+        inputs=(args.first_pool, args.second_pool, args.adjudication_sheet),
+    )
+    first = _json_model(args.first_pool, CandidatePool)
+    second = _json_model(args.second_pool, CandidatePool)
+    pool, report = apply_retrieval_adjudication(
+        first,
+        second,
+        args.adjudication_sheet.read_text(encoding="utf-8"),
+        adjudicator=args.adjudicator,
+    )
+    _write(args.output_pool, pool.model_dump_json(indent=2) + "\n")
+    _write(args.output_json, report.model_dump_json(indent=2) + "\n")
+    _write(args.output_markdown, render_retrieval_adjudication_markdown(report))
+    print(
+        f"Finalized {report.judgment_count} relevance judgments as {report.report_id}; "
+        f"adjudicated {report.adjudication_decision_count} disagreement(s)"
+    )
+    return 0
+
+
 def _score(args: argparse.Namespace) -> int:
     _ensure_writable((args.output_json, args.output_markdown), force=args.force)
     pool = _json_model(args.pool, CandidatePool)
@@ -158,7 +251,10 @@ def _campaign(args: argparse.Namespace) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="atlas-pulse-evaluate",
-        description="Capture, review, score, compare, and trend AtlasPulse retrieval pools.",
+        description=(
+            "Capture, independently review, adjudicate, score, compare, and trend "
+            "AtlasPulse retrieval pools."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -181,12 +277,52 @@ def _parser() -> argparse.ArgumentParser:
     judge.add_argument("--pool", type=Path, required=True)
     judge.add_argument("--judgments", type=Path, required=True)
 
+    review_sheet = subparsers.add_parser(
+        "review-sheet",
+        help="export a fresh rank-blind sheet from the original unjudged pool",
+    )
+    review_sheet.add_argument("--pool", type=Path, required=True)
+    review_sheet.add_argument("--output", type=Path, required=True)
+    review_sheet.add_argument("--force", action="store_true")
+
     review = subparsers.add_parser("review", help="import a completed rank-blind judgment sheet")
     review.add_argument("--pool", type=Path, required=True)
     review.add_argument("--judgments", type=Path, required=True)
     review.add_argument("--reviewer", required=True)
     review.add_argument("--output", type=Path, required=True)
     review.add_argument("--force", action="store_true")
+
+    agreement = subparsers.add_parser(
+        "agreement",
+        help="measure two exact independent reviews and export only disagreements",
+    )
+    agreement.add_argument("--first-pool", type=Path, required=True)
+    agreement.add_argument("--second-pool", type=Path, required=True)
+    agreement.add_argument("--output-json", type=Path, required=True)
+    agreement.add_argument("--output-markdown", type=Path, required=True)
+    agreement.add_argument("--adjudication-output", type=Path, required=True)
+    agreement.add_argument("--force", action="store_true")
+
+    judge_adjudication = subparsers.add_parser(
+        "judge-adjudication",
+        help="resume reviewer-blind disagreement adjudication in the terminal",
+    )
+    judge_adjudication.add_argument("--first-pool", type=Path, required=True)
+    judge_adjudication.add_argument("--second-pool", type=Path, required=True)
+    judge_adjudication.add_argument("--adjudication-sheet", type=Path, required=True)
+
+    adjudicate = subparsers.add_parser(
+        "adjudicate",
+        help="import protected disagreement decisions and finalize one gold pool",
+    )
+    adjudicate.add_argument("--first-pool", type=Path, required=True)
+    adjudicate.add_argument("--second-pool", type=Path, required=True)
+    adjudicate.add_argument("--adjudication-sheet", type=Path, required=True)
+    adjudicate.add_argument("--adjudicator", required=True)
+    adjudicate.add_argument("--output-pool", type=Path, required=True)
+    adjudicate.add_argument("--output-json", type=Path, required=True)
+    adjudicate.add_argument("--output-markdown", type=Path, required=True)
+    adjudicate.add_argument("--force", action="store_true")
 
     score = subparsers.add_parser("score", help="score a completed human-reviewed pool")
     score.add_argument("--pool", type=Path, required=True)
@@ -234,8 +370,16 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             return asyncio.run(_capture(args))
         if args.command == "judge":
             return _judge(args)
+        if args.command == "review-sheet":
+            return _review_sheet(args)
         if args.command == "review":
             return _review(args)
+        if args.command == "agreement":
+            return _agreement(args)
+        if args.command == "judge-adjudication":
+            return _judge_adjudication(args)
+        if args.command == "adjudicate":
+            return _adjudicate(args)
         if args.cutoff is None:
             args.cutoff = [1, 3, 5, 10]
         if args.command == "score":

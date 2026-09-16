@@ -11,8 +11,10 @@ from atlas_pulse.projections.base import SourceName
 from atlas_pulse.retrieval import CitationStatus, GeoRadius, RankingMode, SearchQuery
 
 SchemaVersion = Literal["1.0.0"]
-ReportSchemaVersion = Literal["1.1.0"]
+CandidatePoolSchemaVersion = Literal["1.0.0", "1.1.0"]
+ReportSchemaVersion = Literal["1.1.0", "1.2.0"]
 JudgmentStatus = Literal["unjudged", "reviewed"]
+ReviewProcessVersion = Literal["independent-review-adjudication-v1"]
 CutoffMetricName = Literal[
     "precision",
     "pooled_recall",
@@ -220,10 +222,66 @@ class PooledQuery(StrictModel):
         return self
 
 
+class IndependentRetrievalAdjudicationProvenance(StrictModel):
+    """Auditable review process attached only to a finalized retrieval gold pool."""
+
+    process_version: ReviewProcessVersion = "independent-review-adjudication-v1"
+    independent_reviewers: tuple[str, str]
+    review_pool_sha256s: tuple[str, str]
+    agreement_report_id: str = Field(min_length=1, max_length=240)
+    observed_agreement: float = Field(ge=0, le=1, allow_inf_nan=False)
+    cohen_kappa: float | None = Field(default=None, ge=-1, le=1, allow_inf_nan=False)
+    adjudicator: str = Field(min_length=1, max_length=200)
+    adjudicated_at: datetime
+    adjudication_decision_count: int = Field(ge=0)
+
+    @field_validator("independent_reviewers")
+    @classmethod
+    def validate_reviewers(cls, value: tuple[str, str]) -> tuple[str, str]:
+        normalized = tuple(" ".join(reviewer.split()) for reviewer in value)
+        if any(not reviewer for reviewer in normalized):
+            raise ValueError("independent reviewers must not be blank")
+        if any(len(reviewer) > 200 for reviewer in normalized):
+            raise ValueError("independent reviewer names cannot exceed 200 characters")
+        if normalized[0].casefold() == normalized[1].casefold():
+            raise ValueError("independent reviewers must be different people")
+        if normalized != tuple(sorted(normalized, key=lambda item: (item.casefold(), item))):
+            raise ValueError("independent reviewers must use canonical name order")
+        return normalized[0], normalized[1]
+
+    @field_validator("review_pool_sha256s")
+    @classmethod
+    def validate_review_hashes(cls, value: tuple[str, str]) -> tuple[str, str]:
+        if any(
+            len(item) != 64 or any(character not in "0123456789abcdef" for character in item)
+            for item in value
+        ):
+            raise ValueError("independent review pool hashes must be lowercase SHA-256 values")
+        return value
+
+    @field_validator("adjudicator")
+    @classmethod
+    def normalize_adjudicator(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("adjudicator must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_process(self) -> "IndependentRetrievalAdjudicationProvenance":
+        if self.adjudicator.casefold() in {
+            reviewer.casefold() for reviewer in self.independent_reviewers
+        }:
+            raise ValueError("adjudicator must be independent from both reviewers")
+        if self.adjudicated_at.tzinfo is None:
+            raise ValueError("adjudicated_at must be timezone-aware")
+        return self
+
+
 class CandidatePool(StrictModel):
     """Portable capture artifact completed through strict judgment import."""
 
-    schema_version: SchemaVersion = "1.0.0"
+    schema_version: CandidatePoolSchemaVersion = "1.0.0"
     pool_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{2,119}$")
     query_set_id: str = Field(pattern=r"^[a-z0-9][a-z0-9.-]{2,79}$")
     query_set_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -232,7 +290,21 @@ class CandidatePool(StrictModel):
     judgment_status: JudgmentStatus = "unjudged"
     reviewer: str | None = Field(default=None, max_length=200)
     reviewed_at: datetime | None = None
+    adjudication: IndependentRetrievalAdjudicationProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     queries: tuple[PooledQuery, ...] = Field(min_length=1)
+
+    @field_validator("reviewer")
+    @classmethod
+    def normalize_reviewer(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("reviewer must not be blank")
+        return normalized
 
     @model_validator(mode="after")
     def validate_review_state(self) -> "CandidatePool":
@@ -264,6 +336,17 @@ class CandidatePool(StrictModel):
             for candidate in candidates
         ):
             raise ValueError("unjudged pools must not contain partial judgments")
+        if self.adjudication is not None:
+            if self.schema_version != "1.1.0":
+                raise ValueError("adjudicated pools require candidate-pool schema 1.1.0")
+            if self.judgment_status != "reviewed":
+                raise ValueError("only reviewed pools may contain adjudication provenance")
+            if self.reviewer != self.adjudication.adjudicator:
+                raise ValueError("pool reviewer must equal the adjudication finalizer")
+            if self.reviewed_at != self.adjudication.adjudicated_at:
+                raise ValueError("pool reviewed_at must equal adjudicated_at")
+        elif self.schema_version != "1.0.0":
+            raise ValueError("candidate-pool schema 1.1.0 requires adjudication provenance")
         return self
 
 
@@ -341,7 +424,19 @@ class EvaluationReport(StrictModel):
     slices: dict[str, dict[RankingMode, AggregateMetrics]]
     gate_policy_id: str | None = None
     gate_outcomes: tuple[GateOutcome, ...] = ()
+    adjudication: IndependentRetrievalAdjudicationProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     caveats: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def validate_review_provenance(self) -> "EvaluationReport":
+        if (self.schema_version == "1.2.0") != (self.adjudication is not None):
+            raise ValueError("report schema 1.2.0 and adjudication provenance must appear together")
+        if self.adjudication is not None and self.reviewer != self.adjudication.adjudicator:
+            raise ValueError("report reviewer must equal the adjudication finalizer")
+        return self
 
 
 class GateRule(StrictModel):

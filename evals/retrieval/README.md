@@ -21,9 +21,10 @@ Grade the event against the query and its filters, using only the evidence shown
 | `0` | Not relevant to the information need |
 
 Do not infer facts absent from the source event. A valid citation URL does not increase relevance;
-it is measured separately. Add a short rationale for ambiguous grades. For stronger published
-claims, use two independent reviewers and adjudicate disagreements before importing the final
-sheet.
+it is measured separately. Add a short rationale for ambiguous grades. One review is an internal
+development baseline only. Public comparative claims require two different people to review the
+same untouched capture independently, followed by third-person adjudication of grade
+disagreements.
 
 ## Live workflow
 
@@ -92,6 +93,73 @@ uv run atlas-pulse-evaluate score \
   --output-json artifacts/evaluation/report.json \
   --output-markdown artifacts/evaluation/report.md
 ```
+
+## Independent review and adjudication
+
+Keep the original unjudged `pool.json`. Generate a fresh sheet for the second reviewer without
+copying, exposing, or seeding the first review:
+
+```bash
+uv run atlas-pulse-evaluate review-sheet \
+  --pool artifacts/evaluation/pool.json \
+  --output artifacts/evaluation/second-judgments.csv
+
+uv run atlas-pulse-evaluate judge \
+  --pool artifacts/evaluation/pool.json \
+  --judgments artifacts/evaluation/second-judgments.csv
+
+uv run atlas-pulse-evaluate review \
+  --pool artifacts/evaluation/pool.json \
+  --judgments artifacts/evaluation/second-judgments.csv \
+  --reviewer "Second Reviewer's Name" \
+  --output artifacts/evaluation/second-reviewed-pool.json
+```
+
+The second reviewer must be a different person and must not see the first review, retrieval mode,
+rank, or score. Compare the two complete first-pass reviews and export only their disagreements:
+
+```bash
+uv run atlas-pulse-evaluate agreement \
+  --first-pool artifacts/evaluation/first-reviewed-pool.json \
+  --second-pool artifacts/evaluation/second-reviewed-pool.json \
+  --output-json artifacts/evaluation/agreement.json \
+  --output-markdown artifacts/evaluation/agreement.md \
+  --adjudication-output artifacts/evaluation/adjudication.csv
+```
+
+The report retains observed agreement, expected marginal agreement, unweighted Cohen's kappa, a
+complete `0..3` confusion matrix, exact disagreement identities, and query/source/slice results.
+It fails unless both artifacts contain the exact same captured queries, candidates, evidence,
+runs, model identity, and ranking-rule identity. Reversing the two command arguments cannot change
+the report identity or confusion-matrix orientation.
+
+A third person, different from both first-pass reviewers, resolves only the disagreements. The
+terminal hides reviewer identities, swaps review A/B order deterministically per row, validates
+all protected evidence, and saves each accepted decision atomically:
+
+```bash
+uv run atlas-pulse-evaluate judge-adjudication \
+  --first-pool artifacts/evaluation/first-reviewed-pool.json \
+  --second-pool artifacts/evaluation/second-reviewed-pool.json \
+  --adjudication-sheet artifacts/evaluation/adjudication.csv
+
+uv run atlas-pulse-evaluate adjudicate \
+  --first-pool artifacts/evaluation/first-reviewed-pool.json \
+  --second-pool artifacts/evaluation/second-reviewed-pool.json \
+  --adjudication-sheet artifacts/evaluation/adjudication.csv \
+  --adjudicator "Third Person's Name" \
+  --output-pool artifacts/evaluation/gold-pool.json \
+  --output-json artifacts/evaluation/adjudication.json \
+  --output-markdown artifacts/evaluation/adjudication.md
+```
+
+Every disagreement requires a final `0..3` grade and a rationale of 10–1000 characters. Agreed
+grades pass through unchanged. A header-only adjudication sheet is valid when the reviewers agree
+on every candidate, but a distinct adjudicator must still finalize the process provenance. The
+schema `1.1.0` gold pool retains both first-pass review hashes, agreement metrics, the agreement
+report identity, the adjudicator, and every disagreement decision. Scoring that pool emits report
+schema `1.2.0` with the same provenance. All outputs remain under ignored `artifacts/`; do not
+commit the live evidence or human judgments as part of the tooling change.
 
 After importing the candidate judgments, compare both reviewed captures against the union of
 evidence surfaced by either system:

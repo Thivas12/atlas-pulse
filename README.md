@@ -30,7 +30,10 @@ component can run without a paid API key.
 > PostGIS filters to both channels, fuses ranks with RRF, applies evidence-only tie-breaks, validates
 > credential-safe citations, and exposes every score in the dashboard. A pooled, rank-blind human
 > judgment workflow compares lexical, dense, RRF, and hybrid modes with standard IR metrics,
-> source/intent slices, content-addressed reports, and explicit regression gates. Two or more
+> source/intent slices, content-addressed reports, and explicit regression gates. Two exact
+> first-pass reviews can now be compared with observed agreement and Cohen's kappa; only grade
+> disagreements enter a reviewer- and rank-blind, resumable third-person adjudication flow, and the
+> final gold pool retains both review hashes plus decision provenance. Two or more
 > reviewed captures can now form one content-addressed campaign: every point is rescored against
 > the same global judged union and exposes baseline-relative quality, coverage, slice, and latency
 > movement without inventing a model-release verdict. Every measured
@@ -111,7 +114,7 @@ component can run without a paid API key.
 | Claim relationships | Stable source-field claims, conservative corroboration/contradiction rules, explicit abstention, immutable parent-edge references |
 | Relationship evaluation | Dual prediction-blind reviews, adjudicated gold, a revision-pinned local ONNX NLI runner, paired regressions, abstention/slice metrics, and a closed promotion boundary |
 | Hybrid retrieval | PostgreSQL FTS + local BGE embeddings + pgvector HNSW, shared time/geography filters, deterministic RRF, inspectable evidence tie-breaks |
-| Retrieval evaluation | Versioned live queries, four ablations, rank-blind grading, exact judgment reuse, global-union campaign trajectories, slice reports, explicit gates |
+| Retrieval evaluation | Versioned live queries, four ablations, dual rank-blind reviews, disagreement-only adjudication, exact judgment reuse, global-union campaigns, slice reports, and explicit gates |
 | Grounding boundary | Source events stay verbatim; citation URLs fail closed on credentials/private targets; search never manufactures an answer |
 | Agent handoff | Content-addressed evidence packs, exact retrieval provenance, hard source-text budgets, explicit exclusions, and an untrusted-data policy |
 | Grounded-answer evaluation | Gold-free live tasks, a revision-pinned local Qwen/llama.cpp runner, case-local citation schemas, tokenizer/context checks, dual model-blind reviews, per-field agreement, disagreement-only blind adjudication, descriptive metrics, and a closed promotion boundary |
@@ -358,12 +361,13 @@ uv run atlas-pulse-evaluate capture \
   --judgments-output artifacts/evaluation/judgments.csv
 ```
 
-The complete review/import/score workflow and `0..3` rubric are in
+The complete first-pass review, independent duplicate review, disagreement-only adjudication,
+score workflow, and `0..3` rubric are in
 [`evals/retrieval/README.md`](evals/retrieval/README.md). AtlasPulse does not ship invented labels
-or quality floors; gates become valid only after a named human reviews a captured corpus. Once at
-least two reviewed pools exist, the same CLI builds a content-addressed campaign that scores every
-capture against one global judged union and reports quality, coverage, latency, and slice
-trajectories.
+or quality floors. A single review remains internal evidence; public comparative claims require
+two different reviewers and a distinct adjudicator. Once at least two chronological reviewed
+captures exist, the same CLI builds a content-addressed campaign that scores every capture against
+one global judged union and reports quality, coverage, latency, and slice trajectories.
 
 The separate [`structured-claims-v1` contract cases](evals/relationships/README.md) freeze exact
 corroboration, contradiction, and abstention behavior. They are synthetic regression cases, not a
@@ -714,7 +718,10 @@ gate, and
 single-service egress, least-privilege environment injection, and the public database-credential
 gate, and
 [ADR 0034](docs/adr/0034-pseudonymous-api-request-budgets.md) for proxy-normalized client identity,
-pseudonymous shared quotas, fail-closed enforcement, and the remaining distributed-denial boundary.
+pseudonymous shared quotas, fail-closed enforcement, and the remaining distributed-denial boundary,
+and [ADR 0036](docs/adr/0036-retrieval-independent-review-adjudication.md) for exact duplicate
+retrieval reviews, agreement measurement, reviewer-blind disagreement resolution, and final gold
+provenance.
 A repository-level [security policy](SECURITY.md) and versioned
 [threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current
 controls, residual risks, and owner-configured branch protections.

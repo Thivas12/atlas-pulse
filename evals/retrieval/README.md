@@ -38,6 +38,13 @@ uv run atlas-pulse-evaluate capture \
   --judgments-output artifacts/evaluation/judgments.csv
 ```
 
+The complete v1 query set makes 60 bounded search requests. When the deployed expensive-route
+budget is exhausted, capture honors the API's integer `Retry-After` and reset headers and prints
+each planned wait. A single wait is capped at five minutes, cumulative waiting is capped at
+15 minutes, and repeated `429` responses stop after four total attempts. Intentional quota waits
+are excluded from the recorded request latency. Do not raise the server budget merely to make an
+evaluation finish faster.
+
 For a later capture of the same frozen query set, seed only byte-identical prior evidence from the
 reviewed baseline:
 

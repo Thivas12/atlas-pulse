@@ -40,6 +40,13 @@ geospatial filters. Each capture:
 6. verifies the completed CSV has exactly one grade per candidate and unchanged evidence fields;
 7. content-addresses the reviewed pool and emits machine-readable JSON plus Markdown.
 
+Capture runs through the same public request-budget contract as every other client. It proactively
+waits when a successful response reports no remaining budget and retries a `429` only when the API
+returns a bounded integer `Retry-After`. Each wait, cumulative waiting, and retry count are capped;
+the CLI prints planned waits so pacing cannot look like a hung process. Recorded latency measures
+only the successful request itself and excludes intentional quota waiting. Missing, malformed, or
+unreasonably large pacing headers fail the capture instead of creating an unbounded sleep.
+
 The capture JSON keeps system runs for audit and scoring. Reviewers work only from the separate
 rank-blind CSV. Generated artifacts are ignored by Git unless a reviewed baseline is intentionally
 promoted with reviewer and capture provenance intact.

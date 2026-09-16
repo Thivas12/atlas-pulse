@@ -42,6 +42,10 @@ def _ensure_writable(paths: Sequence[Path], *, force: bool) -> None:
         raise FileExistsError(f"refusing to overwrite {targets}; pass --force intentionally")
 
 
+def _report_rate_limit_wait(seconds: int, reason: str) -> None:
+    print(f"Rate-limit pacing: waiting {seconds}s for {reason}", file=sys.stderr)
+
+
 async def _capture(args: argparse.Namespace) -> int:
     _ensure_writable((args.output, args.judgments_output), force=args.force)
     query_set = _json_model(args.queries, EvaluationQuerySet)
@@ -50,7 +54,11 @@ async def _capture(args: argparse.Namespace) -> int:
         if args.seed_reviewed_pool is not None
         else None
     )
-    pool = await capture_pool(query_set, base_url=args.base_url)
+    pool = await capture_pool(
+        query_set,
+        base_url=args.base_url,
+        on_rate_limit_wait=_report_rate_limit_wait,
+    )
     sheet = build_judgment_sheet(pool, seed_pool=seed_pool)
     _write(
         args.output,

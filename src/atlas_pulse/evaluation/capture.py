@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
 
@@ -20,6 +22,99 @@ from atlas_pulse.evaluation.base import (
 )
 from atlas_pulse.evaluation.metrics import canonical_sha256
 from atlas_pulse.retrieval import RankingMode
+
+_MAX_RATE_LIMIT_RETRIES = 3
+_MAX_RATE_LIMIT_WAIT_SECONDS = 300
+_MAX_TOTAL_RATE_LIMIT_WAIT_SECONDS = 900
+
+Sleeper = Callable[[float], Awaitable[None]]
+WaitReporter = Callable[[int, str], None]
+
+
+def _rate_limit_wait_seconds(response: httpx.Response, header: str) -> int:
+    raw_value = response.headers.get(header)
+    if raw_value is None or not raw_value.isascii() or not raw_value.isdigit():
+        raise RuntimeError(f"retrieval API returned an invalid {header} header")
+    seconds = int(raw_value)
+    if not 1 <= seconds <= _MAX_RATE_LIMIT_WAIT_SECONDS:
+        raise RuntimeError(
+            f"retrieval API {header} exceeds the "
+            f"{_MAX_RATE_LIMIT_WAIT_SECONDS}-second capture bound"
+        )
+    return seconds
+
+
+def _next_window_wait(response: httpx.Response) -> int | None:
+    remaining = response.headers.get("X-RateLimit-Remaining")
+    reset_after = response.headers.get("X-RateLimit-Reset-After")
+    if remaining is None and reset_after is None:
+        return None
+    if remaining is None or reset_after is None:
+        raise RuntimeError("retrieval API returned incomplete rate-limit headers")
+    if not remaining.isascii() or not remaining.isdigit():
+        raise RuntimeError("retrieval API returned an invalid X-RateLimit-Remaining header")
+    if int(remaining) > 0:
+        return None
+    return _rate_limit_wait_seconds(response, "X-RateLimit-Reset-After")
+
+
+class _CaptureRateLimitPacer:
+    """Honor the API's fixed-window budget without contaminating request latency."""
+
+    def __init__(
+        self,
+        *,
+        sleeper: Sleeper,
+        report_wait: WaitReporter | None,
+    ) -> None:
+        self._sleeper = sleeper
+        self._report_wait = report_wait
+        self._pending_wait_seconds: int | None = None
+        self._total_wait_seconds = 0
+
+    async def _wait(self, seconds: int, reason: str) -> None:
+        if self._total_wait_seconds + seconds > _MAX_TOTAL_RATE_LIMIT_WAIT_SECONDS:
+            raise RuntimeError(
+                "retrieval capture exceeded the "
+                f"{_MAX_TOTAL_RATE_LIMIT_WAIT_SECONDS}-second total rate-limit wait bound"
+            )
+        if self._report_wait is not None:
+            self._report_wait(seconds, reason)
+        await self._sleeper(float(seconds))
+        self._total_wait_seconds += seconds
+
+    async def get(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        params: dict[str, str | int | float],
+    ) -> tuple[httpx.Response, float]:
+        """Return one terminal response and the successful request's own latency."""
+        if self._pending_wait_seconds is not None:
+            pending = self._pending_wait_seconds
+            self._pending_wait_seconds = None
+            await self._wait(pending, "API budget reset")
+
+        for attempt in range(1, _MAX_RATE_LIMIT_RETRIES + 2):
+            started = time.perf_counter()
+            response = await client.get("/v1/search", params=params)
+            latency_ms = (time.perf_counter() - started) * 1_000
+            if response.status_code != httpx.codes.TOO_MANY_REQUESTS:
+                if response.is_success:
+                    self._pending_wait_seconds = _next_window_wait(response)
+                return response, latency_ms
+            if attempt > _MAX_RATE_LIMIT_RETRIES:
+                raise RuntimeError(
+                    f"retrieval API remained rate-limited after {attempt} bounded request attempts"
+                )
+            await self._wait(
+                _rate_limit_wait_seconds(response, "Retry-After"),
+                "HTTP 429",
+            )
+
+        raise AssertionError(
+            "rate-limit retry loop completed without a response"
+        )  # pragma: no cover
 
 
 def _safe_endpoint(value: str) -> str:
@@ -113,17 +208,16 @@ def _expected_parameters(
 
 async def _capture_run(
     client: httpx.AsyncClient,
+    pacer: _CaptureRateLimitPacer,
     query: EvaluationQuery,
     *,
     mode: RankingMode,
     pool_depth: int,
 ) -> tuple[CapturedRun, tuple[PooledCandidate, ...]]:
-    started = time.perf_counter()
-    response = await client.get(
-        "/v1/search",
+    response, latency_ms = await pacer.get(
+        client,
         params=_query_parameters(query, mode=mode, pool_depth=pool_depth),
     )
-    latency_ms = (time.perf_counter() - started) * 1_000
     response.raise_for_status()
     result = SearchResponse.model_validate(response.json())
     if result.ranking_mode != mode:
@@ -166,6 +260,8 @@ async def capture_pool(
     *,
     base_url: str,
     client: httpx.AsyncClient | None = None,
+    sleeper: Sleeper = asyncio.sleep,
+    on_rate_limit_wait: WaitReporter | None = None,
 ) -> CandidatePool:
     """Pool top results from every configured mode into one blinded review artifact."""
     endpoint = _safe_endpoint(base_url)
@@ -173,6 +269,10 @@ async def capture_pool(
     captured_at = datetime.now(UTC)
     owns_client = client is None
     active_client = client or httpx.AsyncClient(base_url=endpoint, timeout=30.0)
+    pacer = _CaptureRateLimitPacer(
+        sleeper=sleeper,
+        report_wait=on_rate_limit_wait,
+    )
     pooled_queries: list[PooledQuery] = []
     try:
         for query in query_set.queries:
@@ -181,6 +281,7 @@ async def capture_pool(
             for mode in query_set.modes:
                 run, run_candidates = await _capture_run(
                     active_client,
+                    pacer,
                     query,
                     mode=mode,
                     pool_depth=query_set.pool_depth,

@@ -32,7 +32,9 @@ from atlas_pulse.evaluation import (
     export_judgments,
     metrics_at_k,
     render_markdown,
+    run_judgment_session,
     score_pool,
+    validate_partial_judgments,
 )
 from atlas_pulse.evaluation.cli import run_cli
 from atlas_pulse.evaluation.judgments import JUDGMENT_COLUMNS
@@ -521,6 +523,116 @@ def test_rank_blind_sheet_round_trip_protects_metadata_and_requires_completeness
         apply_judgments(unjudged, missing, reviewer="Human")
 
 
+def test_terminal_judgments_save_atomically_and_resume_blanks(tmp_path: Path) -> None:
+    source_pool = pool()
+    judgments_path = tmp_path / "judgments.csv"
+    judgments_path.write_text(export_judgments(source_pool), encoding="utf-8")
+    first_answers = iter(("3", "direct match", "s", "q"))
+    first_output = io.StringIO()
+
+    first = run_judgment_session(
+        source_pool,
+        judgments_path,
+        prompt=lambda _message: next(first_answers),
+        output=first_output,
+    )
+
+    assert first.total_count == 3
+    assert first.graded_count == 1
+    assert first.pending_count == 2
+    assert first.stopped_early is True
+    first_rows = validate_partial_judgments(
+        source_pool,
+        judgments_path.read_text(encoding="utf-8"),
+    )
+    assert [row["relevance_0_to_3"] for row in first_rows] == ["3", "", ""]
+    assert first_rows[0]["rationale"] == "direct match"
+    assert not tuple(tmp_path.glob(".judgments.csv.*.tmp"))
+
+    second_answers = iter(("1", "", "0", "not relevant"))
+    second_output = io.StringIO()
+    second = run_judgment_session(
+        source_pool,
+        judgments_path,
+        prompt=lambda _message: next(second_answers),
+        output=second_output,
+    )
+
+    assert second.graded_count == 3
+    assert second.pending_count == 0
+    assert second.stopped_early is False
+    completed = judgments_path.read_text(encoding="utf-8")
+    reviewed = apply_judgments(source_pool, completed, reviewer="Human Reviewer")
+    assert [item.relevance for item in reviewed.queries[0].candidates] == [3, 1, 0]
+    assert "All candidates are graded" in second_output.getvalue()
+    assert "lexical" not in first_output.getvalue()
+
+    no_op_output = io.StringIO()
+    no_op = run_judgment_session(
+        source_pool,
+        judgments_path,
+        prompt=lambda _message: pytest.fail("a completed sheet must not prompt"),
+        output=no_op_output,
+    )
+    assert no_op.pending_count == 0
+    assert "ready to import" in no_op_output.getvalue()
+
+
+def test_terminal_judgments_reprompt_and_sanitize_public_text(tmp_path: Path) -> None:
+    source_data = pool().model_dump(mode="python")
+    unsafe_text = "Weather alert\x1b[31m with terminal control"
+    source_data["queries"][0]["candidates"][0]["document_text"] = unsafe_text
+    source_data["queries"][0]["candidates"][0]["document_hash"] = hashlib.sha256(
+        unsafe_text.encode()
+    ).hexdigest()
+    source_pool = CandidatePool.model_validate(source_data)
+    judgments_path = tmp_path / "judgments.csv"
+    judgments_path.write_text(export_judgments(source_pool), encoding="utf-8")
+    answers = iter(("?", "9", "2", "x" * 1_001, "useful but incomplete", "q"))
+    output = io.StringIO()
+
+    progress = run_judgment_session(
+        source_pool,
+        judgments_path,
+        prompt=lambda _message: next(answers),
+        output=output,
+    )
+
+    rendered = output.getvalue()
+    assert progress.graded_count == 1
+    assert progress.stopped_early is True
+    assert "Invalid choice" in rendered
+    assert "Rationale must be 1000 characters or fewer" in rendered
+    assert "\x1b" not in rendered
+    assert "\N{REPLACEMENT CHARACTER}" in rendered
+
+
+def test_terminal_judgments_keep_original_sheet_when_atomic_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_pool = pool()
+    judgments_path = tmp_path / "judgments.csv"
+    original = export_judgments(source_pool)
+    judgments_path.write_text(original, encoding="utf-8")
+    answers = iter(("3", ""))
+
+    def fail_replace(_source: object, _destination: object) -> None:
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr("atlas_pulse.evaluation.judging.os.replace", fail_replace)
+    with pytest.raises(OSError, match="simulated replace failure"):
+        run_judgment_session(
+            source_pool,
+            judgments_path,
+            prompt=lambda _message: next(answers),
+            output=io.StringIO(),
+        )
+
+    assert judgments_path.read_text(encoding="utf-8") == original
+    assert not tuple(tmp_path.glob(".judgments.csv.*.tmp"))
+
+
 async def test_capture_pools_live_modes_and_sends_exact_production_filters() -> None:
     observed_modes: list[str] = []
 
@@ -1002,6 +1114,35 @@ def test_cli_maps_invalid_artifacts_and_duplicate_outputs_to_exit_two(tmp_path: 
         )
         == 2
     )
+
+
+def test_cli_judge_resumes_without_rewriting_protected_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source_pool = pool()
+    pool_path = tmp_path / "pool.json"
+    judgments_path = tmp_path / "judgments.csv"
+    pool_path.write_text(source_pool.model_dump_json(indent=2), encoding="utf-8")
+    original = export_judgments(source_pool)
+    judgments_path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr("builtins.input", lambda _message: "Q")
+
+    assert (
+        run_cli(
+            [
+                "judge",
+                "--pool",
+                str(pool_path),
+                "--judgments",
+                str(judgments_path),
+            ]
+        )
+        == 0
+    )
+    assert judgments_path.read_text(encoding="utf-8") == original
+    assert "Stopped safely" in capsys.readouterr().out
 
 
 def test_cli_capture_writes_pool_and_rank_blind_sheet(

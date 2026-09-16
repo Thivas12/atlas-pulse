@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -34,7 +35,11 @@ class JudgmentSheet:
     pending_count: int
 
 
-def _csv_safe(value: str) -> str:
+JudgmentKey = tuple[str, str]
+ParsedGrade = tuple[int | None, str | None]
+
+
+def spreadsheet_safe_text(value: str) -> str:
     """Neutralize public text that spreadsheet software could treat as a formula."""
     stripped = value.lstrip()
     return f"'{value}" if stripped.startswith(("=", "+", "-", "@")) else value
@@ -84,17 +89,17 @@ def build_judgment_sheet(
             writer.writerow(
                 {
                     "query_id": pooled_query.query.query_id,
-                    "query_text": _csv_safe(pooled_query.query.text),
+                    "query_text": spreadsheet_safe_text(pooled_query.query.text),
                     "document_id": candidate.document_id,
                     "document_hash": candidate.document_hash,
                     "source": candidate.source,
-                    "title": _csv_safe(candidate.title),
+                    "title": spreadsheet_safe_text(candidate.title),
                     "occurred_at": candidate.occurred_at.isoformat(),
-                    "document_text": _csv_safe(candidate.document_text),
+                    "document_text": spreadsheet_safe_text(candidate.document_text),
                     "citation_status": candidate.citation_status,
-                    "citation_url": _csv_safe(candidate.citation_url or ""),
+                    "citation_url": spreadsheet_safe_text(candidate.citation_url or ""),
                     "relevance_0_to_3": "" if relevance is None else relevance,
-                    "rationale": _csv_safe(rationale or ""),
+                    "rationale": spreadsheet_safe_text(rationale or ""),
                 }
             )
     return JudgmentSheet(
@@ -109,18 +114,100 @@ def export_judgments(pool: CandidatePool) -> str:
     return build_judgment_sheet(pool).content
 
 
+def render_judgment_rows(rows: Sequence[Mapping[str, str]]) -> str:
+    """Serialize validated judgment rows without changing protected evidence fields."""
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=JUDGMENT_COLUMNS, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
 def _candidate_metadata(query_id: str, candidate: PooledCandidate) -> dict[str, str]:
     return {
         "query_id": query_id,
         "document_id": candidate.document_id,
         "document_hash": candidate.document_hash,
         "source": candidate.source,
-        "title": _csv_safe(candidate.title),
+        "title": spreadsheet_safe_text(candidate.title),
         "occurred_at": candidate.occurred_at.isoformat(),
-        "document_text": _csv_safe(candidate.document_text),
+        "document_text": spreadsheet_safe_text(candidate.document_text),
         "citation_status": candidate.citation_status,
-        "citation_url": _csv_safe(candidate.citation_url or ""),
+        "citation_url": spreadsheet_safe_text(candidate.citation_url or ""),
     }
+
+
+def _parse_judgment_rows(
+    pool: CandidatePool,
+    csv_text: str,
+    *,
+    require_complete: bool,
+) -> tuple[list[dict[str, str]], dict[JudgmentKey, ParsedGrade]]:
+    reader = csv.DictReader(io.StringIO(csv_text, newline=""))
+    if tuple(reader.fieldnames or ()) != JUDGMENT_COLUMNS:
+        raise ValueError(f"judgment sheet columns must exactly equal {JUDGMENT_COLUMNS}")
+
+    expected = {
+        (pooled_query.query.query_id, candidate.document_id): (
+            pooled_query.query.text,
+            candidate,
+        )
+        for pooled_query in pool.queries
+        for candidate in pooled_query.candidates
+    }
+    rows: list[dict[str, str]] = []
+    grades: dict[JudgmentKey, ParsedGrade] = {}
+    for line_number, row in enumerate(reader, start=2):
+        if None in row or any(value is None for value in row.values()):
+            raise ValueError(f"judgment row {line_number} contains unexpected or missing columns")
+        key = (row["query_id"], row["document_id"])
+        if key not in expected:
+            raise ValueError(f"judgment row {line_number} references an unknown candidate")
+        if key in grades:
+            raise ValueError(f"judgment row {line_number} duplicates {key[0]} / {key[1]}")
+        query_text, candidate = expected[key]
+        metadata = _candidate_metadata(key[0], candidate)
+        metadata["query_text"] = spreadsheet_safe_text(query_text)
+        changed = [field for field, value in metadata.items() if row[field] != value]
+        if changed:
+            raise ValueError(
+                f"judgment row {line_number} changed protected fields: {', '.join(changed)}"
+            )
+
+        raw_relevance = row["relevance_0_to_3"].strip()
+        if not raw_relevance and not require_complete:
+            relevance = None
+        else:
+            try:
+                relevance = int(raw_relevance)
+            except ValueError as error:
+                raise ValueError(
+                    f"judgment row {line_number} requires an integer relevance grade"
+                ) from error
+            if relevance not in {0, 1, 2, 3}:
+                raise ValueError(f"judgment row {line_number} relevance must be within [0, 3]")
+
+        rationale = " ".join(row["rationale"].split()) or None
+        if rationale is not None and len(rationale) > 1_000:
+            raise ValueError(f"judgment row {line_number} rationale exceeds 1000 characters")
+        rows.append(dict(row))
+        grades[key] = (relevance, rationale)
+
+    missing = sorted(set(expected) - set(grades))
+    if missing:
+        raise ValueError(f"judgment sheet is missing {len(missing)} candidate(s)")
+    return rows, grades
+
+
+def validate_partial_judgments(
+    pool: CandidatePool,
+    csv_text: str,
+) -> tuple[dict[str, str], ...]:
+    """Validate a resumable sheet while permitting blank relevance grades."""
+    if pool.judgment_status != "unjudged":
+        raise ValueError("only an unjudged pool can accept a partial judgment sheet")
+    rows, _grades = _parse_judgment_rows(pool, csv_text, require_complete=False)
+    return tuple(rows)
 
 
 def apply_judgments(
@@ -137,57 +224,15 @@ def apply_judgments(
     if not normalized_reviewer:
         raise ValueError("reviewer must not be empty")
 
-    reader = csv.DictReader(io.StringIO(csv_text, newline=""))
-    if tuple(reader.fieldnames or ()) != JUDGMENT_COLUMNS:
-        raise ValueError(f"judgment sheet columns must exactly equal {JUDGMENT_COLUMNS}")
-
-    expected = {
-        (pooled_query.query.query_id, candidate.document_id): (
-            pooled_query.query.text,
-            candidate,
-        )
-        for pooled_query in pool.queries
-        for candidate in pooled_query.candidates
-    }
-    grades: dict[tuple[str, str], tuple[int, str | None]] = {}
-    for line_number, row in enumerate(reader, start=2):
-        if None in row:
-            raise ValueError(f"judgment row {line_number} contains unexpected columns")
-        key = (row["query_id"], row["document_id"])
-        if key not in expected:
-            raise ValueError(f"judgment row {line_number} references an unknown candidate")
-        if key in grades:
-            raise ValueError(f"judgment row {line_number} duplicates {key[0]} / {key[1]}")
-        query_text, candidate = expected[key]
-        metadata = _candidate_metadata(key[0], candidate)
-        metadata["query_text"] = _csv_safe(query_text)
-        changed = [field for field, value in metadata.items() if row[field] != value]
-        if changed:
-            raise ValueError(
-                f"judgment row {line_number} changed protected fields: {', '.join(changed)}"
-            )
-        try:
-            relevance = int(row["relevance_0_to_3"])
-        except ValueError as error:
-            raise ValueError(
-                f"judgment row {line_number} requires an integer relevance grade"
-            ) from error
-        if relevance not in {0, 1, 2, 3}:
-            raise ValueError(f"judgment row {line_number} relevance must be within [0, 3]")
-        rationale = " ".join(row["rationale"].split()) or None
-        if rationale is not None and len(rationale) > 1_000:
-            raise ValueError(f"judgment row {line_number} rationale exceeds 1000 characters")
-        grades[key] = (relevance, rationale)
-
-    missing = sorted(set(expected) - set(grades))
-    if missing:
-        raise ValueError(f"judgment sheet is missing {len(missing)} candidate(s)")
+    _rows, grades = _parse_judgment_rows(pool, csv_text, require_complete=True)
 
     data = pool.model_dump(mode="python")
     for pooled_query in data["queries"]:
         query_id = pooled_query["query"]["query_id"]
         for candidate in pooled_query["candidates"]:
             relevance, rationale = grades[(query_id, candidate["document_id"])]
+            if relevance is None:  # pragma: no cover - require_complete guarantees this
+                raise AssertionError("complete judgment parsing returned a blank relevance grade")
             candidate["relevance"] = relevance
             candidate["rationale"] = rationale
     data.update(

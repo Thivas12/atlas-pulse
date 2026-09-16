@@ -51,6 +51,12 @@ The capture JSON keeps system runs for audit and scoring. Reviewers work only fr
 rank-blind CSV. Generated artifacts are ignored by Git unless a reviewed baseline is intentionally
 promoted with reviewer and capture provenance intact.
 
+`atlas-pulse-evaluate judge` provides the local human-review loop without exposing system ranks.
+It validates the untouched evidence columns before starting, sanitizes untrusted terminal output,
+and replaces the CSV atomically after every accepted grade. A reviewer may quit at any point and
+resume from the first blank grade. The tool never generates, recommends, or infers a judgment;
+every relevance value and optional rationale remains explicit human input.
+
 A later capture can seed its CSV from a reviewed pool. AtlasPulse reuses a prior grade only when
 the query-set identity and captured query definitions match and every reviewer-visible evidence
 field is identical. Event IDs alone are insufficient: changed content, time, title, or citation

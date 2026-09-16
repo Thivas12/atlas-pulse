@@ -61,10 +61,20 @@ The command reports how many grades were reused and how many blank cells remain.
 same query-set hash and identical captured query definitions. A candidate is prefilled only when
 all reviewer-visible evidence is unchanged; a revised event with the same source ID remains blank.
 
-Open `judgments.csv` in VS Code. Fill every `relevance_0_to_3` cell and optional `rationale`; do not
-change protected evidence columns. The sheet omits retrieval mode, score, and rank. Public text
-that begins like a spreadsheet formula is prefixed with a single quote in the review sheet; the
-original event text remains unchanged in the pool. Import it:
+Grade the rank-blind sheet through the resumable terminal workflow:
+
+```bash
+uv run atlas-pulse-evaluate judge \
+  --pool artifacts/evaluation/pool.json \
+  --judgments artifacts/evaluation/judgments.csv
+```
+
+The command displays one candidate at a time without mode, score, or rank. Enter `0` through `3`,
+optionally add a rationale, `s` to leave one pending, or `q` to stop safely. Every accepted answer
+is atomically saved, and rerunning the same command resumes at the first blank grade. It validates
+all protected evidence fields before prompting and removes terminal control characters from public
+text. Avoid opening and resaving the CSV in spreadsheet software, which may silently rewrite
+timestamps or identifiers. Import the completed sheet:
 
 ```bash
 uv run atlas-pulse-evaluate review \

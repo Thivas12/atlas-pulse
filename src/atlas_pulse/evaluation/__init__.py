@@ -34,11 +34,14 @@ from atlas_pulse.evaluation.comparison import (
     pool_provenance,
     render_comparison_markdown,
 )
+from atlas_pulse.evaluation.judging import JudgmentProgress, run_judgment_session
 from atlas_pulse.evaluation.judgments import (
     JudgmentSheet,
     apply_judgments,
     build_judgment_sheet,
     export_judgments,
+    render_judgment_rows,
+    validate_partial_judgments,
 )
 from atlas_pulse.evaluation.metrics import (
     canonical_sha256,
@@ -66,6 +69,7 @@ __all__ = [
     "GateOutcome",
     "GatePolicy",
     "GateRule",
+    "JudgmentProgress",
     "JudgmentSheet",
     "PooledCandidate",
     "PooledQuery",
@@ -84,6 +88,9 @@ __all__ = [
     "pool_provenance",
     "render_campaign_markdown",
     "render_comparison_markdown",
+    "render_judgment_rows",
     "render_markdown",
+    "run_judgment_session",
     "score_pool",
+    "validate_partial_judgments",
 ]

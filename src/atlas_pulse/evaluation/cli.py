@@ -19,6 +19,7 @@ from atlas_pulse.evaluation.base import (
 from atlas_pulse.evaluation.campaign import build_campaign, render_campaign_markdown
 from atlas_pulse.evaluation.capture import capture_pool
 from atlas_pulse.evaluation.comparison import compare_pools, render_comparison_markdown
+from atlas_pulse.evaluation.judging import run_judgment_session
 from atlas_pulse.evaluation.judgments import apply_judgments, build_judgment_sheet
 from atlas_pulse.evaluation.metrics import evaluate_gates, score_pool
 from atlas_pulse.evaluation.report import render_markdown
@@ -100,6 +101,12 @@ def _review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _judge(args: argparse.Namespace) -> int:
+    pool = _json_model(args.pool, CandidatePool)
+    run_judgment_session(pool, args.judgments)
+    return 0
+
+
 def _score(args: argparse.Namespace) -> int:
     _ensure_writable((args.output_json, args.output_markdown), force=args.force)
     pool = _json_model(args.pool, CandidatePool)
@@ -167,6 +174,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     capture.add_argument("--force", action="store_true")
 
+    judge = subparsers.add_parser(
+        "judge",
+        help="resume rank-blind human grading in the terminal",
+    )
+    judge.add_argument("--pool", type=Path, required=True)
+    judge.add_argument("--judgments", type=Path, required=True)
+
     review = subparsers.add_parser("review", help="import a completed rank-blind judgment sheet")
     review.add_argument("--pool", type=Path, required=True)
     review.add_argument("--judgments", type=Path, required=True)
@@ -218,6 +232,8 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "capture":
             return asyncio.run(_capture(args))
+        if args.command == "judge":
+            return _judge(args)
         if args.command == "review":
             return _review(args)
         if args.cutoff is None:

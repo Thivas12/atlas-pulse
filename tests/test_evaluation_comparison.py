@@ -331,9 +331,11 @@ def test_cli_capture_can_seed_only_exact_prior_judgments(
         received: EvaluationQuerySet,
         *,
         base_url: str,
+        on_rate_limit_wait: object | None = None,
     ) -> CandidatePool:
         assert received == query_set
         assert base_url == "https://atlas.example"
+        assert on_rate_limit_wait is not None
         return current
 
     monkeypatch.setattr("atlas_pulse.evaluation.cli.capture_pool", fake_capture)

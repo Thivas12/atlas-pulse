@@ -561,6 +561,284 @@ async def test_capture_pools_live_modes_and_sends_exact_production_filters() -> 
     assert all(item.relevance is None for item in captured.queries[0].candidates)
 
 
+async def test_capture_paces_after_a_successful_request_exhausts_the_budget() -> None:
+    waits: list[float] = []
+    reports: list[tuple[int, str]] = []
+    observed_modes: list[str] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        mode = request.url.params["ranking_mode"]
+        observed_modes.append(mode)
+        headers = (
+            {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset-After": "2"}
+            if mode == "lexical"
+            else {}
+        )
+        return httpx.Response(
+            200,
+            headers=headers,
+            json=search_payload(mode, event_id=mode, document_text=f"Evidence {mode}"),
+        )
+
+    query_set = EvaluationQuerySet(
+        query_set_id="rate-limited-capture.v1",
+        title="Rate-limited capture",
+        description="A capture that crosses one fixed API request-budget window.",
+        pool_depth=2,
+        modes=("lexical", "dense"),
+        queries=(evaluation_query(),),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://atlas.example",
+    ) as client:
+        captured = await capture_pool(
+            query_set,
+            base_url="https://atlas.example",
+            client=client,
+            sleeper=fake_sleep,
+            on_rate_limit_wait=lambda seconds, reason: reports.append((seconds, reason)),
+        )
+
+    assert observed_modes == ["lexical", "dense"]
+    assert waits == [2.0]
+    assert reports == [(2, "API budget reset")]
+    assert [run.mode for run in captured.queries[0].runs] == ["lexical", "dense"]
+
+
+async def test_capture_retries_a_429_using_bounded_retry_after() -> None:
+    waits: list[float] = []
+    request_count = 0
+
+    async def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return httpx.Response(429, headers={"Retry-After": "3"})
+        mode = request.url.params["ranking_mode"]
+        return httpx.Response(
+            200,
+            json=search_payload(mode, event_id="recovered", document_text="Recovered evidence"),
+        )
+
+    query_set = EvaluationQuerySet(
+        query_set_id="retry-capture.v1",
+        title="Retry capture",
+        description="A capture that safely retries one exhausted request-budget response.",
+        pool_depth=2,
+        modes=("hybrid",),
+        queries=(evaluation_query(),),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://atlas.example",
+    ) as client:
+        captured = await capture_pool(
+            query_set,
+            base_url="https://atlas.example",
+            client=client,
+            sleeper=fake_sleep,
+        )
+
+    assert request_count == 2
+    assert waits == [3.0]
+    assert captured.queries[0].runs[0].document_ids == ("nws:recovered",)
+
+
+@pytest.mark.parametrize(
+    ("headers", "message"),
+    [
+        ({"X-RateLimit-Remaining": "0"}, "incomplete rate-limit headers"),
+        (
+            {"X-RateLimit-Remaining": "invalid", "X-RateLimit-Reset-After": "1"},
+            "invalid X-RateLimit-Remaining",
+        ),
+    ],
+)
+async def test_capture_rejects_invalid_success_rate_limit_headers(
+    headers: dict[str, str],
+    message: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        mode = request.url.params["ranking_mode"]
+        return httpx.Response(
+            200,
+            headers=headers,
+            json=search_payload(mode, event_id="header", document_text="Header evidence"),
+        )
+
+    query_set = EvaluationQuerySet(
+        query_set_id="invalid-header-capture.v1",
+        title="Invalid header capture",
+        description="A capture that rejects incomplete or malformed pacing metadata.",
+        pool_depth=2,
+        modes=("hybrid",),
+        queries=(evaluation_query(),),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://atlas.example",
+    ) as client:
+        with pytest.raises(RuntimeError, match=message):
+            await capture_pool(
+                query_set,
+                base_url="https://atlas.example",
+                client=client,
+            )
+
+
+async def test_capture_continues_when_the_success_budget_has_remaining_capacity() -> None:
+    waits: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        mode = request.url.params["ranking_mode"]
+        return httpx.Response(
+            200,
+            headers={"X-RateLimit-Remaining": "1", "X-RateLimit-Reset-After": "60"},
+            json=search_payload(mode, event_id="capacity", document_text="Capacity evidence"),
+        )
+
+    query_set = EvaluationQuerySet(
+        query_set_id="remaining-capacity.v1",
+        title="Remaining capacity",
+        description="A capture that still has capacity in the current request window.",
+        pool_depth=2,
+        modes=("hybrid",),
+        queries=(evaluation_query(),),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://atlas.example",
+    ) as client:
+        await capture_pool(
+            query_set,
+            base_url="https://atlas.example",
+            client=client,
+            sleeper=fake_sleep,
+        )
+
+    assert waits == []
+
+
+@pytest.mark.parametrize("retry_after", [None, "0", "301", "tomorrow"])
+async def test_capture_rejects_missing_or_unbounded_retry_after(
+    retry_after: str | None,
+) -> None:
+    headers = {"Retry-After": retry_after} if retry_after is not None else {}
+
+    def rate_limited(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers=headers)
+
+    query_set = EvaluationQuerySet(
+        query_set_id="invalid-retry-capture.v1",
+        title="Invalid retry capture",
+        description="A capture that rejects unsafe server-directed waiting.",
+        pool_depth=2,
+        modes=("hybrid",),
+        queries=(evaluation_query(),),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(rate_limited),
+        base_url="https://atlas.example",
+    ) as client:
+        with pytest.raises(RuntimeError, match="Retry-After"):
+            await capture_pool(
+                query_set,
+                base_url="https://atlas.example",
+                client=client,
+            )
+
+
+async def test_capture_stops_after_bounded_rate_limit_retries() -> None:
+    waits: list[float] = []
+    request_count = 0
+
+    async def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    def rate_limited(_request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(429, headers={"Retry-After": "1"})
+
+    query_set = EvaluationQuerySet(
+        query_set_id="bounded-retry-capture.v1",
+        title="Bounded retry capture",
+        description="A capture that remains rate-limited beyond its retry boundary.",
+        pool_depth=2,
+        modes=("hybrid",),
+        queries=(evaluation_query(),),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(rate_limited),
+        base_url="https://atlas.example",
+    ) as client:
+        with pytest.raises(RuntimeError, match="after 4 bounded request attempts"):
+            await capture_pool(
+                query_set,
+                base_url="https://atlas.example",
+                client=client,
+                sleeper=fake_sleep,
+            )
+
+    assert request_count == 4
+    assert waits == [1.0, 1.0, 1.0]
+
+
+async def test_capture_caps_cumulative_server_directed_waiting() -> None:
+    waits: list[float] = []
+    request_count = 0
+
+    async def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    def exhausted_window(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        mode = request.url.params["ranking_mode"]
+        return httpx.Response(
+            200,
+            headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset-After": "300"},
+            json=search_payload(
+                mode,
+                event_id=f"window-{request_count}",
+                document_text=f"Window evidence {request_count}",
+            ),
+        )
+
+    query_set = EvaluationQuerySet(
+        query_set_id="cumulative-wait-capture.v1",
+        title="Cumulative wait capture",
+        description="A capture that refuses excessive cumulative server-directed waiting.",
+        pool_depth=2,
+        modes=("lexical", "dense", "rrf", "hybrid"),
+        queries=(evaluation_query("first"), evaluation_query("second")),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(exhausted_window),
+        base_url="https://atlas.example",
+    ) as client:
+        with pytest.raises(RuntimeError, match="900-second total rate-limit wait bound"):
+            await capture_pool(
+                query_set,
+                base_url="https://atlas.example",
+                client=client,
+                sleeper=fake_sleep,
+            )
+
+    assert request_count == 4
+    assert waits == [300.0, 300.0, 300.0]
+
+
 async def test_capture_rejects_unsafe_endpoints_mode_drift_and_document_drift() -> None:
     query_set = EvaluationQuerySet(
         query_set_id="live-disruptions.v1",
@@ -746,9 +1024,11 @@ def test_cli_capture_writes_pool_and_rank_blind_sheet(
         received: EvaluationQuerySet,
         *,
         base_url: str,
+        on_rate_limit_wait: object | None = None,
     ) -> CandidatePool:
         assert received == query_set
         assert base_url == "https://atlas.example"
+        assert on_rate_limit_wait is not None
         return pool()
 
     monkeypatch.setattr("atlas_pulse.evaluation.cli.capture_pool", fake_capture)
@@ -815,8 +1095,10 @@ def test_cli_capture_warns_when_every_mode_is_empty_for_a_query(
         _received: EvaluationQuerySet,
         *,
         base_url: str,
+        on_rate_limit_wait: object | None = None,
     ) -> CandidatePool:
         assert base_url == "https://atlas.example"
+        assert on_rate_limit_wait is not None
         return empty_pool
 
     monkeypatch.setattr("atlas_pulse.evaluation.cli.capture_pool", fake_capture)

@@ -12,6 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
+from atlas_pulse.evaluation.adjudication import (
+    render_retrieval_adjudication_rows,
+    validate_partial_retrieval_adjudication,
+)
 from atlas_pulse.evaluation.base import CandidatePool, EvaluationQuery, PooledCandidate
 from atlas_pulse.evaluation.judgments import (
     render_judgment_rows,
@@ -233,4 +237,171 @@ def run_judgment_session(
         )
     else:
         print("All candidates are graded; the sheet is ready to import.", file=active_output)
+    return final
+
+
+def _adjudication_progress(
+    rows: list[dict[str, str]],
+    *,
+    stopped_early: bool,
+) -> JudgmentProgress:
+    graded = sum(bool(row["adjudicated_relevance_0_to_3"].strip()) for row in rows)
+    return JudgmentProgress(
+        total_count=len(rows),
+        graded_count=graded,
+        pending_count=len(rows) - graded,
+        stopped_early=stopped_early,
+    )
+
+
+def _emit_disagreement(
+    output: TextIO,
+    *,
+    position: int,
+    total: int,
+    graded: int,
+    row: dict[str, str],
+) -> None:
+    print("", file=output)
+    print("=" * 100, file=output)
+    print(
+        f"Disagreement {position}/{total} | {graded} already adjudicated | "
+        f"query {_terminal_safe(row['query_id'])}",
+        file=output,
+    )
+    print(f"QUERY: {_wrapped(row['query_text'])}", file=output)
+    print(f"TITLE: {_wrapped(row['title'])}", file=output)
+    print(
+        f"SOURCE: {_terminal_safe(row['source'])} | OCCURRED: {_terminal_safe(row['occurred_at'])}",
+        file=output,
+    )
+    print("EVIDENCE:", file=output)
+    print(_wrapped(row["document_text"]), file=output)
+    print(
+        "CITATION: "
+        f"{_terminal_safe(row['citation_status'])} | "
+        f"{_wrapped(row['citation_url'] or 'not available')}",
+        file=output,
+    )
+    print(
+        "REVIEW A: "
+        f"{_terminal_safe(row['review_a_relevance_0_to_3'])} | "
+        f"{_wrapped(row['review_a_rationale'] or 'no rationale')}",
+        file=output,
+    )
+    print(
+        "REVIEW B: "
+        f"{_terminal_safe(row['review_b_relevance_0_to_3'])} | "
+        f"{_wrapped(row['review_b_rationale'] or 'no rationale')}",
+        file=output,
+    )
+    print(_RUBRIC, file=output)
+
+
+def run_retrieval_adjudication_session(
+    first: CandidatePool,
+    second: CandidatePool,
+    adjudication_path: Path,
+    *,
+    prompt: Prompt | None = None,
+    output: TextIO | None = None,
+) -> JudgmentProgress:
+    """Resolve blinded review disagreements and atomically save each decision."""
+    active_prompt = prompt or input
+    active_output = output or sys.stdout
+    rows = list(
+        validate_partial_retrieval_adjudication(
+            first,
+            second,
+            adjudication_path.read_text(encoding="utf-8"),
+        )
+    )
+    pending_indices = [
+        index for index, row in enumerate(rows) if not row["adjudicated_relevance_0_to_3"].strip()
+    ]
+    initial = _adjudication_progress(rows, stopped_early=False)
+    print(
+        f"Validated {initial.total_count} blinded disagreement(s); "
+        f"{initial.graded_count} adjudicated and {initial.pending_count} pending.",
+        file=active_output,
+    )
+    print(
+        "Decisions are saved after every accepted grade. Enter q to stop safely.",
+        file=active_output,
+    )
+    if not pending_indices:
+        print("All disagreements are resolved; the sheet is ready to import.", file=active_output)
+        return initial
+
+    for row_index in pending_indices:
+        row = rows[row_index]
+        current = _adjudication_progress(rows, stopped_early=False)
+        _emit_disagreement(
+            active_output,
+            position=row_index + 1,
+            total=len(rows),
+            graded=current.graded_count,
+            row=row,
+        )
+        while True:
+            try:
+                answer = (
+                    active_prompt("Final grade [0/1/2/3, s=skip, q=save and quit, ?=rubric]: ")
+                    .strip()
+                    .casefold()
+                )
+            except (EOFError, KeyboardInterrupt):
+                print("\nStopped safely; all earlier decisions are saved.", file=active_output)
+                return _adjudication_progress(rows, stopped_early=True)
+            if answer == "q":
+                print("Stopped safely; all earlier decisions are saved.", file=active_output)
+                return _adjudication_progress(rows, stopped_early=True)
+            if answer == "s":
+                print("Skipped; this disagreement remains pending.", file=active_output)
+                break
+            if answer == "?":
+                print(_RUBRIC, file=active_output)
+                continue
+            if answer not in {"0", "1", "2", "3"}:
+                print("Invalid choice. Enter 0, 1, 2, 3, s, q, or ?.", file=active_output)
+                continue
+
+            while True:
+                try:
+                    rationale = " ".join(
+                        active_prompt("Rationale (required, 10-1000 characters): ").split()
+                    )
+                except (EOFError, KeyboardInterrupt):
+                    print(
+                        "\nDecision not saved; all earlier decisions remain safe.",
+                        file=active_output,
+                    )
+                    return _adjudication_progress(rows, stopped_early=True)
+                if 10 <= len(rationale) <= 1_000:
+                    break
+                print("Rationale must contain 10 to 1000 characters.", file=active_output)
+
+            row["adjudicated_relevance_0_to_3"] = answer
+            row["adjudication_rationale"] = spreadsheet_safe_text(rationale)
+            _atomic_write(
+                adjudication_path,
+                render_retrieval_adjudication_rows(rows),
+            )
+            saved = _adjudication_progress(rows, stopped_early=False)
+            print(
+                f"Saved: {saved.graded_count}/{saved.total_count} adjudicated; "
+                f"{saved.pending_count} pending.",
+                file=active_output,
+            )
+            break
+
+    final = _adjudication_progress(rows, stopped_early=False)
+    if final.pending_count:
+        print(
+            f"Session reached the end with {final.pending_count} skipped disagreement(s); "
+            "run the same command again to resume them.",
+            file=active_output,
+        )
+    else:
+        print("All disagreements are resolved; the sheet is ready to import.", file=active_output)
     return final

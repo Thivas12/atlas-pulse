@@ -32,6 +32,11 @@ _CAVEATS = (
     "Latency is observed client-side for this capture and is not a universal service-level guarantee.",
 )
 
+_ADJUDICATED_CAVEAT = (
+    "Relevance grades were finalized from two independent reviews and disagreement-only "
+    "adjudication; agreement measures consistency, not factual truth."
+)
+
 
 def canonical_sha256(model: object) -> str:
     """Hash a Pydantic model or JSON-compatible value using canonical JSON."""
@@ -184,6 +189,7 @@ def score_pool(pool: CandidatePool, *, cutoffs: Iterable[int] = (1, 3, 5, 10)) -
     pool_hash = canonical_sha256(pool)
     now = datetime.now(UTC)
     return EvaluationReport(
+        schema_version="1.2.0" if pool.adjudication is not None else "1.1.0",
         report_id=f"{pool.pool_id}-{pool_hash[:12]}",
         pool_id=pool.pool_id,
         pool_sha256=pool_hash,
@@ -196,7 +202,8 @@ def score_pool(pool: CandidatePool, *, cutoffs: Iterable[int] = (1, 3, 5, 10)) -
             slice_name: {mode: _aggregate(rows) for mode, rows in sorted(mode_rows.items())}
             for slice_name, mode_rows in sorted(by_slice.items())
         },
-        caveats=_CAVEATS,
+        adjudication=pool.adjudication,
+        caveats=((*_CAVEATS, _ADJUDICATED_CAVEAT) if pool.adjudication is not None else _CAVEATS),
     )
 
 

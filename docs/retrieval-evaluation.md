@@ -66,6 +66,31 @@ The relevance scale is graded `0..3`: irrelevant, weakly related, useful, and di
 Citation status is excluded from relevance judgment and scored independently. See the exact
 rubric and commands in [`evals/retrieval/README.md`](../evals/retrieval/README.md).
 
+## Independent review and adjudication
+
+A first review is sufficient for internal failure discovery, but not for a public comparative
+claim. The same original unjudged pool can produce a fresh second-review sheet without exposing or
+reusing the first review. Two imported first-pass reviews must identify different people and hash
+to the exact same capture after excluding only grades, rationales, reviewer metadata, adjudication
+metadata, and the artifact-envelope version.
+
+`atlas-pulse-evaluate agreement` canonically orders those reviews by normalized reviewer name and
+reports exact observed agreement, expected marginal agreement, unweighted Cohen's kappa, the full
+`0..3` confusion matrix, and query/source/slice agreement. It exports only grade disagreements.
+The editable adjudication CSV contains no retrieval mode, rank, score, or reviewer identity; its
+review A/B order is deterministically swapped per row. `judge-adjudication` validates the protected
+evidence and both input reviews before each prompt, requires a reasoned final grade, and saves every
+decision atomically.
+
+`adjudicate` requires a third named person distinct from both reviewers. Matching grades inherit
+consensus and cannot be regraded. The final schema `1.1.0` gold pool retains both reviewed-pool
+hashes, agreement report identity, observed agreement, kappa, adjudicator, timestamp, and decision
+count. Scoring an adjudicated pool emits report schema `1.2.0` and carries that provenance into the
+human-readable report. Agreement and adjudication remain evaluation evidence; they do not prove
+source truth, corpus completeness, representativeness, or production readiness. The exact commands
+are in [`evals/retrieval/README.md`](../evals/retrieval/README.md), and the design is recorded in
+[ADR 0036](adr/0036-retrieval-independent-review-adjudication.md).
+
 ## Metrics and gates
 
 Metrics are macro-averaged across queries for every mode and slice:
@@ -96,8 +121,10 @@ was judged irrelevant”; it does not by itself prove whether ingestion, indexin
 or ranking caused the gap. `candidate_coverage` can be gated overall or within a declared source
 slice and, unlike cutoff metrics, does not take a cutoff.
 
-Reports containing candidate coverage use evaluation report schema `1.1.0`; query sets,
-candidate pools, and gate policies remain at schema `1.0.0`.
+First-pass reports containing candidate coverage use evaluation report schema `1.1.0`; reports
+scored from an independently adjudicated gold pool use schema `1.2.0`. Query sets and gate policies
+remain at schema `1.0.0`. Candidate pools use schema `1.0.0` for unjudged and single-review
+artifacts and schema `1.1.0` only for a final pool with complete adjudication provenance.
 
 ## Longitudinal comparison
 
@@ -153,8 +180,8 @@ uv run atlas-pulse-evaluate campaign \
   service implementation; their latency is end-to-end request latency, not isolated operator cost.
 - Unjudged documents receive zero gain and reduce judged rate; they are not proven irrelevant.
 - Citation traceability validates safe URL structure and event attachment, not factual truth.
-- One reviewer supports development decisions. Public comparative claims should use independent
-  duplicate judgments and adjudication.
+- One reviewer supports development decisions only. Public comparative claims require independent
+  duplicate judgments and third-person disagreement adjudication.
 - Candidate coverage proves only that a mode returned something; it does not prove an eligible
   corpus existed or that an empty result had no relevant evidence upstream.
 - Metrics evaluate retrieval, not answer faithfulness, claim entailment, agent decisions, or

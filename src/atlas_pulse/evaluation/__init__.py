@@ -1,5 +1,21 @@
 """Human-in-the-loop retrieval evaluation public API."""
 
+from atlas_pulse.evaluation.adjudication import (
+    ADJUDICATION_COLUMNS,
+    IndependentRetrievalReviewAgreementReport,
+    RetrievalAdjudicationDecision,
+    RetrievalAdjudicationReport,
+    RetrievalAdjudicationSheet,
+    RetrievalReviewAgreementMetrics,
+    RetrievalReviewDisagreement,
+    ReviewedRetrievalPoolIdentity,
+    apply_retrieval_adjudication,
+    build_retrieval_adjudication_sheet,
+    compare_independent_retrieval_reviews,
+    render_retrieval_adjudication_rows,
+    retrieval_capture_sha256,
+    validate_partial_retrieval_adjudication,
+)
 from atlas_pulse.evaluation.base import (
     AggregateMetrics,
     CandidatePool,
@@ -12,6 +28,7 @@ from atlas_pulse.evaluation.base import (
     GateOutcome,
     GatePolicy,
     GateRule,
+    IndependentRetrievalAdjudicationProvenance,
     PooledCandidate,
     PooledQuery,
     QueryRunMetrics,
@@ -34,12 +51,17 @@ from atlas_pulse.evaluation.comparison import (
     pool_provenance,
     render_comparison_markdown,
 )
-from atlas_pulse.evaluation.judging import JudgmentProgress, run_judgment_session
+from atlas_pulse.evaluation.judging import (
+    JudgmentProgress,
+    run_judgment_session,
+    run_retrieval_adjudication_session,
+)
 from atlas_pulse.evaluation.judgments import (
     JudgmentSheet,
     apply_judgments,
     build_judgment_sheet,
     export_judgments,
+    judgment_metadata,
     render_judgment_rows,
     validate_partial_judgments,
 )
@@ -49,9 +71,14 @@ from atlas_pulse.evaluation.metrics import (
     metrics_at_k,
     score_pool,
 )
-from atlas_pulse.evaluation.report import render_markdown
+from atlas_pulse.evaluation.report import (
+    render_markdown,
+    render_retrieval_adjudication_markdown,
+    render_retrieval_review_agreement_markdown,
+)
 
 __all__ = [
+    "ADJUDICATION_COLUMNS",
     "AggregateComparison",
     "AggregateMetrics",
     "CampaignCapture",
@@ -69,28 +96,46 @@ __all__ = [
     "GateOutcome",
     "GatePolicy",
     "GateRule",
+    "IndependentRetrievalAdjudicationProvenance",
+    "IndependentRetrievalReviewAgreementReport",
     "JudgmentProgress",
     "JudgmentSheet",
     "PooledCandidate",
     "PooledQuery",
     "QueryRunMetrics",
+    "RetrievalAdjudicationDecision",
+    "RetrievalAdjudicationReport",
+    "RetrievalAdjudicationSheet",
+    "RetrievalReviewAgreementMetrics",
+    "RetrievalReviewDisagreement",
+    "ReviewedRetrievalPoolIdentity",
     "ScalarDelta",
     "apply_judgments",
+    "apply_retrieval_adjudication",
     "build_campaign",
     "build_judgment_sheet",
+    "build_retrieval_adjudication_sheet",
     "canonical_sha256",
     "capture_pool",
     "compare_aggregate_metrics",
+    "compare_independent_retrieval_reviews",
     "compare_pools",
     "evaluate_gates",
     "export_judgments",
+    "judgment_metadata",
     "metrics_at_k",
     "pool_provenance",
     "render_campaign_markdown",
     "render_comparison_markdown",
     "render_judgment_rows",
     "render_markdown",
+    "render_retrieval_adjudication_markdown",
+    "render_retrieval_adjudication_rows",
+    "render_retrieval_review_agreement_markdown",
+    "retrieval_capture_sha256",
     "run_judgment_session",
+    "run_retrieval_adjudication_session",
     "score_pool",
     "validate_partial_judgments",
+    "validate_partial_retrieval_adjudication",
 ]

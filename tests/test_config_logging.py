@@ -48,10 +48,21 @@ def test_settings_load_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert "b" * 64 not in repr(settings)
 
 
-def test_firms_requires_a_key_only_when_enabled() -> None:
-    assert Settings(firms_enabled=False).firms_enabled is False
-    with pytest.raises(ValidationError, match="ATLAS_FIRMS_MAP_KEY is required"):
-        Settings(firms_enabled=True)
+def test_firms_policy_does_not_expose_credential_to_non_ingestor_processes() -> None:
+    settings = Settings(firms_enabled=True)
+
+    assert settings.firms_map_key is None
+    assert "firms" in {policy.source for policy in settings.source_poll_policies()}
+
+
+def test_firms_ingestor_requires_a_key_when_enabled() -> None:
+    settings = Settings(firms_enabled=True)
+
+    with pytest.raises(ValueError, match="required by the ingestion worker"):
+        settings.require_firms_map_key()
+
+    configured = Settings(firms_enabled=True, firms_map_key="top-secret")
+    assert configured.require_firms_map_key() == "top-secret"
 
 
 def test_settings_reject_an_unpinned_build_commit() -> None:

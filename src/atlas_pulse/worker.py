@@ -76,10 +76,9 @@ async def run() -> None:
         (nws, settings.nws_poll_seconds),
     ]
     if settings.firms_enabled:
-        assert settings.firms_map_key is not None
         firms = FIRMSClient(
             api_base_url=str(settings.firms_api_base_url),
-            map_key=settings.firms_map_key.get_secret_value(),
+            map_key=settings.require_firms_map_key(),
             product=settings.firms_product,
             area=settings.firms_area,
             day_range=settings.firms_day_range,

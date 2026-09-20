@@ -6,9 +6,10 @@ Accepted
 
 ## Context
 
-The first reviewed `live-disruptions.v2` development capture restored FIRMS coverage and showed
-hybrid as the strongest overall ranking mode. It also reported p95 latency near two seconds for
-every mode. The slowest query shapes were shared across lexical, dense, RRF, and hybrid.
+The first completed `live-disruptions.v2` AI-assisted development capture restored FIRMS coverage
+and showed hybrid as the strongest overall ranking mode. It also reported p95 latency near two
+seconds for every mode. The slowest query shapes were shared across lexical, dense, RRF, and
+hybrid.
 
 Inspection found that every request embedded the query and executed both PostgreSQL full-text and
 pgvector searches before the selected ranking rule ran. Consequently, a lexical ablation paid for

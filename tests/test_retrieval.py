@@ -127,7 +127,7 @@ class RecordingRetrievalStore:
     async def candidates(
         self,
         query: SearchQuery,
-        embedding: Embedding,
+        embedding: Embedding | None,
         *,
         embedding_model: str,
     ) -> CandidateBatch:
@@ -477,6 +477,23 @@ async def test_hybrid_search_service_embeds_fuses_counts_and_closes() -> None:
     assert await service.is_ready() is True
     await service.close()
     assert store.closed is True
+
+
+async def test_lexical_search_service_skips_query_embedding_and_dense_candidates() -> None:
+    event = make_event("event-1")
+    lexical_candidate = candidate(event, rank=1, score=0.9)
+    store = RecordingRetrievalStore(batch=CandidateBatch(lexical=(lexical_candidate,), dense=()))
+    embedder = StubEmbedder()
+    service = HybridSearchService(store=store, embedder=embedder)
+    query = SearchQuery(text="earthquake", candidate_limit=10, ranking_mode="lexical")
+
+    result = await service.search(query)
+
+    assert [hit.message.event.event_id for hit in result.hits] == ["event-1"]
+    assert result.candidates_considered == 1
+    assert result.ranking_mode == "lexical"
+    assert embedder.query_calls == []
+    assert store.embedding is None
 
 
 class FakeFastEmbedModel:

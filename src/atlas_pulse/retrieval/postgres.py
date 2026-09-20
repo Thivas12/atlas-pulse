@@ -1,7 +1,7 @@
 """Atomic PostgreSQL full-text and pgvector retrieval projection."""
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import cast
 
@@ -320,16 +320,24 @@ class PostgresRetrievalStore:
     async def candidates(
         self,
         query: SearchQuery,
-        embedding: Embedding,
+        embedding: Embedding | None,
         *,
         embedding_model: str,
     ) -> CandidateBatch:
+        uses_lexical = query.ranking_mode != "dense"
+        uses_dense = query.ranking_mode != "lexical"
+        if uses_dense and embedding is None:
+            raise ValueError("dense retrieval requires a query embedding")
+
         conditions, parameters = self._filters(query)
-        parameters.update(
-            lexical_query=_relaxed_websearch_query(query.text),
-            query_embedding=_vector_literal(embedding),
-            embedding_model=embedding_model,
-        )
+        if uses_lexical:
+            parameters["lexical_query"] = _relaxed_websearch_query(query.text)
+        if uses_dense:
+            assert embedding is not None
+            parameters.update(
+                query_embedding=_vector_literal(embedding),
+                embedding_model=embedding_model,
+            )
         predicate = " AND ".join(conditions)
         distance = self._distance_expression(query)
         lexical = text(
@@ -368,11 +376,16 @@ class PostgresRetrievalStore:
             LIMIT :candidate_limit
             """
         )
+        lexical_rows: Sequence[RowMapping] = ()
+        dense_rows: Sequence[RowMapping] = ()
         async with self._engine.connect() as connection, connection.begin():
             await connection.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
-            await connection.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
-            lexical_rows = (await connection.execute(lexical, parameters)).mappings().all()
-            dense_rows = (await connection.execute(dense, parameters)).mappings().all()
+            if uses_dense:
+                await connection.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
+            if uses_lexical:
+                lexical_rows = (await connection.execute(lexical, parameters)).mappings().all()
+            if uses_dense:
+                dense_rows = (await connection.execute(dense, parameters)).mappings().all()
         return CandidateBatch(
             lexical=tuple(
                 self._candidate(row, rank=rank) for rank, row in enumerate(lexical_rows, start=1)

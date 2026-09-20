@@ -129,7 +129,7 @@ class ChannelCandidate:
 
 @dataclass(frozen=True, slots=True)
 class CandidateBatch:
-    """Independently ranked result lists read from one database snapshot."""
+    """Requested ranked lists, sharing one database snapshot when both channels run."""
 
     lexical: tuple[ChannelCandidate, ...]
     dense: tuple[ChannelCandidate, ...]
@@ -223,11 +223,11 @@ class RetrievalStore(Protocol):
     async def candidates(
         self,
         query: SearchQuery,
-        embedding: Embedding,
+        embedding: Embedding | None,
         *,
         embedding_model: str,
     ) -> CandidateBatch:
-        """Return lexical and vector ranks from one consistent snapshot."""
+        """Return only the channel ranks required by the selected ranking mode."""
         ...
 
     async def is_ready(self) -> bool:

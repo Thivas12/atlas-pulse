@@ -1,0 +1,222 @@
+{
+  "schema_version": "1.0.0",
+  "query_set_id": "live-disruptions.v2",
+  "title": "Typed-constraint live public-disruption operator queries",
+  "description": "Evergreen information needs for measuring retrieval over current USGS, NWS, NASA FIRMS, and GDELT evidence, with explicit source-native constraints where the operator intent names a structured condition.",
+  "pool_depth": 10,
+  "modes": [
+    "lexical",
+    "dense",
+    "rrf",
+    "hybrid"
+  ],
+  "queries": [
+    {
+      "query_id": "usgs-populated-area-impact",
+      "text": "earthquake near homes roads or a populated area",
+      "slices": [
+        "source-usgs",
+        "semantic",
+        "impact"
+      ],
+      "filters": {
+        "source": "usgs",
+        "active_only": false
+      }
+    },
+    {
+      "query_id": "usgs-strong-shallow-quake",
+      "text": "strong shallow earthquake magnitude 5 or greater",
+      "slices": [
+        "source-usgs",
+        "lexical",
+        "severity"
+      ],
+      "filters": {
+        "source": "usgs",
+        "active_only": false,
+        "min_magnitude": 5,
+        "max_depth_km": 70
+      }
+    },
+    {
+      "query_id": "usgs-tsunami-concern",
+      "text": "earthquake with a possible tsunami threat",
+      "slices": [
+        "source-usgs",
+        "rare-intent",
+        "safety"
+      ],
+      "filters": {
+        "source": "usgs",
+        "active_only": false,
+        "tsunami": true
+      }
+    },
+    {
+      "query_id": "nws-tornado-shelter",
+      "text": "tornado warning telling residents to take shelter now",
+      "slices": [
+        "source-nws",
+        "lexical",
+        "safety"
+      ],
+      "filters": {
+        "source": "nws",
+        "active_only": true,
+        "alert_type": "Tornado Warning"
+      }
+    },
+    {
+      "query_id": "nws-flash-flood-roads",
+      "text": "dangerous flash flooding making roads impassable",
+      "slices": [
+        "source-nws",
+        "semantic",
+        "transport"
+      ],
+      "filters": {
+        "source": "nws",
+        "active_only": true
+      }
+    },
+    {
+      "query_id": "nws-fire-evacuation",
+      "text": "wildfire evacuation order for nearby communities",
+      "slices": [
+        "source-nws",
+        "semantic",
+        "evacuation"
+      ],
+      "filters": {
+        "source": "nws",
+        "active_only": true
+      }
+    },
+    {
+      "query_id": "firms-high-confidence-heat",
+      "text": "high confidence intense satellite thermal anomaly",
+      "slices": [
+        "source-firms",
+        "lexical",
+        "severity"
+      ],
+      "filters": {
+        "source": "firms",
+        "active_only": true,
+        "min_confidence_rank": 3
+      }
+    },
+    {
+      "query_id": "firms-night-hotspots",
+      "text": "nighttime fire hotspots detected near communities",
+      "slices": [
+        "source-firms",
+        "semantic",
+        "impact"
+      ],
+      "filters": {
+        "source": "firms",
+        "active_only": true,
+        "observation_period": "night"
+      }
+    },
+    {
+      "query_id": "gdelt-armed-clashes",
+      "text": "armed clashes or fighting reported near civilians",
+      "slices": [
+        "source-gdelt",
+        "semantic",
+        "safety"
+      ],
+      "filters": {
+        "source": "gdelt",
+        "active_only": true
+      }
+    },
+    {
+      "query_id": "gdelt-infrastructure-attack",
+      "text": "attack explosion or violence affecting critical infrastructure",
+      "slices": [
+        "source-gdelt",
+        "lexical",
+        "infrastructure"
+      ],
+      "filters": {
+        "source": "gdelt",
+        "active_only": true
+      }
+    },
+    {
+      "query_id": "cross-source-evacuation",
+      "text": "residents ordered to leave because conditions are dangerous",
+      "slices": [
+        "cross-source",
+        "semantic",
+        "evacuation"
+      ],
+      "filters": {
+        "active_only": true
+      }
+    },
+    {
+      "query_id": "cross-source-transport",
+      "text": "roads railways or airports disrupted by an emergency",
+      "slices": [
+        "cross-source",
+        "semantic",
+        "transport"
+      ],
+      "filters": {
+        "active_only": true
+      }
+    },
+    {
+      "query_id": "cross-source-critical-services",
+      "text": "power communications water or hospitals affected",
+      "slices": [
+        "cross-source",
+        "semantic",
+        "infrastructure"
+      ],
+      "filters": {
+        "active_only": true
+      }
+    },
+    {
+      "query_id": "geo-oklahoma-danger",
+      "text": "dangerous weather or earthquake threatening people",
+      "slices": [
+        "cross-source",
+        "geospatial",
+        "safety"
+      ],
+      "filters": {
+        "active_only": false,
+        "near": [
+          -97.5164,
+          35.4676
+        ],
+        "radius_km": 500
+      }
+    },
+    {
+      "query_id": "geo-southern-california-disruption",
+      "text": "active hazard or disruption affecting southern California",
+      "slices": [
+        "cross-source",
+        "geospatial",
+        "impact"
+      ],
+      "filters": {
+        "active_only": false,
+        "bbox": [
+          -121,
+          32,
+          -114,
+          36
+        ]
+      }
+    }
+  ]
+}

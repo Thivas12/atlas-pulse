@@ -268,6 +268,12 @@ async def test_candidates_apply_all_filters_in_one_repeatable_read_snapshot() ->
         occurred_before=before,
         bounds=GeoBounds(west=-100, south=30, east=-90, north=40),
         near=GeoRadius(longitude=-97, latitude=35, radius_km=100),
+        min_magnitude=5,
+        max_depth_km=70,
+        tsunami=True,
+        alert_type="Tornado Warning",
+        min_confidence_rank=3,
+        observation_period="night",
     )
 
     batch = await store.candidates(
@@ -295,6 +301,12 @@ async def test_candidates_apply_all_filters_in_one_repeatable_read_snapshot() ->
         assert "ST_Intersects" in statement
         assert "ST_DWithin" in statement
         assert "ST_Distance" in statement
+        assert "'magnitude'" in statement
+        assert "'depth_km'" in statement
+        assert "'tsunami'" in statement
+        assert "'alert_type'" in statement
+        assert "'confidence_rank'" in statement
+        assert "'day_night'" in statement
     assert "websearch_to_tsquery" in lexical_sql
     assert "CROSS JOIN lexical_query" in lexical_sql
     assert "numnode(lexical_query.value) > 0" in lexical_sql
@@ -314,6 +326,12 @@ async def test_candidates_apply_all_filters_in_one_repeatable_read_snapshot() ->
         "near_longitude": -97,
         "near_latitude": 35,
         "radius_metres": 100_000,
+        "min_magnitude": 5,
+        "max_depth_km": 70,
+        "tsunami": True,
+        "alert_type": "tornado warning",
+        "min_confidence_rank": 3,
+        "observation_period": "night",
         "lexical_query": "dangerous OR storm",
         "query_embedding": "[0.6,0.8,0]",
         "embedding_model": "test/model",

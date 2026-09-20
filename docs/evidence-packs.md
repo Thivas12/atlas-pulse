@@ -37,8 +37,10 @@ curl -fsS --get 'http://localhost:8000/v1/evidence-packs' \
 ```
 
 The same search snapshot and limits produce the same `pack-<sha256>` identity using the declared
-`sha256-canonical-json-v1` algorithm (UTF-8 JSON, sorted keys, compact separators, explicit nulls,
-and ISO-8601 datetimes). The API is backed by live current-state retrieval, so a later request can
+`sha256-canonical-json-v1` algorithm (UTF-8 JSON, sorted keys, compact separators, and ISO-8601
+datetimes). Existing nullable search dimensions retain explicit nulls; source-native typed
+constraints enter the identity only when a caller applies them, preserving unconstrained pack
+identities. The API is backed by live current-state retrieval, so a later request can
 legitimately produce a new pack when indexed evidence changes. Save the returned JSON when an exact
 run must be replayed or audited.
 

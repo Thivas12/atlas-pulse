@@ -239,10 +239,22 @@ def test_search_contract_normalizes_and_preserves_all_filters() -> None:
         bounds=GeoBounds(west=-100, south=20, east=-80, north=40),
         near=GeoRadius(longitude=-90, latitude=30, radius_km=100),
         active_only=False,
+        min_magnitude=5,
+        max_depth_km=70,
+        tsunami=True,
+        alert_type="  Tornado   Warning ",
+        min_confidence_rank=3,
+        observation_period="night",
     )
     assert query.text == "severe weather"
     assert query.source == "nws"
     assert query.near is not None and query.near.radius_km == 100
+    assert query.alert_type == "Tornado Warning"
+    assert query.min_magnitude == 5
+    assert query.max_depth_km == 70
+    assert query.tsunami is True
+    assert query.min_confidence_rank == 3
+    assert query.observation_period == "night"
 
 
 @pytest.mark.parametrize(
@@ -254,6 +266,13 @@ def test_search_contract_normalizes_and_preserves_all_filters() -> None:
         ({"text": "ok", "limit": 10, "candidate_limit": 9}, "candidate_limit"),
         ({"text": "ok", "candidate_limit": 201}, "candidate_limit"),
         ({"text": "ok", "ranking_mode": "unknown"}, "ranking_mode"),
+        ({"text": "ok", "min_magnitude": math.nan}, "min_magnitude"),
+        ({"text": "ok", "max_depth_km": -1}, "max_depth_km"),
+        ({"text": "ok", "tsunami": 1}, "tsunami"),
+        ({"text": "ok", "alert_type": "   "}, "alert_type"),
+        ({"text": "ok", "min_confidence_rank": 0}, "min_confidence_rank"),
+        ({"text": "ok", "min_confidence_rank": True}, "min_confidence_rank"),
+        ({"text": "ok", "observation_period": "dusk"}, "observation_period"),
         (
             {"text": "ok", "occurred_after": datetime(2026, 1, 1)},
             "UTC offset",

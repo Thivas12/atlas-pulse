@@ -568,6 +568,12 @@ const searchParametersSchema = z.object({
   bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]).nullable(),
   near: z.tuple([z.number(), z.number()]).nullable(),
   radius_km: z.number().positive().nullable(),
+  min_magnitude: z.number().finite().nullable().optional(),
+  max_depth_km: z.number().finite().nonnegative().nullable().optional(),
+  tsunami: z.boolean().nullable().optional(),
+  alert_type: z.string().min(1).max(200).nullable().optional(),
+  min_confidence_rank: z.number().int().min(1).max(3).nullable().optional(),
+  observation_period: z.enum(["day", "night"]).nullable().optional(),
   ranking_mode: z.enum(["lexical", "dense", "rrf", "hybrid"]),
 });
 

@@ -15,9 +15,10 @@ corpus and could incorrectly attribute a data-pipeline failure to retrieval qual
 
 The existing API already exposes the evidence needed for a bounded black-box trace: exact build
 identity through health/readiness, worker-written source freshness, current and retained signal
-visibility, and dense search over the shared structured predicates. A dense source-filtered query
-returns a document whenever the deployed embedding-model index contains an eligible record; it
-does not depend on lexical term overlap.
+visibility, controlled lexical source-marker probes over indexed documents, and dense search over
+the shared structured predicates. The source marker is emitted by the deterministic document
+renderer, so its lexical probe establishes bounded indexed-row existence without depending on an
+approximate nearest-neighbor search vector.
 
 ## Decision
 
@@ -28,10 +29,11 @@ does not depend on lexical term overlap.
    version.
 3. Derive required sources from the frozen query set's explicit source filters. For each source,
    record its complete freshness item plus bounded current and retained existence probes against
-   `/v1/signals` and dense `/v1/search`.
+   `/v1/signals` and lexical `/v1/search`. The search uses the guaranteed rendered `Source` marker
+   together with the exact source predicate; it is an index-existence probe, not a relevance test.
 4. Block capture when a required source has no configured freshness record, fails freshness, has
-   no retained signal, has no retained dense-index document, or has a current projected signal
-   that is absent from the current dense index.
+   no retained signal, has no retained indexed document, or has a current projected signal that is
+   absent from the current retrieval index.
 5. Probe every frozen query once in dense mode with its exact structured predicates. Report empty
    query IDs and a bounded reason, but do not block an otherwise healthy capture: a changing live
    corpus may legitimately contain no matching tsunami, tornado, or other rare event. This avoids
@@ -39,8 +41,9 @@ does not depend on lexical term overlap.
 6. Request at most one result per visibility probe, retain only document identity and occurrence
    time, and bind the exact response bytes by SHA-256. Do not copy source text into the readiness
    artifact or claim corpus cardinality from the existence check.
-7. Preserve the deployed request-budget contract for all dense probes, including bounded pacing
-   and retry behavior. Reject model, rule, query-echo, or response-contract drift during the run.
+7. Preserve the deployed request-budget contract for every retrieval probe, including bounded
+   pacing and retry behavior. Record the lexical source-inventory rule separately from the dense
+   exact-query rule, and reject model, rule, query-echo, source-identity, or response-contract drift.
 8. Emit content-addressed JSON and Markdown under ignored `artifacts/evaluation/`. The report is
    point-in-time pipeline evidence; it is not a relevance judgment, completeness proof, quality
    gate, or availability SLA.
@@ -56,6 +59,8 @@ does not depend on lexical term overlap.
   and may delay the subsequent capture until the next request-budget window.
 - Natural empty-query observations remain visible without introducing benchmark-timing selection
   bias.
+- Filtered approximate-nearest-neighbor behavior cannot turn an unrelated inventory vector into a
+  false source-pipeline blocker; dense mode remains the exact-query eligibility test.
 
 ## Rejected alternatives
 
@@ -66,5 +71,15 @@ does not depend on lexical term overlap.
   completeness evidence.
 - **Block on every empty exact query.** Rare live conditions can legitimately be absent; waiting
   for all cases to become non-empty would select the corpus based on the benchmark.
-- **Probe only lexical retrieval.** An empty lexical result can be caused by vocabulary mismatch
-  even when eligible source documents are correctly indexed.
+- **Use an arbitrary lexical inventory query.** Vocabulary mismatch can make an arbitrary lexical
+  result empty. The accepted source probe instead queries a controlled marker that every indexed
+  document is guaranteed to contain and still keeps all frozen-query eligibility probes dense.
+
+## Amendment: controlled source marker
+
+The original rule used the unrelated dense query `operational source inventory` for source-index
+existence. A live v2 diagnostic returned empty GDELT inventory probes while two later GDELT-filtered
+dense queries returned candidates from the same deployment. Filtered HNSW search is query-vector
+dependent and therefore cannot serve as a deterministic row-existence test. Readiness rule v2 and
+report schema 1.1.0 replace only the source inventory probes with the controlled lexical marker;
+the frozen evaluation-query probes remain dense.

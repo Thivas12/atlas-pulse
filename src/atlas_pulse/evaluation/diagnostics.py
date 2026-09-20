@@ -27,11 +27,12 @@ from atlas_pulse.evaluation.capture import (
 )
 from atlas_pulse.evaluation.metrics import canonical_sha256
 from atlas_pulse.projections.base import SourceName
+from atlas_pulse.retrieval.base import RankingMode
 from atlas_pulse.source_polling import SourceFreshnessItem, SourceFreshnessResponse
 
-RETRIEVAL_READINESS_SCHEMA_VERSION: Literal["1.0.0"] = "1.0.0"
-RETRIEVAL_READINESS_RULE_VERSION: Literal["retrieval-capture-readiness-v1"] = (
-    "retrieval-capture-readiness-v1"
+RETRIEVAL_READINESS_SCHEMA_VERSION: Literal["1.1.0"] = "1.1.0"
+RETRIEVAL_READINESS_RULE_VERSION: Literal["retrieval-capture-readiness-v2"] = (
+    "retrieval-capture-readiness-v2"
 )
 RETRIEVAL_READINESS_IDENTITY_ALGORITHM: Literal["sha256-canonical-json-v1"] = (
     "sha256-canonical-json-v1"
@@ -43,8 +44,10 @@ RETRIEVAL_READINESS_CAVEATS = (
     "independent observation of the upstream provider.",
     "Visibility probes request at most one record. They prove existence, not source or index "
     "cardinality, and arrivals or expiry can change immediately after the diagnostic.",
-    "A dense result proves that at least one document satisfies the exact structured predicates; "
-    "it does not establish relevance or retrieval quality.",
+    "Source-index probes use a guaranteed rendered source marker plus an exact source predicate; "
+    "they establish bounded row existence, not corpus completeness or retrieval quality.",
+    "A dense exact-query result proves that at least one document satisfies the exact structured "
+    "predicates; it does not establish relevance or retrieval quality.",
     "An empty exact query is reported as an eligibility warning because the live corpus may "
     "legitimately contain no matching event; only a required source-pipeline failure blocks capture.",
     "A ready result permits a fresh blinded capture only. It does not permit judgment reuse from "
@@ -91,6 +94,7 @@ class CorpusVisibilityProbe(StrictModel):
     response_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     returned_count: int = Field(ge=0, le=1)
     candidates_considered: int | None = Field(default=None, ge=0)
+    ranking_mode: RankingMode | None = None
     document_id: str | None = Field(default=None, pattern=r"^[a-z0-9_-]+:.+$")
     occurred_at: datetime | None = None
 
@@ -104,6 +108,8 @@ class CorpusVisibilityProbe(StrictModel):
         is_search = self.kind in {"retrieval_index", "evaluation_query"}
         if is_search != (self.candidates_considered is not None):
             raise ValueError("only retrieval probes report candidates considered")
+        if is_search != (self.ranking_mode is not None):
+            raise ValueError("only retrieval probes report a ranking mode")
         if (
             self.candidates_considered is not None
             and self.candidates_considered < self.returned_count
@@ -134,13 +140,17 @@ class SourceRetrievalReadiness(StrictModel):
     @model_validator(mode="after")
     def validate_source(self) -> Self:
         probes = (
-            (self.current_signals, "signal_projection", True),
-            (self.retained_signals, "signal_projection", False),
-            (self.current_index, "retrieval_index", True),
-            (self.retained_index, "retrieval_index", False),
+            (self.current_signals, "signal_projection", True, None),
+            (self.retained_signals, "signal_projection", False, None),
+            (self.current_index, "retrieval_index", True, "lexical"),
+            (self.retained_index, "retrieval_index", False, "lexical"),
         )
-        for probe, kind, active_only in probes:
-            if probe.kind != kind or probe.active_only is not active_only:
+        for probe, kind, active_only, ranking_mode in probes:
+            if (
+                probe.kind != kind
+                or probe.active_only is not active_only
+                or probe.ranking_mode != ranking_mode
+            ):
                 raise ValueError("source readiness contains a mismatched visibility probe")
             if probe.document_id is not None and not probe.document_id.startswith(
                 f"{self.source}:"
@@ -180,6 +190,8 @@ class QueryRetrievalReadiness(StrictModel):
     def validate_query(self) -> Self:
         if self.probe.kind != "evaluation_query" or self.probe.active_only is not self.active_only:
             raise ValueError("query readiness contains a mismatched eligibility probe")
+        if self.probe.ranking_mode != "dense":
+            raise ValueError("query readiness must retain a dense eligibility probe")
         if (
             self.source is not None
             and self.probe.document_id is not None
@@ -197,8 +209,8 @@ class QueryRetrievalReadiness(StrictModel):
 class RetrievalCaptureReadinessReport(StrictModel):
     """Content-addressed decision record produced immediately before live capture."""
 
-    schema_version: Literal["1.0.0"] = RETRIEVAL_READINESS_SCHEMA_VERSION
-    rule_version: Literal["retrieval-capture-readiness-v1"] = RETRIEVAL_READINESS_RULE_VERSION
+    schema_version: Literal["1.1.0"] = RETRIEVAL_READINESS_SCHEMA_VERSION
+    rule_version: Literal["retrieval-capture-readiness-v2"] = RETRIEVAL_READINESS_RULE_VERSION
     identity_algorithm: Literal["sha256-canonical-json-v1"] = RETRIEVAL_READINESS_IDENTITY_ALGORITHM
     report_id: str = Field(pattern=r"^retrieval-readiness-[0-9a-f]{20}$")
     report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -209,6 +221,7 @@ class RetrievalCaptureReadinessReport(StrictModel):
     observed_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     application_version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
     embedding_model: str = Field(min_length=1)
+    source_inventory_rule: str | None = Field(default=None, min_length=1)
     ranking_rule: str = Field(min_length=1)
     source_freshness_generated_at: datetime
     generated_at: datetime
@@ -225,6 +238,8 @@ class RetrievalCaptureReadinessReport(StrictModel):
         _require_utc(self.generated_at, "generated_at")
         if self.expected_commit_sha != self.observed_commit_sha:
             raise ValueError("retrieval readiness must observe the expected deployment commit")
+        if bool(self.sources) != (self.source_inventory_rule is not None):
+            raise ValueError("source inventory rule must match the presence of source probes")
         source_names = tuple(item.source for item in self.sources)
         if source_names != tuple(sorted(set(source_names))):
             raise ValueError("source readiness items must be unique and canonically ordered")
@@ -267,6 +282,7 @@ def _visibility_probe(
     document_id: str | None,
     occurred_at: datetime | None,
     candidates_considered: int | None = None,
+    ranking_mode: RankingMode | None = None,
 ) -> CorpusVisibilityProbe:
     return CorpusVisibilityProbe(
         kind=kind,
@@ -274,6 +290,7 @@ def _visibility_probe(
         response_sha256=hashlib.sha256(response.content).hexdigest(),
         returned_count=1 if document_id is not None else 0,
         candidates_considered=candidates_considered,
+        ranking_mode=ranking_mode,
         document_id=document_id,
         occurred_at=(
             _normalize_utc(occurred_at, "probe occurred_at") if occurred_at is not None else None
@@ -320,21 +337,28 @@ async def _search_probe(
     query: EvaluationQuery,
     *,
     kind: Literal["retrieval_index", "evaluation_query"],
+    mode: RankingMode,
 ) -> tuple[CorpusVisibilityProbe, str, str]:
     response, _latency_ms = await pacer.get(
         client,
-        params=query_parameters(query, mode="dense", pool_depth=1),
+        params=query_parameters(query, mode=mode, pool_depth=1),
     )
     if not response.is_success:
-        raise RuntimeError(f"dense probe for {query.query_id} returned HTTP {response.status_code}")
+        raise RuntimeError(
+            f"{mode} probe for {query.query_id} returned HTTP {response.status_code}"
+        )
     result = SearchResponse.model_validate_json(response.content)
-    expected = expected_parameters(query, mode="dense", pool_depth=1)
-    if result.ranking_mode != "dense" or result.parameters != expected:
-        raise RuntimeError("retrieval API did not echo the exact dense diagnostic request")
+    expected = expected_parameters(query, mode=mode, pool_depth=1)
+    if result.ranking_mode != mode or result.parameters != expected:
+        raise RuntimeError(f"retrieval API did not echo the exact {mode} diagnostic request")
     if result.count != len(result.items) or result.count > 1:
-        raise RuntimeError("dense diagnostic probe returned inconsistent result counts")
+        raise RuntimeError("retrieval diagnostic probe returned inconsistent result counts")
     if result.candidates_considered < result.count:
-        raise RuntimeError("dense diagnostic probe returned an invalid candidate count")
+        raise RuntimeError("retrieval diagnostic probe returned an invalid candidate count")
+    if query.filters.source is not None and any(
+        item.event.source != query.filters.source for item in result.items
+    ):
+        raise RuntimeError("retrieval diagnostic probe returned a different source")
     item = result.items[0] if result.items else None
     return (
         _visibility_probe(
@@ -342,6 +366,7 @@ async def _search_probe(
             active_only=query.filters.active_only,
             response=response,
             candidates_considered=result.candidates_considered,
+            ranking_mode=mode,
             document_id=(
                 f"{item.event.source}:{item.event.event_id}" if item is not None else None
             ),
@@ -356,7 +381,7 @@ def _source_query(source: SourceName, *, active_only: bool) -> EvaluationQuery:
     suffix = "current" if active_only else "retained"
     return EvaluationQuery(
         query_id=f"diagnostic-{source}-{suffix}",
-        text="operational source inventory",
+        text="source",
         slices=("diagnostic",),
         filters=EvaluationFilters(source=source, active_only=active_only),
     )
@@ -417,6 +442,7 @@ async def diagnose_retrieval_readiness(
     active_client = client or httpx.AsyncClient(base_url=endpoint, timeout=30.0)
     pacer = RetrievalApiPacer(sleeper=sleeper, report_wait=on_rate_limit_wait)
     embedding_models: set[str] = set()
+    source_inventory_rules: set[str] = set()
     ranking_rules: set[str] = set()
     try:
         health_response = await active_client.get("/healthz")
@@ -464,17 +490,19 @@ async def diagnose_retrieval_readiness(
                 pacer,
                 _source_query(source, active_only=True),
                 kind="retrieval_index",
+                mode="lexical",
             )
             embedding_models.add(model)
-            ranking_rules.add(rule)
+            source_inventory_rules.add(rule)
             retained_index, model, rule = await _search_probe(
                 active_client,
                 pacer,
                 _source_query(source, active_only=False),
                 kind="retrieval_index",
+                mode="lexical",
             )
             embedding_models.add(model)
-            ranking_rules.add(rule)
+            source_inventory_rules.add(rule)
             source_freshness = freshness_by_source.get(source)
             blockers = _source_blockers(
                 source_freshness,
@@ -504,6 +532,7 @@ async def diagnose_retrieval_readiness(
                 pacer,
                 query,
                 kind="evaluation_query",
+                mode="dense",
             )
             embedding_models.add(model)
             ranking_rules.add(rule)
@@ -526,10 +555,13 @@ async def diagnose_retrieval_readiness(
 
     if len(embedding_models) != 1 or len(ranking_rules) != 1:
         raise RuntimeError("retrieval model or dense ranking rule changed during diagnostics")
+    if len(source_inventory_rules) != (1 if source_items else 0):
+        raise RuntimeError("source inventory ranking rule changed during diagnostics")
     blocked_sources = tuple(item.source for item in source_items if not item.passed)
     empty_query_ids = tuple(item.query_id for item in query_items if not item.passed)
     query_set_sha256 = canonical_sha256(query_set)
     embedding_model = next(iter(embedding_models))
+    source_inventory_rule = next(iter(source_inventory_rules), None)
     ranking_rule = next(iter(ranking_rules))
     generated_at = datetime.now(UTC)
     ready_for_capture = not blocked_sources
@@ -543,6 +575,7 @@ async def diagnose_retrieval_readiness(
         observed_commit_sha=health.commit_sha,
         application_version=health.version,
         embedding_model=embedding_model,
+        source_inventory_rule=source_inventory_rule,
         ranking_rule=ranking_rule,
         source_freshness_generated_at=freshness.generated_at,
         generated_at=generated_at,
@@ -563,6 +596,7 @@ async def diagnose_retrieval_readiness(
         observed_commit_sha=health.commit_sha,
         application_version=health.version,
         embedding_model=embedding_model,
+        source_inventory_rule=source_inventory_rule,
         ranking_rule=ranking_rule,
         source_freshness_generated_at=freshness.generated_at,
         generated_at=generated_at,
@@ -598,6 +632,11 @@ def render_retrieval_readiness_markdown(report: RetrievalCaptureReadinessReport)
         f"- Deployment commit: `{report.observed_commit_sha}`",
         f"- Application version: `{report.application_version}`",
         f"- Embedding model: `{report.embedding_model}`",
+        *(
+            [f"- Source inventory rule: `{report.source_inventory_rule}`"]
+            if report.source_inventory_rule is not None
+            else []
+        ),
         f"- Dense ranking rule: `{report.ranking_rule}`",
         f"- Generated: `{report.generated_at.isoformat()}`",
         "",

@@ -52,10 +52,11 @@ unreasonably large pacing headers fail the capture instead of creating an unboun
 Before capture, `atlas-pulse-evaluate diagnose` binds a point-in-time source-to-index trace to an
 operator-supplied deployment commit and the frozen query-set hash. It requires agreeing successful
 health/readiness responses, then checks every explicitly required source through worker freshness,
-current and retained signal projection visibility, and current and retained dense-index
-visibility. It also sends one dense request for every exact query definition. The JSON and
-Markdown outputs retain bounded sample document identities, occurrence times, response hashes,
-model/rule identity, and explicit blocker or empty-query reasons without copying source text.
+current and retained signal projection visibility, and controlled lexical source-marker probes
+over the current and retained retrieval index. It also sends one dense request for every exact
+query definition. The JSON and Markdown outputs retain bounded sample document identities,
+occurrence times, response hashes, model/rule identity, and explicit blocker or empty-query reasons
+without copying source text.
 
 A missing or unhealthy required source pipeline blocks capture. An empty exact query is a warning,
 not a pipeline failure: a live corpus may legitimately contain no matching rare event, and waiting

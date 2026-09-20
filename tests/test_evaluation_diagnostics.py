@@ -24,6 +24,7 @@ from atlas_pulse.evaluation import (
 from atlas_pulse.evaluation.capture import expected_parameters
 from atlas_pulse.evaluation.cli import run_cli
 from atlas_pulse.projections.base import SourceName
+from atlas_pulse.retrieval.base import RankingMode
 from atlas_pulse.source_polling import SourceFreshnessItem, SourceFreshnessResponse
 
 NOW = datetime(2026, 9, 20, 12, tzinfo=UTC)
@@ -69,7 +70,7 @@ def _query_set() -> EvaluationQuerySet:
 def _inventory_query(*, active_only: bool) -> EvaluationQuery:
     return EvaluationQuery(
         query_id=f"diagnostic-firms-{'current' if active_only else 'retained'}",
-        text="operational source inventory",
+        text="source",
         slices=("diagnostic",),
         filters=EvaluationFilters(source="firms", active_only=active_only),
     )
@@ -124,6 +125,7 @@ def _search_payload(
     query: EvaluationQuery,
     *,
     visible: bool,
+    mode: RankingMode,
     occurred_at: str | None = None,
 ) -> dict[str, Any]:
     items = (
@@ -134,10 +136,10 @@ def _search_payload(
                 "document_text": "High-confidence nighttime VIIRS thermal anomaly",
                 "distance_km": None,
                 "ranking": {
-                    "lexical_rank": 1,
-                    "lexical_score": 0.8,
-                    "dense_rank": 1,
-                    "dense_similarity": 0.9,
+                    "lexical_rank": 1 if mode == "lexical" else None,
+                    "lexical_score": 0.8 if mode == "lexical" else None,
+                    "dense_rank": 1 if mode == "dense" else None,
+                    "dense_similarity": 0.9 if mode == "dense" else None,
                     "rrf_score": 1.0,
                     "exact_phrase_match": False,
                     "token_coverage": 0.5,
@@ -159,12 +161,14 @@ def _search_payload(
         "candidates_considered": len(items),
         "items": items,
         "embedding_model": "BAAI/bge-small-en-v1.5",
-        "ranking_mode": "dense",
-        "ranking_rule": "bge-cosine-hnsw-v1",
+        "ranking_mode": mode,
+        "ranking_rule": (
+            "postgres-english-fts-any-v2" if mode == "lexical" else "bge-cosine-hnsw-v1"
+        ),
         "caveat": "ranked evidence only",
         "parameters": expected_parameters(
             query,
-            mode="dense",
+            mode=mode,
             pool_depth=1,
         ).model_dump(mode="json"),
     }
@@ -211,11 +215,15 @@ def _transport(
                 ),
             )
         if request.url.path == "/v1/search":
-            assert request.url.params["ranking_mode"] == "dense"
-            if request.url.params["q"] == "operational source inventory":
+            requested_mode = request.url.params["ranking_mode"]
+            assert requested_mode in {"lexical", "dense"}
+            mode: RankingMode = "lexical" if requested_mode == "lexical" else "dense"
+            if request.url.params["q"] == "source":
+                assert mode == "lexical"
                 query = _inventory_query(active_only=request.url.params["active_only"] == "true")
                 visible = inventory_visible
             else:
+                assert mode == "dense"
                 query = query_set.queries[0]
                 visible = exact_query_visible
             return httpx.Response(
@@ -223,6 +231,7 @@ def _transport(
                 json=_search_payload(
                     query,
                     visible=visible,
+                    mode=mode,
                     occurred_at=event_occurred_at,
                 ),
             )
@@ -274,11 +283,19 @@ async def test_diagnostic_proves_commit_source_pipeline_and_exact_query_readines
     assert report.empty_query_ids == ()
     assert report.sources[0].source == "firms"
     assert report.sources[0].passed is True
+    assert report.sources[0].current_index.ranking_mode == "lexical"
+    assert report.sources[0].retained_index.ranking_mode == "lexical"
     assert report.queries[0].passed is True
+    assert report.queries[0].probe.ranking_mode == "dense"
+    assert report.schema_version == "1.1.0"
+    assert report.rule_version == "retrieval-capture-readiness-v2"
+    assert report.source_inventory_rule == "postgres-english-fts-any-v2"
+    assert report.ranking_rule == "bge-cosine-hnsw-v1"
     assert report.report_sha256 == retrieval_readiness_sha256(report)
     assert RetrievalCaptureReadinessReport.model_validate_json(report.model_dump_json()) == report
     markdown = render_retrieval_readiness_markdown(report)
     assert "**Capture status: READY.**" in markdown
+    assert "Source inventory rule: `postgres-english-fts-any-v2`" in markdown
     assert "| firms | yes | yes | yes | yes | yes | pass |" in markdown
 
 

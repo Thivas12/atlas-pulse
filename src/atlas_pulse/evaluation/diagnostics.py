@@ -70,12 +70,17 @@ Sleeper = Callable[[float], Awaitable[None]]
 WaitReporter = Callable[[int, str], None]
 
 
-def _require_utc(value: datetime, field: str) -> datetime:
+def _normalize_utc(value: datetime, field: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field} must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _require_utc(value: datetime, field: str) -> datetime:
+    normalized = _normalize_utc(value, field)
     if value.utcoffset() != UTC.utcoffset(value):
         raise ValueError(f"{field} must use UTC")
-    return value.astimezone(UTC)
+    return normalized
 
 
 class CorpusVisibilityProbe(StrictModel):
@@ -270,7 +275,9 @@ def _visibility_probe(
         returned_count=1 if document_id is not None else 0,
         candidates_considered=candidates_considered,
         document_id=document_id,
-        occurred_at=occurred_at,
+        occurred_at=(
+            _normalize_utc(occurred_at, "probe occurred_at") if occurred_at is not None else None
+        ),
     )
 
 

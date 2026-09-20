@@ -133,11 +133,8 @@ class Settings(BaseSettings):
         return value
 
     @model_validator(mode="after")
-    def require_firms_key_when_enabled(self) -> "Settings":
-        """Fail fast when a deployed FIRMS poller has no free API credential."""
-        key = self.firms_map_key.get_secret_value().strip() if self.firms_map_key else ""
-        if self.firms_enabled and not key:
-            raise ValueError("ATLAS_FIRMS_MAP_KEY is required when ATLAS_FIRMS_ENABLED=true")
+    def validate_cross_field_constraints(self) -> "Settings":
+        """Validate constraints shared by every Atlas Pulse process."""
         if self.gdelt_max_uncompressed_bytes < self.gdelt_max_compressed_bytes:
             raise ValueError(
                 "ATLAS_GDELT_MAX_UNCOMPRESSED_BYTES must be at least the compressed byte limit"
@@ -151,6 +148,16 @@ class Settings(BaseSettings):
             )
         self.source_poll_policies()
         return self
+
+    def require_firms_map_key(self) -> str:
+        """Return the FIRMS credential at its ingestor-only use site or fail closed."""
+        key = self.firms_map_key.get_secret_value().strip() if self.firms_map_key else ""
+        if not key:
+            raise ValueError(
+                "ATLAS_FIRMS_MAP_KEY is required by the ingestion worker when "
+                "ATLAS_FIRMS_ENABLED=true"
+            )
+        return key
 
     def source_poll_policies(self) -> tuple[SourcePollPolicy, ...]:
         """Return canonical freshness policies for exactly the enabled pollers."""

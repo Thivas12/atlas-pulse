@@ -98,8 +98,19 @@ def _freshness(source: SourceName = "firms") -> SourceFreshnessResponse:
     return SourceFreshnessResponse(generated_at=NOW, items=(item,), passed=True)
 
 
-def _signal_payload(*, visible: bool) -> dict[str, Any]:
-    items = [{"stream_id": "100-1", "event": EVENT.model_dump(mode="json")}] if visible else []
+def _event_payload(*, occurred_at: str | None = None) -> dict[str, Any]:
+    payload = EVENT.model_dump(mode="json")
+    if occurred_at is not None:
+        payload["occurred_at"] = occurred_at
+    return payload
+
+
+def _signal_payload(*, visible: bool, occurred_at: str | None = None) -> dict[str, Any]:
+    items = (
+        [{"stream_id": "100-1", "event": _event_payload(occurred_at=occurred_at)}]
+        if visible
+        else []
+    )
     return {
         "count": len(items),
         "items": items,
@@ -109,12 +120,17 @@ def _signal_payload(*, visible: bool) -> dict[str, Any]:
     }
 
 
-def _search_payload(query: EvaluationQuery, *, visible: bool) -> dict[str, Any]:
+def _search_payload(
+    query: EvaluationQuery,
+    *,
+    visible: bool,
+    occurred_at: str | None = None,
+) -> dict[str, Any]:
     items = (
         [
             {
                 "stream_id": "100-1",
-                "event": EVENT.model_dump(mode="json"),
+                "event": _event_payload(occurred_at=occurred_at),
                 "document_text": "High-confidence nighttime VIIRS thermal anomaly",
                 "distance_km": None,
                 "ranking": {
@@ -161,6 +177,7 @@ def _transport(
     signals_visible: bool = True,
     observed_commit: str = COMMIT_SHA,
     freshness_source: SourceName = "firms",
+    event_occurred_at: str | None = None,
 ) -> httpx.MockTransport:
     query_set = _query_set()
 
@@ -186,7 +203,13 @@ def _transport(
             )
         if request.url.path == "/v1/signals":
             assert request.url.params["source"] == "firms"
-            return httpx.Response(200, json=_signal_payload(visible=signals_visible))
+            return httpx.Response(
+                200,
+                json=_signal_payload(
+                    visible=signals_visible,
+                    occurred_at=event_occurred_at,
+                ),
+            )
         if request.url.path == "/v1/search":
             assert request.url.params["ranking_mode"] == "dense"
             if request.url.params["q"] == "operational source inventory":
@@ -195,7 +218,14 @@ def _transport(
             else:
                 query = query_set.queries[0]
                 visible = exact_query_visible
-            return httpx.Response(200, json=_search_payload(query, visible=visible))
+            return httpx.Response(
+                200,
+                json=_search_payload(
+                    query,
+                    visible=visible,
+                    occurred_at=event_occurred_at,
+                ),
+            )
         raise AssertionError(f"unexpected diagnostic request: {request.url}")
 
     return httpx.MockTransport(handler)
@@ -250,6 +280,33 @@ async def test_diagnostic_proves_commit_source_pipeline_and_exact_query_readines
     markdown = render_retrieval_readiness_markdown(report)
     assert "**Capture status: READY.**" in markdown
     assert "| firms | yes | yes | yes | yes | yes | pass |" in markdown
+
+
+async def test_diagnostic_normalizes_source_offsets_in_probe_evidence() -> None:
+    async with httpx.AsyncClient(
+        transport=_transport(event_occurred_at="2026-09-20T06:30:00-05:00"),
+        base_url="https://atlas.example",
+    ) as client:
+        report = await diagnose_retrieval_readiness(
+            _query_set(),
+            base_url="https://atlas.example",
+            expected_commit_sha=COMMIT_SHA,
+            client=client,
+            sleeper=_no_sleep,
+        )
+
+    expected = datetime(2026, 9, 20, 11, 30, tzinfo=UTC)
+    probes = (
+        report.sources[0].current_signals,
+        report.sources[0].retained_signals,
+        report.sources[0].current_index,
+        report.sources[0].retained_index,
+        report.queries[0].probe,
+    )
+    assert all(probe.occurred_at == expected for probe in probes)
+    assert all(
+        probe.occurred_at is not None and probe.occurred_at.tzinfo is UTC for probe in probes
+    )
 
 
 async def test_diagnostic_warns_on_an_empty_exact_filter_without_blaming_the_pipeline() -> None:

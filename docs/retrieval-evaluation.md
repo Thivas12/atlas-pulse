@@ -49,6 +49,20 @@ the CLI prints planned waits so pacing cannot look like a hung process. Recorded
 only the successful request itself and excludes intentional quota waiting. Missing, malformed, or
 unreasonably large pacing headers fail the capture instead of creating an unbounded sleep.
 
+Before capture, `atlas-pulse-evaluate diagnose` binds a point-in-time source-to-index trace to an
+operator-supplied deployment commit and the frozen query-set hash. It requires agreeing successful
+health/readiness responses, then checks every explicitly required source through worker freshness,
+current and retained signal projection visibility, and current and retained dense-index
+visibility. It also sends one dense request for every exact query definition. The JSON and
+Markdown outputs retain bounded sample document identities, occurrence times, response hashes,
+model/rule identity, and explicit blocker or empty-query reasons without copying source text.
+
+A missing or unhealthy required source pipeline blocks capture. An empty exact query is a warning,
+not a pipeline failure: a live corpus may legitimately contain no matching rare event, and waiting
+for every benchmark query to become non-empty would select capture time based on the evaluation.
+The existence probes do not report cardinality, prove upstream completeness, or measure relevance.
+[ADR 0038](adr/0038-retrieval-capture-readiness.md) records the boundary.
+
 The capture JSON keeps system runs for audit and scoring. Reviewers work only from the separate
 rank-blind CSV. Generated artifacts are ignored by Git unless a reviewed baseline is intentionally
 promoted with reviewer and capture provenance intact.
@@ -93,7 +107,8 @@ strong/shallow USGS events, tsunami-flagged USGS events, NWS tornado warnings, h
 FIRMS observations, and nighttime FIRMS observations. Because those definitions differ from v1,
 v2 starts a new reviewed baseline and must not be passed to `compare` or `campaign` as though it
 were a longitudinal capture of v1. Empty FIRMS results still require a separate ingestion and
-index-freshness check; a filter cannot create source records that were never captured.
+index-freshness check through the commit-pinned diagnostic; a filter cannot create source records
+that were never captured.
 [ADR 0037](adr/0037-explicit-typed-retrieval-constraints.md) records this boundary and the rejected
 alternatives.
 

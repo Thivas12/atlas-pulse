@@ -355,11 +355,19 @@ OpenAPI documentation is at <http://localhost:8000/docs>. Stop the stack with
 `docker compose down`. Add `--volumes` only when you intentionally want to delete local stream,
 PostGIS, and raw snapshot data.
 
-To measure the live retriever rather than judge a few hand-picked examples, capture the checked-in
+To measure the live retriever rather than judge a few hand-picked examples, first bind source,
+projection, index, and exact-query visibility to the deployed commit. Then capture the checked-in
 operator query set, grade the separate rank-blind CSV, and score its content-addressed pool:
 
 ```bash
 mkdir -p artifacts/evaluation
+uv run atlas-pulse-evaluate diagnose \
+  --queries evals/retrieval/live-disruptions-v2.json \
+  --base-url http://localhost:8000 \
+  --expected-commit "$(git rev-parse HEAD)" \
+  --output-json artifacts/evaluation/readiness.json \
+  --output-markdown artifacts/evaluation/readiness.md
+
 uv run atlas-pulse-evaluate capture \
   --queries evals/retrieval/live-disruptions-v2.json \
   --base-url http://localhost:8000 \
@@ -374,6 +382,8 @@ or quality floors. A single review remains internal evidence; public comparative
 two different reviewers and a distinct adjudicator. Once at least two chronological reviewed
 captures exist, the same CLI builds a content-addressed campaign that scores every capture against
 one global judged union and reports quality, coverage, latency, and slice trajectories.
+The diagnostic blocks missing or unhealthy required source pipelines but records natural empty
+live-query conditions as warnings, avoiding capture-time selection based on benchmark outcomes.
 
 The separate [`structured-claims-v1` contract cases](evals/relationships/README.md) freeze exact
 corroboration, contradiction, and abstention behavior. They are synthetic regression cases, not a

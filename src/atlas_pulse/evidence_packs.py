@@ -133,7 +133,7 @@ class EvidencePack:
 def _query_identity(query: SearchQuery) -> dict[str, object]:
     bounds = query.bounds
     near = query.near
-    return {
+    identity: dict[str, object] = {
         "query": query.text,
         "limit": query.limit,
         "candidate_limit": query.candidate_limit,
@@ -148,6 +148,17 @@ def _query_identity(query: SearchQuery) -> dict[str, object]:
         "radius_km": near.radius_km if near is not None else None,
         "ranking_mode": query.ranking_mode,
     }
+    for key, value in (
+        ("min_magnitude", query.min_magnitude),
+        ("max_depth_km", query.max_depth_km),
+        ("tsunami", query.tsunami),
+        ("alert_type", query.alert_type),
+        ("min_confidence_rank", query.min_confidence_rank),
+        ("observation_period", query.observation_period),
+    ):
+        if value is not None:
+            identity[key] = value
+    return identity
 
 
 def _datetime_json(value: datetime) -> str:

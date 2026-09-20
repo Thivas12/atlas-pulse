@@ -155,12 +155,17 @@ def test_pack_and_evidence_ids_are_deterministic_and_sensitive_to_exact_snapshot
         query,
         budget=EvidencePackBudget(max_items=1),
     )
+    constrained = build_evidence_pack(
+        _result(first, second),
+        replace(query, min_magnitude=5, max_depth_km=70, tsunami=True),
+    )
 
     assert pack == repeated
     assert pack.pack_id == repeated.pack_id
     assert pack.pack_id.startswith("pack-") and len(pack.pack_id) == 69
     assert pack.pack_id != reordered.pack_id
     assert pack.pack_id != changed_budget.pack_id
+    assert pack.pack_id != constrained.pack_id
     ids = {item.event_id: item.evidence_id for item in pack.items}
     reordered_ids = {item.event_id: item.evidence_id for item in reordered.items}
     assert ids == reordered_ids

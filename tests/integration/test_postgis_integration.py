@@ -126,7 +126,12 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
                 source="usgs",
                 occurred_at=occurred,
                 location=GeoPoint(latitude=12.25, longitude=77.5, altitude_km=-10),
-                payload={"magnitude": 4.0, "title": "Original quake"},
+                payload={
+                    "magnitude": 4.0,
+                    "depth_km": 10.0,
+                    "tsunami": False,
+                    "title": "Original quake",
+                },
             ),
         ),
         StreamMessage(
@@ -136,7 +141,12 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
                 source="usgs",
                 occurred_at=occurred,
                 location=GeoPoint(latitude=12.3, longitude=77.6, altitude_km=-11),
-                payload={"magnitude": 5.0, "title": "Revised quake"},
+                payload={
+                    "magnitude": 5.0,
+                    "depth_km": 11.0,
+                    "tsunami": True,
+                    "title": "Revised quake",
+                },
             ),
         ),
         StreamMessage(
@@ -149,6 +159,7 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
                 payload={
                     "geometry": geometry,
                     "severity_rank": 3,
+                    "alert_type": "Tornado Warning",
                     "expires_at": "2099-01-01T00:00:00Z",
                     "title": "Active polygon alert",
                 },
@@ -194,6 +205,7 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
                     "confidence_rank": 3,
                     "fire_radiative_power_mw": 18.4,
                     "satellite": "N20",
+                    "day_night": "night",
                     "expires_at": "2099-01-01T00:00:00Z",
                     "title": "VIIRS thermal anomaly",
                 },
@@ -348,6 +360,67 @@ async def test_postgis_projection_is_durable_current_and_spatial() -> None:
         )
         assert [hit.message.event.event_id for hit in relaxed_lexical.hits] == ["day5-fire"]
         assert relaxed_lexical.hits[0].ranking.lexical_rank == 1
+
+        constrained_fire = await search.search(
+            SearchQuery(
+                text="satellite thermal anomaly",
+                limit=3,
+                candidate_limit=10,
+                source="firms",
+                min_confidence_rank=3,
+                observation_period="night",
+                ranking_mode="lexical",
+            )
+        )
+        assert [hit.message.event.event_id for hit in constrained_fire.hits] == ["day5-fire"]
+        daytime_fire = await search.search(
+            SearchQuery(
+                text="satellite thermal anomaly",
+                limit=3,
+                candidate_limit=10,
+                source="firms",
+                observation_period="day",
+                ranking_mode="lexical",
+            )
+        )
+        assert daytime_fire.hits == ()
+
+        constrained_quake = await search.search(
+            SearchQuery(
+                text="revised quake",
+                limit=3,
+                candidate_limit=10,
+                source="usgs",
+                min_magnitude=5,
+                max_depth_km=70,
+                tsunami=True,
+                ranking_mode="lexical",
+            )
+        )
+        assert [hit.message.event.event_id for hit in constrained_quake.hits] == ["day5-quake"]
+        stronger_quake = await search.search(
+            SearchQuery(
+                text="revised quake",
+                limit=3,
+                candidate_limit=10,
+                source="usgs",
+                min_magnitude=6,
+                ranking_mode="lexical",
+            )
+        )
+        assert stronger_quake.hits == ()
+
+        tornado = await search.search(
+            SearchQuery(
+                text="active polygon alert",
+                limit=3,
+                candidate_limit=10,
+                source="nws",
+                alert_type="tornado warning",
+                ranking_mode="lexical",
+            )
+        )
+        assert [hit.message.event.event_id for hit in tornado.hits] == ["day5-polygon"]
 
         conflict = await search.search(
             SearchQuery(

@@ -431,6 +431,12 @@ def test_query_contracts_validate_production_filters_and_unique_ids() -> None:
         radius_km=100,
         occurred_after=datetime(2026, 9, 1, tzinfo=UTC),
         occurred_before=NOW,
+        min_magnitude=5,
+        max_depth_km=70,
+        tsunami=True,
+        alert_type="  Tornado   Warning ",
+        min_confidence_rank=3,
+        observation_period="night",
     )
     query = EvaluationQuery(
         query_id="bounded-storm",
@@ -448,6 +454,12 @@ def test_query_contracts_validate_production_filters_and_unique_ids() -> None:
     assert query.slices == ("weather", "geo")
     assert production.ranking_mode == "dense"
     assert production.bounds is not None and production.near is not None
+    assert production.min_magnitude == 5
+    assert production.max_depth_km == 70
+    assert production.tsunami is True
+    assert production.alert_type == "Tornado Warning"
+    assert production.min_confidence_rank == 3
+    assert production.observation_period == "night"
 
     with pytest.raises(ValidationError, match="unique"):
         EvaluationQuerySet(
@@ -461,18 +473,33 @@ def test_query_contracts_validate_production_filters_and_unique_ids() -> None:
 
 
 def test_checked_in_live_query_set_is_valid_and_covers_every_source() -> None:
-    query_path = Path(__file__).parents[1] / "evals/retrieval/live-disruptions-v1.json"
-    query_set = EvaluationQuerySet.model_validate_json(query_path.read_text(encoding="utf-8"))
+    evaluation_root = Path(__file__).parents[1] / "evals/retrieval"
+    query_sets = tuple(
+        EvaluationQuerySet.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in (
+            evaluation_root / "live-disruptions-v1.json",
+            evaluation_root / "live-disruptions-v2.json",
+        )
+    )
 
-    assert len(query_set.queries) == 15
-    assert query_set.modes == ("lexical", "dense", "rrf", "hybrid")
-    assert {query.filters.source for query in query_set.queries} >= {
-        "usgs",
-        "nws",
-        "firms",
-        "gdelt",
-        None,
-    }
+    for query_set in query_sets:
+        assert len(query_set.queries) == 15
+        assert query_set.modes == ("lexical", "dense", "rrf", "hybrid")
+        assert {query.filters.source for query in query_set.queries} >= {
+            "usgs",
+            "nws",
+            "firms",
+            "gdelt",
+            None,
+        }
+    v2 = query_sets[1]
+    filters = {query.query_id: query.filters for query in v2.queries}
+    assert filters["usgs-strong-shallow-quake"].min_magnitude == 5
+    assert filters["usgs-strong-shallow-quake"].max_depth_km == 70
+    assert filters["usgs-tsunami-concern"].tsunami is True
+    assert filters["nws-tornado-shelter"].alert_type == "Tornado Warning"
+    assert filters["firms-high-confidence-heat"].min_confidence_rank == 3
+    assert filters["firms-night-hotspots"].observation_period == "night"
 
 
 def test_rank_blind_sheet_round_trip_protects_metadata_and_requires_completeness() -> None:
@@ -641,11 +668,23 @@ async def test_capture_pools_live_modes_and_sends_exact_production_filters() -> 
         observed_modes.append(mode)
         assert request.url.params["source"] == "nws"
         assert request.url.params["active_only"] == "false"
+        assert request.url.params["min_magnitude"] == "5.0"
+        assert request.url.params["max_depth_km"] == "70.0"
+        assert request.url.params["tsunami"] == "true"
+        assert request.url.params["alert_type"] == "Tornado Warning"
+        assert request.url.params["min_confidence_rank"] == "3"
+        assert request.url.params["observation_period"] == "night"
         event_id = "shared" if mode == "lexical" else "dense-only"
-        return httpx.Response(
-            200,
-            json=search_payload(mode, event_id=event_id, document_text=f"Evidence {event_id}"),
+        payload = search_payload(mode, event_id=event_id, document_text=f"Evidence {event_id}")
+        payload["parameters"].update(
+            min_magnitude=5,
+            max_depth_km=70,
+            tsunami=True,
+            alert_type="Tornado Warning",
+            min_confidence_rank=3,
+            observation_period="night",
         )
+        return httpx.Response(200, json=payload)
 
     query_set = EvaluationQuerySet(
         query_set_id="live-disruptions.v1",
@@ -653,7 +692,22 @@ async def test_capture_pools_live_modes_and_sends_exact_production_filters() -> 
         description="Operator-shaped queries over current public disruption feeds.",
         pool_depth=2,
         modes=("lexical", "dense"),
-        queries=(evaluation_query(),),
+        queries=(
+            evaluation_query().model_copy(
+                update={
+                    "filters": EvaluationFilters(
+                        source="nws",
+                        active_only=False,
+                        min_magnitude=5,
+                        max_depth_km=70,
+                        tsunami=True,
+                        alert_type="Tornado Warning",
+                        min_confidence_rank=3,
+                        observation_period="night",
+                    )
+                }
+            ),
+        ),
     )
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler),

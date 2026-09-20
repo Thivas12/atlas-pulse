@@ -17,8 +17,9 @@ dual-channel candidate contract:
 | `rrf` | `rrf60-v1` | Reciprocal Rank Fusion with `k=60` |
 | `hybrid` | `rrf60-evidence-tiebreak-v2` | RRF with exact-phrase/token coverage only for ties |
 
-All modes preserve identical source, time, expiry, bounding-box, radius, candidate-cap, model,
-and citation boundaries. Lexical and dense ablations select only candidates returned by their
+All modes preserve identical source, time, expiry, bounding-box, radius, source-native structured
+constraints, candidate-cap, model, and citation boundaries. Lexical and dense ablations select
+only candidates returned by their
 channel. RRF and hybrid use their union. Raw FTS and cosine scores are never treated as if they
 shared a calibrated scale. The reviewed v1 baseline showed that the original all-term lexical
 query returned no candidates and that additive hand-selected reranking weights reduced quality.
@@ -27,9 +28,10 @@ recover lexical candidates before considering a cross-encoder.
 
 ## Evidence workflow
 
-The checked-in `evals/retrieval/live-disruptions-v1.json` query set spans all four live sources,
-cross-source operator intents, exact and paraphrased language, safety/impact categories, and
-geospatial filters. Each capture:
+The checked-in `evals/retrieval/live-disruptions-v2.json` query set spans all four live sources,
+cross-source operator intents, exact and paraphrased language, safety/impact categories,
+geospatial filters, and explicit source-native constraints. The v1 definition remains frozen as
+the historical unconstrained baseline. Each capture:
 
 1. validates every case through the production `SearchQuery` contract;
 2. queries each configured ranking mode and records rule/model identity and observed latency;
@@ -65,6 +67,35 @@ metadata leaves the new grade blank.
 The relevance scale is graded `0..3`: irrelevant, weakly related, useful, and direct/actionable.
 Citation status is excluded from relevance judgment and scored independently. See the exact
 rubric and commands in [`evals/retrieval/README.md`](../evals/retrieval/README.md).
+
+## Explicit source-native constraints
+
+Free-text similarity is not a reliable way to enforce a numeric threshold, boolean flag, or exact
+upstream classification. `SearchQuery` therefore exposes a small typed constraint vocabulary that
+maps directly to normalized source payload fields:
+
+| Search constraint | Normalized payload field | Semantics |
+| --- | --- | --- |
+| `min_magnitude` | USGS `magnitude` | Numeric lower bound |
+| `max_depth_km` | USGS `depth_km` | Non-negative numeric upper bound |
+| `tsunami` | USGS `tsunami` | Exact boolean match |
+| `alert_type` | NWS `alert_type` | Exact case-insensitive label match |
+| `min_confidence_rank` | FIRMS `confidence_rank` | Integer lower bound from 1 through 3 |
+| `observation_period` | FIRMS `day_night` | Exact `day` or `night` match |
+
+The predicates run inside the shared PostgreSQL candidate query before lexical or dense ranking,
+so all four modes receive the same eligible corpus. They are echoed by search, evidence-pack, and
+preflight responses and enter constrained evidence-pack identities. AtlasPulse does not parse
+query prose to activate them and does not treat a missing payload field as a match.
+
+The v2 query set applies these constraints only where the information need states the condition:
+strong/shallow USGS events, tsunami-flagged USGS events, NWS tornado warnings, high-confidence
+FIRMS observations, and nighttime FIRMS observations. Because those definitions differ from v1,
+v2 starts a new reviewed baseline and must not be passed to `compare` or `campaign` as though it
+were a longitudinal capture of v1. Empty FIRMS results still require a separate ingestion and
+index-freshness check; a filter cannot create source records that were never captured.
+[ADR 0037](adr/0037-explicit-typed-retrieval-constraints.md) records this boundary and the rejected
+alternatives.
 
 ## Independent review and adjudication
 
@@ -184,6 +215,8 @@ uv run atlas-pulse-evaluate campaign \
   duplicate judgments and third-person disagreement adjudication.
 - Candidate coverage proves only that a mode returned something; it does not prove an eligible
   corpus existed or that an empty result had no relevant evidence upstream.
+- Structured constraints enforce only normalized payload values. They do not establish source
+  truth, infer unstated intent, or repair absent source ingestion.
 - Metrics evaluate retrieval, not answer faithfulness, claim entailment, agent decisions, or
   real-world impact. Those require separate versioned datasets before generation is adopted.
 

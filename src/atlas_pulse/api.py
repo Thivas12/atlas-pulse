@@ -74,6 +74,7 @@ from atlas_pulse.relationships import (
 from atlas_pulse.retrieval import (
     CitationValidation,
     GeoRadius,
+    ObservationPeriod,
     RankingExplanation,
     RankingMode,
     SearchQuery,
@@ -316,6 +317,14 @@ class SearchParametersResponse(BaseModel):
     bbox: tuple[float, float, float, float] | None
     near: tuple[float, float] | None
     radius_km: float | None
+    min_magnitude: float | None = Field(default=None, exclude_if=lambda value: value is None)
+    max_depth_km: float | None = Field(default=None, exclude_if=lambda value: value is None)
+    tsunami: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    alert_type: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    min_confidence_rank: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    observation_period: ObservationPeriod | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     ranking_mode: RankingMode
 
 
@@ -974,6 +983,12 @@ def _search_query_from_request(
     near: str | None,
     radius_km: float,
     active_only: bool,
+    min_magnitude: float | None,
+    max_depth_km: float | None,
+    tsunami: bool | None,
+    alert_type: str | None,
+    min_confidence_rank: int | None,
+    observation_period: ObservationPeriod | None,
     ranking_mode: RankingMode,
 ) -> SearchQuery:
     _validate_time_window(occurred_after, occurred_before)
@@ -988,6 +1003,12 @@ def _search_query_from_request(
             bounds=_bounds_from_query(bbox),
             near=_near_from_query(near, radius_km),
             active_only=active_only,
+            min_magnitude=min_magnitude,
+            max_depth_km=max_depth_km,
+            tsunami=tsunami,
+            alert_type=alert_type,
+            min_confidence_rank=min_confidence_rank,
+            observation_period=observation_period,
             ranking_mode=ranking_mode,
         )
     except ValueError as error:
@@ -1044,6 +1065,12 @@ def _search_parameters_response(query: SearchQuery) -> SearchParametersResponse:
         bbox=(bounds.west, bounds.south, bounds.east, bounds.north) if bounds else None,
         near=(near.longitude, near.latitude) if near else None,
         radius_km=near.radius_km if near else None,
+        min_magnitude=query.min_magnitude,
+        max_depth_km=query.max_depth_km,
+        tsunami=query.tsunami,
+        alert_type=query.alert_type,
+        min_confidence_rank=query.min_confidence_rank,
+        observation_period=query.observation_period,
         ranking_mode=query.ranking_mode,
     )
 
@@ -1549,6 +1576,12 @@ def create_app(
         ),
         radius_km: float = Query(default=250.0, gt=0, le=2_000),
         active_only: bool = Query(default=True),
+        min_magnitude: float | None = Query(default=None, allow_inf_nan=False),
+        max_depth_km: float | None = Query(default=None, ge=0, allow_inf_nan=False),
+        tsunami: bool | None = None,
+        alert_type: str | None = Query(default=None, min_length=1, max_length=200),
+        min_confidence_rank: int | None = Query(default=None, ge=1, le=3),
+        observation_period: ObservationPeriod | None = None,
         ranking_mode: RankingMode = "hybrid",
     ) -> SearchResponse:
         if search_service is None:
@@ -1567,6 +1600,12 @@ def create_app(
             near=near,
             radius_km=radius_km,
             active_only=active_only,
+            min_magnitude=min_magnitude,
+            max_depth_km=max_depth_km,
+            tsunami=tsunami,
+            alert_type=alert_type,
+            min_confidence_rank=min_confidence_rank,
+            observation_period=observation_period,
             ranking_mode=ranking_mode,
         )
         return _search_response(await search_service.search(query), query)
@@ -1596,6 +1635,12 @@ def create_app(
         ),
         radius_km: float = Query(default=250.0, gt=0, le=2_000),
         active_only: bool = Query(default=True),
+        min_magnitude: float | None = Query(default=None, allow_inf_nan=False),
+        max_depth_km: float | None = Query(default=None, ge=0, allow_inf_nan=False),
+        tsunami: bool | None = None,
+        alert_type: str | None = Query(default=None, min_length=1, max_length=200),
+        min_confidence_rank: int | None = Query(default=None, ge=1, le=3),
+        observation_period: ObservationPeriod | None = None,
         ranking_mode: RankingMode = "hybrid",
     ) -> EvidencePackResponse:
         if search_service is None:
@@ -1614,6 +1659,12 @@ def create_app(
             near=near,
             radius_km=radius_km,
             active_only=active_only,
+            min_magnitude=min_magnitude,
+            max_depth_km=max_depth_km,
+            tsunami=tsunami,
+            alert_type=alert_type,
+            min_confidence_rank=min_confidence_rank,
+            observation_period=observation_period,
             ranking_mode=ranking_mode,
         )
         budget = EvidencePackBudget(
@@ -1654,6 +1705,12 @@ def create_app(
         ),
         radius_km: float = Query(default=250.0, gt=0, le=2_000),
         active_only: bool = Query(default=True),
+        min_magnitude: float | None = Query(default=None, allow_inf_nan=False),
+        max_depth_km: float | None = Query(default=None, ge=0, allow_inf_nan=False),
+        tsunami: bool | None = None,
+        alert_type: str | None = Query(default=None, min_length=1, max_length=200),
+        min_confidence_rank: int | None = Query(default=None, ge=1, le=3),
+        observation_period: ObservationPeriod | None = None,
         ranking_mode: RankingMode = "hybrid",
     ) -> AgentRunPreflightResponse:
         if search_service is None:
@@ -1672,6 +1729,12 @@ def create_app(
             near=near,
             radius_km=radius_km,
             active_only=active_only,
+            min_magnitude=min_magnitude,
+            max_depth_km=max_depth_km,
+            tsunami=tsunami,
+            alert_type=alert_type,
+            min_confidence_rank=min_confidence_rank,
+            observation_period=observation_period,
             ranking_mode=ranking_mode,
         )
         budget = EvidencePackBudget(

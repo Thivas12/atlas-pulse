@@ -734,6 +734,12 @@ async def test_search_returns_typed_rank_evidence_and_all_reproducibility_parame
         "near": "-97,35",
         "radius_km": 100,
         "active_only": "false",
+        "min_magnitude": 5,
+        "max_depth_km": 70,
+        "tsunami": "true",
+        "alert_type": "  Tornado   Warning ",
+        "min_confidence_rank": 3,
+        "observation_period": "night",
         "ranking_mode": "rrf",
     }
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -769,6 +775,12 @@ async def test_search_returns_typed_rank_evidence_and_all_reproducibility_parame
         "bbox": [-100, 30, -90, 40],
         "near": [-97, 35],
         "radius_km": 100,
+        "min_magnitude": 5,
+        "max_depth_km": 70,
+        "tsunami": True,
+        "alert_type": "Tornado Warning",
+        "min_confidence_rank": 3,
+        "observation_period": "night",
         "ranking_mode": "rrf",
     }
     assert search.query is not None
@@ -776,6 +788,8 @@ async def test_search_returns_typed_rank_evidence_and_all_reproducibility_parame
     assert search.query.near.longitude == -97
     assert search.query.bounds is not None
     assert search.query.ranking_mode == "rrf"
+    assert search.query.alert_type == "Tornado Warning"
+    assert search.query.observation_period == "night"
 
 
 async def test_search_requires_an_index_and_readiness_reports_index_failure() -> None:
@@ -862,6 +876,7 @@ async def test_evidence_pack_returns_bounded_content_addressed_agent_handoff() -
         "max_total_characters": 12,
         "source": "nws",
         "bbox": "-100,30,-90,40",
+        "alert_type": "Severe Thunderstorm Warning",
     }
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/v1/evidence-packs", params=params)
@@ -923,11 +938,13 @@ async def test_evidence_pack_returns_bounded_content_addressed_agent_handoff() -
             "bbox": [-100.0, 30.0, -90.0, 40.0],
             "near": None,
             "radius_km": None,
+            "alert_type": "Severe Thunderstorm Warning",
             "ranking_mode": "hybrid",
         },
     }
     assert search.query is not None
     assert search.query.limit == 5
+    assert search.query.alert_type == "Severe Thunderstorm Warning"
 
 
 async def test_agent_run_preflight_chains_pack_and_manifest_without_executing() -> None:
@@ -1148,6 +1165,9 @@ async def test_agent_run_preflight_fails_closed_when_approval_ledger_is_unavaila
         {"q": "earthquake", "max_characters_per_item": 8_001},
         {"q": "earthquake", "max_total_characters": 64_001},
         {"q": "earthquake", "near": "181,1"},
+        {"q": "earthquake", "max_depth_km": -1},
+        {"q": "earthquake", "min_confidence_rank": 4},
+        {"q": "earthquake", "observation_period": "dusk"},
     ],
 )
 async def test_evidence_pack_rejects_invalid_budgets_and_filters(
@@ -1172,6 +1192,9 @@ async def test_evidence_pack_rejects_invalid_budgets_and_filters(
         {"q": "earthquake", "near": "181,1"},
         {"q": "earthquake", "bbox": "20,-5,-10,30"},
         {"q": "earthquake", "ranking_mode": "unknown"},
+        {"q": "earthquake", "max_depth_km": -1},
+        {"q": "earthquake", "min_confidence_rank": 4},
+        {"q": "earthquake", "observation_period": "dusk"},
         {"q": "earthquake", "occurred_after": "2026-09-01T00:00:00"},
         {
             "q": "earthquake",

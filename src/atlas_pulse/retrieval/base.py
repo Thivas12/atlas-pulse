@@ -12,6 +12,7 @@ from atlas_pulse.streams import StreamMessage
 Embedding = tuple[float, ...]
 CitationStatus = Literal["traceable", "missing", "rejected"]
 RankingMode = Literal["lexical", "dense", "rrf", "hybrid"]
+ObservationPeriod = Literal["day", "night"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +36,7 @@ class GeoRadius:
 
 @dataclass(frozen=True, slots=True)
 class SearchQuery:
-    """Validated semantic, temporal, and geospatial retrieval request."""
+    """Validated semantic, temporal, geospatial, and structured retrieval request."""
 
     text: str
     limit: int = 10
@@ -46,6 +47,12 @@ class SearchQuery:
     bounds: GeoBounds | None = None
     near: GeoRadius | None = None
     active_only: bool = True
+    min_magnitude: float | None = None
+    max_depth_km: float | None = None
+    tsunami: bool | None = None
+    alert_type: str | None = None
+    min_confidence_rank: int | None = None
+    observation_period: ObservationPeriod | None = None
     ranking_mode: RankingMode = "hybrid"
 
     def __post_init__(self) -> None:
@@ -56,8 +63,8 @@ class SearchQuery:
             raise ValueError("limit must be between 1 and 50")
         if not self.limit <= self.candidate_limit <= 200:
             raise ValueError("candidate_limit must be between limit and 200")
-        for value in (self.occurred_after, self.occurred_before):
-            if value is not None and value.tzinfo is None:
+        for timestamp in (self.occurred_after, self.occurred_before):
+            if timestamp is not None and timestamp.tzinfo is None:
                 raise ValueError("time filters must include a UTC offset")
         if (
             self.occurred_after is not None
@@ -67,7 +74,35 @@ class SearchQuery:
             raise ValueError("occurred_after must not be later than occurred_before")
         if self.ranking_mode not in {"lexical", "dense", "rrf", "hybrid"}:
             raise ValueError("ranking_mode must be lexical, dense, rrf, or hybrid")
+        for field, numeric_value in (
+            ("min_magnitude", self.min_magnitude),
+            ("max_depth_km", self.max_depth_km),
+        ):
+            if numeric_value is not None and (
+                isinstance(numeric_value, bool)
+                or not isinstance(numeric_value, int | float)
+                or not isfinite(numeric_value)
+            ):
+                raise ValueError(f"{field} must be a finite number")
+        if self.max_depth_km is not None and self.max_depth_km < 0:
+            raise ValueError("max_depth_km must be non-negative")
+        if self.tsunami is not None and not isinstance(self.tsunami, bool):
+            raise ValueError("tsunami must be a boolean")
+        if self.min_confidence_rank is not None and (
+            isinstance(self.min_confidence_rank, bool)
+            or not isinstance(self.min_confidence_rank, int)
+            or not 1 <= self.min_confidence_rank <= 3
+        ):
+            raise ValueError("min_confidence_rank must be between 1 and 3")
+        if self.observation_period not in {None, "day", "night"}:
+            raise ValueError("observation_period must be day or night")
+        normalized_alert_type: str | None = None
+        if self.alert_type is not None:
+            normalized_alert_type = " ".join(self.alert_type.split())
+            if not 1 <= len(normalized_alert_type) <= 200:
+                raise ValueError("alert_type must contain between 1 and 200 characters")
         object.__setattr__(self, "text", normalized)
+        object.__setattr__(self, "alert_type", normalized_alert_type)
 
 
 @dataclass(frozen=True, slots=True)

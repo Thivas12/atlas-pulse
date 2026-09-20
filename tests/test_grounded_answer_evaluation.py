@@ -177,9 +177,23 @@ def _capture_client(
     mutate: Callable[[dict[str, object]], None] | None = None,
 ) -> httpx.AsyncClient:
     packs = {query.question: _pack(benchmark, query) for query in benchmark.queries}
+    queries = {query.question: query for query in benchmark.queries}
 
     def handler(request: httpx.Request) -> httpx.Response:
         question = request.url.params["q"]
+        filters = queries[question].filters
+        optional_parameters = {
+            "min_magnitude": filters.min_magnitude,
+            "max_depth_km": filters.max_depth_km,
+            "alert_type": filters.alert_type,
+            "min_confidence_rank": filters.min_confidence_rank,
+            "observation_period": filters.observation_period,
+        }
+        for key, value in optional_parameters.items():
+            if value is not None:
+                assert request.url.params[key] == str(value)
+        if filters.tsunami is not None:
+            assert request.url.params["tsunami"] == str(filters.tsunami).lower()
         response = api._evidence_pack_response(packs[question]).model_dump(mode="json")
         if mutate is not None:
             mutate(response)
@@ -1527,6 +1541,7 @@ def test_capture_preserves_temporal_bbox_and_radius_filters() -> None:
                     "occurred_before": datetime(2026, 9, 15, tzinfo=UTC),
                     "active_only": False,
                     "bbox": (-125.0, 24.0, -66.0, 50.0),
+                    "alert_type": "Tornado Warning",
                 },
             ),
             GroundedAnswerQuery(
@@ -1537,6 +1552,8 @@ def test_capture_preserves_temporal_bbox_and_radius_filters() -> None:
                     "active_only": False,
                     "near": (-118.25, 34.05),
                     "radius_km": 75.0,
+                    "min_confidence_rank": 3,
+                    "observation_period": "night",
                 },
             ),
         ),

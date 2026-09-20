@@ -90,6 +90,25 @@ export interface HybridSearchQuery {
   query: string;
   source?: "usgs" | "nws" | "firms" | "gdelt";
   bounds?: ViewportBounds;
+  minMagnitude?: number;
+  maxDepthKm?: number;
+  tsunami?: boolean;
+  alertType?: string;
+  minConfidenceRank?: 1 | 2 | 3;
+  observationPeriod?: "day" | "night";
+}
+
+function appendStructuredSearchFilters(search: URLSearchParams, query: HybridSearchQuery): void {
+  if (query.minMagnitude !== undefined) search.set("min_magnitude", String(query.minMagnitude));
+  if (query.maxDepthKm !== undefined) search.set("max_depth_km", String(query.maxDepthKm));
+  if (query.tsunami !== undefined) search.set("tsunami", String(query.tsunami));
+  if (query.alertType !== undefined) search.set("alert_type", query.alertType);
+  if (query.minConfidenceRank !== undefined) {
+    search.set("min_confidence_rank", String(query.minConfidenceRank));
+  }
+  if (query.observationPeriod !== undefined) {
+    search.set("observation_period", query.observationPeriod);
+  }
 }
 
 export function fetchHybridSearch(
@@ -107,6 +126,7 @@ export function fetchHybridSearch(
     const { west, south, east, north } = query.bounds;
     search.set("bbox", [west, south, east, north].join(","));
   }
+  appendStructuredSearchFilters(search, query);
   return fetchValidated(`/api/v1/search?${search}`, searchResponseSchema, signal);
 }
 
@@ -128,6 +148,7 @@ export function fetchEvidencePack(
     const { west, south, east, north } = query.bounds;
     search.set("bbox", [west, south, east, north].join(","));
   }
+  appendStructuredSearchFilters(search, query);
   return fetchValidated(`/api/v1/evidence-packs?${search}`, evidencePackResponseSchema, signal);
 }
 
@@ -149,6 +170,7 @@ export function fetchAgentRunPreflight(
     const { west, south, east, north } = query.bounds;
     search.set("bbox", [west, south, east, north].join(","));
   }
+  appendStructuredSearchFilters(search, query);
   return fetchValidated(
     `/api/v1/agent-runs/preflight?${search}`,
     agentRunPreflightResponseSchema,

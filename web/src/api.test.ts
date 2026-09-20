@@ -246,6 +246,7 @@ describe("AtlasPulse API client", () => {
         bbox: [-10, -5, 20, 30] as [number, number, number, number],
         near: null,
         radius_km: null,
+        alert_type: "Tornado Warning",
         ranking_mode: "hybrid" as const,
       },
     };
@@ -257,10 +258,11 @@ describe("AtlasPulse API client", () => {
         query: "dangerous storm",
         source: "nws",
         bounds: { west: -10, south: -5, east: 20, north: 30 },
+        alertType: "Tornado Warning",
       }),
     ).resolves.toEqual(body);
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/v1/search?q=dangerous+storm&limit=20&candidate_limit=100&active_only=true&source=nws&bbox=-10%2C-5%2C20%2C30",
+      "/api/v1/search?q=dangerous+storm&limit=20&candidate_limit=100&active_only=true&source=nws&bbox=-10%2C-5%2C20%2C30&alert_type=Tornado+Warning",
       expect.any(Object),
     );
   });

@@ -151,6 +151,18 @@ def _query_parameters(
     if filters.near is not None:
         parameters["near"] = ",".join(format(value, "g") for value in filters.near)
         parameters["radius_km"] = filters.radius_km
+    if filters.min_magnitude is not None:
+        parameters["min_magnitude"] = filters.min_magnitude
+    if filters.max_depth_km is not None:
+        parameters["max_depth_km"] = filters.max_depth_km
+    if filters.tsunami is not None:
+        parameters["tsunami"] = str(filters.tsunami).lower()
+    if filters.alert_type is not None:
+        parameters["alert_type"] = filters.alert_type
+    if filters.min_confidence_rank is not None:
+        parameters["min_confidence_rank"] = filters.min_confidence_rank
+    if filters.observation_period is not None:
+        parameters["observation_period"] = filters.observation_period
     return parameters
 
 
@@ -202,6 +214,12 @@ def _expected_parameters(
         bbox=(bounds.west, bounds.south, bounds.east, bounds.north) if bounds else None,
         near=(near.longitude, near.latitude) if near else None,
         radius_km=near.radius_km if near else None,
+        min_magnitude=production.min_magnitude,
+        max_depth_km=production.max_depth_km,
+        tsunami=production.tsunami,
+        alert_type=production.alert_type,
+        min_confidence_rank=production.min_confidence_rank,
+        observation_period=production.observation_period,
         ranking_mode=production.ranking_mode,
     )
 

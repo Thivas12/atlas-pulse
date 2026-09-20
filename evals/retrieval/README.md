@@ -1,9 +1,15 @@
 # Retrieval judgment assets
 
-`live-disruptions-v1.json` is a versioned set of evergreen, operator-shaped information needs.
-It covers all four public sources, exact and paraphrased language, cross-source intents, impact
-types, and spatial filters. It contains queries—not relevance answers—so a changing live corpus
-cannot masquerade as a frozen quality claim.
+`live-disruptions-v2.json` is the current versioned set of evergreen, operator-shaped information
+needs. It covers all four public sources, exact and paraphrased language, cross-source intents,
+impact types, spatial filters, and explicit source-native conditions. `live-disruptions-v1.json`
+remains frozen as the historical unconstrained baseline. These files contain queries—not relevance
+answers—so a changing live corpus cannot masquerade as a frozen quality claim.
+
+V2 uses typed filters when prose alone cannot enforce an eligibility condition: USGS magnitude,
+depth, and tsunami flag; NWS alert type; and FIRMS confidence rank and day/night period. Retrieval
+applies each predicate before every ranking mode. V2 is a new benchmark definition, so its captures
+must receive new judgments and cannot be compared to v1 with the longitudinal comparison command.
 
 Generated pools, review sheets, reports, and policies belong under `artifacts/evaluation/`, which
 Git ignores. Promote an artifact into this directory only after review, with its reviewer,
@@ -33,7 +39,7 @@ Run the deployed API locally, then capture all four ablations into one pool and 
 ```bash
 mkdir -p artifacts/evaluation
 uv run atlas-pulse-evaluate capture \
-  --queries evals/retrieval/live-disruptions-v1.json \
+  --queries evals/retrieval/live-disruptions-v2.json \
   --base-url http://localhost:8000 \
   --output artifacts/evaluation/pool.json \
   --judgments-output artifacts/evaluation/judgments.csv
@@ -51,7 +57,7 @@ reviewed baseline:
 
 ```bash
 uv run atlas-pulse-evaluate capture \
-  --queries evals/retrieval/live-disruptions-v1.json \
+  --queries evals/retrieval/live-disruptions-v2.json \
   --base-url http://localhost:8000 \
   --output artifacts/evaluation/candidate-pool.json \
   --judgments-output artifacts/evaluation/candidate-judgments.csv \

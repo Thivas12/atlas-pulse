@@ -230,6 +230,44 @@ class PostgresRetrievalStore:
             parameters["occurred_before"] = query.occurred_before
         if query.active_only:
             conditions.append("(expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)")
+        if query.min_magnitude is not None:
+            conditions.append(
+                "(CASE WHEN jsonb_typeof(event_json -> 'payload' -> 'magnitude') = 'number' "
+                "THEN (event_json -> 'payload' ->> 'magnitude')::double precision END "
+                ">= :min_magnitude)"
+            )
+            parameters["min_magnitude"] = query.min_magnitude
+        if query.max_depth_km is not None:
+            conditions.append(
+                "(CASE WHEN jsonb_typeof(event_json -> 'payload' -> 'depth_km') = 'number' "
+                "THEN (event_json -> 'payload' ->> 'depth_km')::double precision END "
+                "<= :max_depth_km)"
+            )
+            parameters["max_depth_km"] = query.max_depth_km
+        if query.tsunami is not None:
+            conditions.append(
+                "event_json -> 'payload' -> 'tsunami' = to_jsonb(CAST(:tsunami AS boolean))"
+            )
+            parameters["tsunami"] = query.tsunami
+        if query.alert_type is not None:
+            conditions.append(
+                "(jsonb_typeof(event_json -> 'payload' -> 'alert_type') = 'string' "
+                "AND lower(event_json -> 'payload' ->> 'alert_type') = :alert_type)"
+            )
+            parameters["alert_type"] = query.alert_type.lower()
+        if query.min_confidence_rank is not None:
+            conditions.append(
+                "(CASE WHEN jsonb_typeof(event_json -> 'payload' -> 'confidence_rank') = 'number' "
+                "THEN (event_json -> 'payload' ->> 'confidence_rank')::double precision END "
+                ">= :min_confidence_rank)"
+            )
+            parameters["min_confidence_rank"] = query.min_confidence_rank
+        if query.observation_period is not None:
+            conditions.append(
+                "(jsonb_typeof(event_json -> 'payload' -> 'day_night') = 'string' "
+                "AND event_json -> 'payload' ->> 'day_night' = :observation_period)"
+            )
+            parameters["observation_period"] = query.observation_period
         geometry = "COALESCE(footprint, point)"
         if query.bounds is not None:
             conditions.append(

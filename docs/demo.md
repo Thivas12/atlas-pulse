@@ -164,7 +164,7 @@ uv run atlas-pulse-evaluate --help
 uv run atlas-pulse-evaluate-relationships --help
 uv run atlas-pulse-evaluate-agent-trajectories --help
 jq '{query_set_id, pool_depth, modes, query_count: (.queries | length)}' \
-  evals/retrieval/live-disruptions-v1.json
+  evals/retrieval/live-disruptions-v2.json
 jq '{benchmark_id, predicates, max_edges_per_source_pair, parameters}' \
   evals/relationships/live-claim-pairs-v1.json
 ```

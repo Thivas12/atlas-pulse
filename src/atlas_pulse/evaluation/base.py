@@ -8,7 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from atlas_pulse.projections import GeoBounds
 from atlas_pulse.projections.base import SourceName
-from atlas_pulse.retrieval import CitationStatus, GeoRadius, RankingMode, SearchQuery
+from atlas_pulse.retrieval import (
+    CitationStatus,
+    GeoRadius,
+    ObservationPeriod,
+    RankingMode,
+    SearchQuery,
+)
 
 SchemaVersion = Literal["1.0.0"]
 CandidatePoolSchemaVersion = Literal["1.0.0", "1.1.0"]
@@ -44,6 +50,22 @@ class EvaluationFilters(StrictModel):
     bbox: tuple[float, float, float, float] | None = None
     near: tuple[float, float] | None = None
     radius_km: float = Field(default=250.0, gt=0, le=2_000)
+    min_magnitude: float | None = Field(default=None, allow_inf_nan=False)
+    max_depth_km: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    tsunami: bool | None = None
+    alert_type: str | None = Field(default=None, min_length=1, max_length=200)
+    min_confidence_rank: int | None = Field(default=None, ge=1, le=3)
+    observation_period: ObservationPeriod | None = None
+
+    @field_validator("alert_type")
+    @classmethod
+    def normalize_alert_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("alert_type must not be blank")
+        return normalized
 
     @model_validator(mode="after")
     def validate_search_filters(self) -> "EvaluationFilters":
@@ -62,6 +84,12 @@ class EvaluationFilters(StrictModel):
             active_only=self.active_only,
             bounds=bounds,
             near=near,
+            min_magnitude=self.min_magnitude,
+            max_depth_km=self.max_depth_km,
+            tsunami=self.tsunami,
+            alert_type=self.alert_type,
+            min_confidence_rank=self.min_confidence_rank,
+            observation_period=self.observation_period,
         )
         return self
 
@@ -92,6 +120,12 @@ class EvaluationFilters(StrictModel):
                 if self.near is not None
                 else None
             ),
+            min_magnitude=self.min_magnitude,
+            max_depth_km=self.max_depth_km,
+            tsunami=self.tsunami,
+            alert_type=self.alert_type,
+            min_confidence_rank=self.min_confidence_rank,
+            observation_period=self.observation_period,
             ranking_mode=ranking_mode,
         )
 

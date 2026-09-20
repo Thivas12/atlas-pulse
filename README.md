@@ -26,8 +26,9 @@ component can run without a paid API key.
 > transactionally projects every revision, current event pointer, and its checkpoint into
 > PostGIS. A bounded query-time correlation engine measures cross-source spatial and temporal
 > co-occurrence. A separate restart-safe worker renders and locally embeds current evidence into
-> PostgreSQL full-text search plus pgvector. `/v1/search` applies the same source, time, expiry, and
-> PostGIS filters to both channels, fuses ranks with RRF, applies evidence-only tie-breaks, validates
+> PostgreSQL full-text search plus pgvector. `/v1/search` applies the same source, time, expiry,
+> PostGIS, and source-native typed filters to both channels, fuses ranks with RRF, applies
+> evidence-only tie-breaks, validates
 > credential-safe citations, and exposes every score in the dashboard. A pooled, rank-blind human
 > judgment workflow compares lexical, dense, RRF, and hybrid modes with standard IR metrics,
 > source/intent slices, content-addressed reports, and explicit regression gates. Two exact
@@ -305,6 +306,11 @@ curl -s 'http://localhost:8000/v1/incidents?bbox=-120,30,-110,40&radius_km=50'
 curl -s --get 'http://localhost:8000/v1/search' \
   --data-urlencode 'q=residents ordered to shelter from a dangerous storm' \
   --data-urlencode 'bbox=-125,24,-66,50'
+curl -s --get 'http://localhost:8000/v1/search' \
+  --data-urlencode 'q=strong shallow earthquake' \
+  --data-urlencode 'source=usgs' \
+  --data-urlencode 'min_magnitude=5' \
+  --data-urlencode 'max_depth_km=70'
 curl -s --get 'http://localhost:8000/v1/evidence-packs' \
   --data-urlencode 'q=residents ordered to shelter from a dangerous storm' \
   --data-urlencode 'bbox=-125,24,-66,50'
@@ -355,7 +361,7 @@ operator query set, grade the separate rank-blind CSV, and score its content-add
 ```bash
 mkdir -p artifacts/evaluation
 uv run atlas-pulse-evaluate capture \
-  --queries evals/retrieval/live-disruptions-v1.json \
+  --queries evals/retrieval/live-disruptions-v2.json \
   --base-url http://localhost:8000 \
   --output artifacts/evaluation/pool.json \
   --judgments-output artifacts/evaluation/judgments.csv
@@ -524,6 +530,10 @@ shared real-world incident.
 English full-text search. It accepts `source`, aware `occurred_after`/`occurred_before`,
 `active_only`, `bbox`, a `near=longitude,latitude` plus `radius_km` filter, and
 `ranking_mode=lexical|dense|rrf|hybrid` (default `hybrid`). Both channels use the same predicates.
+Source-native constraints are also explicit: `min_magnitude`, `max_depth_km`, `tsunami`, exact
+case-insensitive `alert_type`, `min_confidence_rank`, and `observation_period=day|night`. The API
+does not infer these constraints from query prose; callers opt into each one and receive it back in
+the reproducibility parameters.
 Each channel retrieves at most `candidate_limit` rows (default 50, maximum 200), Reciprocal Rank
 Fusion combines their ranks with `k=60`, and exact-phrase/token-coverage evidence breaks only
 exact fused-score ties. The lexical channel uses a bounded any-term English query so one missing
@@ -721,7 +731,9 @@ gate, and
 pseudonymous shared quotas, fail-closed enforcement, and the remaining distributed-denial boundary,
 and [ADR 0036](docs/adr/0036-retrieval-independent-review-adjudication.md) for exact duplicate
 retrieval reviews, agreement measurement, reviewer-blind disagreement resolution, and final gold
-provenance.
+provenance, and
+[ADR 0037](docs/adr/0037-explicit-typed-retrieval-constraints.md) for source-native eligibility
+filters, shared-mode predicate parity, and the frozen v2 evaluation boundary.
 A repository-level [security policy](SECURITY.md) and versioned
 [threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current
 controls, residual risks, and owner-configured branch protections.

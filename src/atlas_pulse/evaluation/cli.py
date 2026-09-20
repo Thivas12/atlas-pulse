@@ -23,6 +23,10 @@ from atlas_pulse.evaluation.base import (
 from atlas_pulse.evaluation.campaign import build_campaign, render_campaign_markdown
 from atlas_pulse.evaluation.capture import capture_pool
 from atlas_pulse.evaluation.comparison import compare_pools, render_comparison_markdown
+from atlas_pulse.evaluation.diagnostics import (
+    diagnose_retrieval_readiness,
+    render_retrieval_readiness_markdown,
+)
 from atlas_pulse.evaluation.judging import (
     run_judgment_session,
     run_retrieval_adjudication_session,
@@ -104,6 +108,35 @@ async def _capture(args: argparse.Namespace) -> int:
         print(f"Complete the blank relevance_0_to_3 cells in {args.judgments_output}")
     else:
         print(f"No blank relevance judgments remain in {args.judgments_output}")
+    return 0
+
+
+async def _diagnose(args: argparse.Namespace) -> int:
+    _ensure_writable((args.output_json, args.output_markdown), force=args.force)
+    query_set = _json_model(args.queries, EvaluationQuerySet)
+    report = await diagnose_retrieval_readiness(
+        query_set,
+        base_url=args.base_url,
+        expected_commit_sha=args.expected_commit,
+        sleeper=asyncio.sleep,
+        on_rate_limit_wait=_report_rate_limit_wait,
+    )
+    _write(args.output_json, report.model_dump_json(indent=2) + "\n")
+    _write(args.output_markdown, render_retrieval_readiness_markdown(report))
+    print(f"Wrote {report.report_id}")
+    if report.empty_query_ids:
+        print(
+            "Eligibility warning; no dense candidate for: " + ", ".join(report.empty_query_ids),
+            file=sys.stderr,
+        )
+    if not report.ready_for_capture:
+        if report.blocked_sources:
+            print(
+                "Source pipeline blocked for: " + ", ".join(report.blocked_sources),
+                file=sys.stderr,
+            )
+        return 1
+    print("PASS: deployment and required source pipelines are ready for a fresh capture")
     return 0
 
 
@@ -258,6 +291,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    diagnose = subparsers.add_parser(
+        "diagnose",
+        help="trace a frozen query set through source freshness, projection, and retrieval",
+    )
+    diagnose.add_argument("--queries", type=Path, required=True)
+    diagnose.add_argument("--base-url", default="http://localhost:8000")
+    diagnose.add_argument("--expected-commit", required=True)
+    diagnose.add_argument("--output-json", type=Path, required=True)
+    diagnose.add_argument("--output-markdown", type=Path, required=True)
+    diagnose.add_argument("--force", action="store_true")
+
     capture = subparsers.add_parser("capture", help="pool and blind live retrieval candidates")
     capture.add_argument("--queries", type=Path, required=True)
     capture.add_argument("--base-url", default="http://localhost:8000")
@@ -366,6 +410,8 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "diagnose":
+            return asyncio.run(_diagnose(args))
         if args.command == "capture":
             return asyncio.run(_capture(args))
         if args.command == "judge":

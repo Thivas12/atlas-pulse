@@ -34,10 +34,27 @@ disagreements.
 
 ## Live workflow
 
-Run the deployed API locally, then capture all four ablations into one pool and a rank-blind CSV:
+Run the deployed API locally. First bind a source-to-index diagnostic to the exact deployed commit:
 
 ```bash
 mkdir -p artifacts/evaluation
+uv run atlas-pulse-evaluate diagnose \
+  --queries evals/retrieval/live-disruptions-v2.json \
+  --base-url http://localhost:8000 \
+  --expected-commit "$(git rev-parse HEAD)" \
+  --output-json artifacts/evaluation/readiness.json \
+  --output-markdown artifacts/evaluation/readiness.md
+```
+
+The diagnostic fails before probing the corpus if health and readiness do not identify that exact
+commit. It then checks every required source's freshness, current/retained signal visibility, and
+current/retained dense-index visibility. A required source-pipeline failure exits `1`. An empty
+exact query is retained as an eligibility warning rather than a blocker because the live corpus
+may legitimately have no matching rare event. Review `readiness.md` before continuing.
+
+After the source pipeline passes, capture all four ablations into one pool and a rank-blind CSV:
+
+```bash
 uv run atlas-pulse-evaluate capture \
   --queries evals/retrieval/live-disruptions-v2.json \
   --base-url http://localhost:8000 \
@@ -45,12 +62,15 @@ uv run atlas-pulse-evaluate capture \
   --judgments-output artifacts/evaluation/judgments.csv
 ```
 
-The complete v1 query set makes 60 bounded search requests. When the deployed expensive-route
+The complete v2 query set makes 60 bounded search requests. When the deployed expensive-route
 budget is exhausted, capture honors the API's integer `Retry-After` and reset headers and prints
 each planned wait. A single wait is capped at five minutes, cumulative waiting is capped at
 15 minutes, and repeated `429` responses stop after four total attempts. Intentional quota waits
 are excluded from the recorded request latency. Do not raise the server budget merely to make an
 evaluation finish faster.
+
+Readiness artifacts and captured pools are separate evidence. A readiness pass does not supply a
+relevance label, prove upstream completeness, or permit reuse of v1 judgments for v2.
 
 For a later capture of the same frozen query set, seed only byte-identical prior evidence from the
 reviewed baseline:

@@ -58,8 +58,8 @@ def _next_window_wait(response: httpx.Response) -> int | None:
     return _rate_limit_wait_seconds(response, "X-RateLimit-Reset-After")
 
 
-class _CaptureRateLimitPacer:
-    """Honor the API's fixed-window budget without contaminating request latency."""
+class RetrievalApiPacer:
+    """Honor the retrieval API budget without contaminating request latency."""
 
     def __init__(
         self,
@@ -117,7 +117,7 @@ class _CaptureRateLimitPacer:
         )  # pragma: no cover
 
 
-def _safe_endpoint(value: str) -> str:
+def safe_endpoint(value: str) -> str:
     parsed = urlsplit(value.strip().rstrip("/"))
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("base URL must be an absolute HTTP(S) endpoint")
@@ -126,7 +126,7 @@ def _safe_endpoint(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
 
 
-def _query_parameters(
+def query_parameters(
     query: EvaluationQuery,
     *,
     mode: RankingMode,
@@ -189,7 +189,7 @@ def _candidate(hit: SearchHitResponse) -> PooledCandidate:
     )
 
 
-def _expected_parameters(
+def expected_parameters(
     query: EvaluationQuery,
     *,
     mode: RankingMode,
@@ -226,7 +226,7 @@ def _expected_parameters(
 
 async def _capture_run(
     client: httpx.AsyncClient,
-    pacer: _CaptureRateLimitPacer,
+    pacer: RetrievalApiPacer,
     query: EvaluationQuery,
     *,
     mode: RankingMode,
@@ -234,7 +234,7 @@ async def _capture_run(
 ) -> tuple[CapturedRun, tuple[PooledCandidate, ...]]:
     response, latency_ms = await pacer.get(
         client,
-        params=_query_parameters(query, mode=mode, pool_depth=pool_depth),
+        params=query_parameters(query, mode=mode, pool_depth=pool_depth),
     )
     response.raise_for_status()
     result = SearchResponse.model_validate(response.json())
@@ -242,7 +242,7 @@ async def _capture_run(
         raise RuntimeError(
             f"retrieval API returned mode {result.ranking_mode!r}; requested {mode!r}"
         )
-    if result.parameters != _expected_parameters(query, mode=mode, pool_depth=pool_depth):
+    if result.parameters != expected_parameters(query, mode=mode, pool_depth=pool_depth):
         raise RuntimeError("retrieval API did not echo the exact requested query and filters")
     if result.count != len(result.items) or result.candidates_considered < result.count:
         raise RuntimeError("retrieval API returned inconsistent result counts")
@@ -282,12 +282,12 @@ async def capture_pool(
     on_rate_limit_wait: WaitReporter | None = None,
 ) -> CandidatePool:
     """Pool top results from every configured mode into one blinded review artifact."""
-    endpoint = _safe_endpoint(base_url)
+    endpoint = safe_endpoint(base_url)
     query_set_hash = canonical_sha256(query_set)
     captured_at = datetime.now(UTC)
     owns_client = client is None
     active_client = client or httpx.AsyncClient(base_url=endpoint, timeout=30.0)
-    pacer = _CaptureRateLimitPacer(
+    pacer = RetrievalApiPacer(
         sleeper=sleeper,
         report_wait=on_rate_limit_wait,
     )

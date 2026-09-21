@@ -97,7 +97,7 @@ component can run without a paid API key.
 > diagnostic retained history and does not count as campaign evidence. Its strongest result is a
 > minimum observation set, never an SLA, completeness guarantee, or capacity claim.
 
-## Why this is portfolio-grade
+## Engineering evidence
 
 | Capability | Concrete proof in this repository |
 | --- | --- |

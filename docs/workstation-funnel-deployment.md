@@ -6,7 +6,7 @@ database, or credit card. It does not enable a candidate model or agent, and it 
 reachable workstation into a reliability or quality claim.
 
 Tailscale documents Funnel as available on all plans and its Personal plan as free for personal
-use. This path is intended for a personal, non-commercial portfolio deployment. Confirm current
+use. This path is intended for an independently operated, non-commercial deployment. Check current
 [Funnel limits](https://tailscale.com/docs/features/tailscale-funnel) and
 [plan eligibility](https://tailscale.com/pricing) before deployment because third-party terms can
 change. Funnel is currently beta, permits only ports 443, 8443, and 10000, and has
@@ -182,6 +182,48 @@ same workstation is not an off-host backup. For the campaign's backup/restore re
 encrypted removable drive or a separately controlled second device, remove or disconnect it after
 copying, and perform the checked-in isolated-restore drill. Never claim durability before that
 evidence passes.
+
+Run one sample manually before scheduling it:
+
+```bash
+~/.local/bin/uv run --frozen --offline python scripts/collect_daily_evidence.py
+echo "Daily evidence exit code: $?"
+tail -n 80 artifacts/operations/daily-evidence.log
+```
+
+Exit `0` means both the public probe and resource observation passed. Exit `1` means the failing
+observation was still saved for the campaign. Exit `2` means the checkout, target, tool, or command
+was invalid. The helper refuses to capture when Git `HEAD` differs from the immutable target,
+records one shared UTC timestamp for both observations, refreshes the current report, and appends a
+private local log without reading container logs or environments.
+
+On Windows, schedule that exact checked-in command from an ordinary PowerShell session. Replace
+only the WSL username, distribution, project path, and desired local trigger time:
+
+```powershell
+$taskName = "AtlasPulse Daily Evidence"
+$wslDistro = "Ubuntu-24.04"
+$projectDir = "/home/YOUR_WSL_USER/atlas-pulse-public"
+$uvPath = "/home/YOUR_WSL_USER/.local/bin/uv"
+$actionArgs = "-d $wslDistro --cd $projectDir -e $uvPath run --frozen --offline python scripts/collect_daily_evidence.py"
+$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\wsl.exe" -Argument $actionArgs
+$trigger = New-ScheduledTaskTrigger -Daily -At 10:00AM
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
+  -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+  -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+  -Settings $settings -Description "Capture exact-target AtlasPulse operational evidence" -Force
+```
+
+After a scheduled run, PowerShell reports its result without opening a transient terminal:
+
+```powershell
+Get-ScheduledTaskInfo -TaskName "AtlasPulse Daily Evidence" |
+  Format-List LastRunTime, LastTaskResult, NextRunTime
+```
+
+Read `artifacts/operations/daily-evidence.log` in WSL for the exact failed command and exit code.
+Never delete a valid failing evidence artifact merely to make the campaign report green.
 
 ## 6. Stop or revoke public access
 

@@ -51,8 +51,8 @@ budgets.
 
 ## Consequences
 
-- An eligible personal portfolio deployment no longer depends on a credit card, cloud VM, public
-  IP, DNS purchase, managed database, router port-forward, or paid certificate.
+- An eligible independently operated deployment no longer depends on a credit card, cloud VM,
+  public IP, DNS purchase, managed database, router port-forward, or paid certificate.
 - Public traffic reaches only Tailscale's Funnel ingress and a loopback-only, PROXY-aware edge.
   PostgreSQL, Valkey, API, workers, and internal web links retain the reviewed container boundary.
 - The preserved source address keeps existing per-client rate limits meaningful without retaining
@@ -77,6 +77,6 @@ budgets.
 - **Use a Cloudflare Quick Tunnel.** Quick Tunnels are documented for testing, have a random
   hostname and no SLA, and cannot serve as the stable 30-day reference deployment.
 - **Forward router ports to Caddy.** This expands the residential-host attack surface, requires
-  firewall/DNS/TLS administration, and is unnecessary for the bounded portfolio deployment.
+  firewall/DNS/TLS administration, and is unnecessary for the bounded independent deployment.
 - **Use an ordinary Funnel HTTP reverse proxy.** It is simpler, but the PROXY protocol path is
   needed to preserve the original client address through both reviewed proxies.

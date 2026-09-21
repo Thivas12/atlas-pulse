@@ -307,10 +307,15 @@ class PostgresSignalStore:
 
     async def query_correlations(self, query: CorrelationQuery) -> CorrelationBatch:
         """Measure bounded current cross-source pairs using PostGIS geography."""
-        geometry = "COALESCE(er.footprint, er.point)"
+        left_geometry = "COALESCE(left_signal.footprint, left_signal.point)"
+        right_geometry = "COALESCE(right_signal.footprint, right_signal.point)"
         conditions = [
-            f"{geometry} IS NOT NULL",
-            "er.occurred_at >= CURRENT_TIMESTAMP - make_interval(hours => :lookback_hours)",
+            f"{left_geometry} IS NOT NULL",
+            f"{right_geometry} IS NOT NULL",
+            "left_signal.occurred_at >= "
+            "CURRENT_TIMESTAMP - make_interval(hours => :lookback_hours)",
+            "right_signal.occurred_at >= "
+            "CURRENT_TIMESTAMP - make_interval(hours => :lookback_hours)",
         ]
         parameters: dict[str, object] = {
             "lookback_hours": query.lookback_hours,
@@ -319,10 +324,21 @@ class PostgresSignalStore:
             "fetch_limit": query.edge_limit + 1,
         }
         if query.active_only:
-            conditions.append("(er.expires_at IS NULL OR er.expires_at > CURRENT_TIMESTAMP)")
+            conditions.extend(
+                (
+                    "(left_signal.expires_at IS NULL "
+                    "OR left_signal.expires_at > CURRENT_TIMESTAMP)",
+                    "(right_signal.expires_at IS NULL "
+                    "OR right_signal.expires_at > CURRENT_TIMESTAMP)",
+                )
+            )
         if query.bounds is not None:
-            conditions.append(
-                f"ST_Intersects({geometry}, ST_MakeEnvelope(:west, :south, :east, :north, 4326))"
+            envelope = "ST_MakeEnvelope(:west, :south, :east, :north, 4326)"
+            conditions.extend(
+                (
+                    f"ST_Intersects({left_geometry}, {envelope})",
+                    f"ST_Intersects({right_geometry}, {envelope})",
+                )
             )
             parameters.update(
                 west=query.bounds.west,
@@ -333,48 +349,47 @@ class PostgresSignalStore:
 
         statement = text(
             """
-            WITH eligible AS MATERIALIZED (
-                SELECT
-                    er.stream_id,
-                    er.source,
-                    er.event_id,
-                    er.occurred_at,
-                    er.event_json,
-                    COALESCE(er.footprint, er.point) AS evidence_geometry,
-                    CASE WHEN er.footprint IS NOT NULL THEN 'polygon' ELSE 'point' END
-                        AS geometry_basis
-                FROM current_signals AS cs
-                JOIN event_revisions AS er ON er.stream_id = cs.stream_id
-                WHERE """
-            + " AND ".join(conditions)
-            + """
-            )
             SELECT
                 left_signal.stream_id AS left_stream_id,
                 left_signal.event_json AS left_event_json,
-                left_signal.geometry_basis AS left_geometry_basis,
+                CASE WHEN left_signal.footprint IS NOT NULL THEN 'polygon' ELSE 'point' END
+                    AS left_geometry_basis,
                 right_signal.stream_id AS right_stream_id,
                 right_signal.event_json AS right_event_json,
-                right_signal.geometry_basis AS right_geometry_basis,
+                CASE WHEN right_signal.footprint IS NOT NULL THEN 'polygon' ELSE 'point' END
+                    AS right_geometry_basis,
                 ST_Distance(
-                    left_signal.evidence_geometry::geography,
-                    right_signal.evidence_geometry::geography
+                    COALESCE(left_signal.footprint, left_signal.point)::geography,
+                    COALESCE(right_signal.footprint, right_signal.point)::geography
                 ) / 1000.0 AS distance_km,
                 ABS(EXTRACT(EPOCH FROM (
                     left_signal.occurred_at - right_signal.occurred_at
                 ))) / 60.0 AS time_delta_minutes,
                 GREATEST(left_signal.occurred_at, right_signal.occurred_at) AS latest_signal_at
-            FROM eligible AS left_signal
-            JOIN eligible AS right_signal
+            FROM current_signals AS left_current
+            JOIN event_revisions AS left_signal
+              ON left_signal.stream_id = left_current.stream_id
+             AND left_signal.source = left_current.source
+             AND left_signal.event_id = left_current.event_id
+            JOIN event_revisions AS right_signal
               ON left_signal.source < right_signal.source
-             AND ABS(EXTRACT(EPOCH FROM (
-                    left_signal.occurred_at - right_signal.occurred_at
-                 ))) <= :time_window_seconds
+             AND right_signal.occurred_at BETWEEN
+                    left_signal.occurred_at
+                        - make_interval(secs => :time_window_seconds)
+                AND left_signal.occurred_at
+                        + make_interval(secs => :time_window_seconds)
              AND ST_DWithin(
-                    left_signal.evidence_geometry::geography,
-                    right_signal.evidence_geometry::geography,
+                    COALESCE(left_signal.footprint, left_signal.point)::geography,
+                    COALESCE(right_signal.footprint, right_signal.point)::geography,
                     :radius_metres
                  )
+            JOIN current_signals AS right_current
+              ON right_current.source = right_signal.source
+             AND right_current.event_id = right_signal.event_id
+             AND right_current.stream_id = right_signal.stream_id
+            WHERE """
+            + " AND ".join(conditions)
+            + """
             ORDER BY latest_signal_at DESC, distance_km ASC,
                      left_signal.source, left_signal.event_id,
                      right_signal.source, right_signal.event_id

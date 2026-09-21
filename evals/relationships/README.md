@@ -22,9 +22,15 @@ mkdir -p artifacts/relationship-evaluation
 uv run atlas-pulse-evaluate-relationships capture \
   --definition evals/relationships/live-claim-pairs-v1.json \
   --base-url http://localhost:8000 \
+  --timeout-seconds 300 \
   --output artifacts/relationship-evaluation/pool.json \
   --judgments-output artifacts/relationship-evaluation/judgments.csv
 ```
+
+The incident graph can take longer than an ordinary health or event request on a retained live
+corpus. Capture defaults to a 300-second HTTP timeout and accepts an explicit value from 1 through
+900 seconds. Timeout failures name the concrete exception and suggest the bounded retry flag rather
+than emitting a blank error.
 
 The JSON pool retains the deployed label, extracted claims, provenance, rule versions, graph
 measurements, exact request parameters, source-pair population counts, and API truncation flags.
@@ -38,6 +44,7 @@ system predictions:
 uv run atlas-pulse-evaluate-relationships capture \
   --definition evals/relationships/live-claim-pairs-v1.json \
   --base-url http://localhost:8000 \
+  --timeout-seconds 300 \
   --output artifacts/relationship-evaluation/candidate-pool.json \
   --judgments-output artifacts/relationship-evaluation/candidate-judgments.csv \
   --seed-reviewed-pool artifacts/relationship-evaluation/reviewed-pool.json

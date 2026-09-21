@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -330,14 +331,17 @@ async def capture_relationship_pool(
     definition: RelationshipBenchmarkDefinition,
     *,
     base_url: str,
+    timeout_seconds: float = 300.0,
     client: httpx.AsyncClient | None = None,
 ) -> RelationshipPool:
     """Capture one bounded live graph and create a prediction-blind review pool."""
+    if not math.isfinite(timeout_seconds) or not 1 <= timeout_seconds <= 900:
+        raise ValueError("relationship capture timeout_seconds must be within [1, 900]")
     endpoint = _safe_endpoint(base_url)
     definition_hash = canonical_sha256(definition)
     captured_at = datetime.now(UTC)
     owns_client = client is None
-    active_client = client or httpx.AsyncClient(base_url=endpoint, timeout=60.0)
+    active_client = client or httpx.AsyncClient(base_url=endpoint, timeout=timeout_seconds)
     started = time.perf_counter()
     try:
         raw_response = await active_client.get(

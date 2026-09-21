@@ -85,7 +85,15 @@ async def _capture(args: argparse.Namespace) -> int:
         if args.seed_reviewed_pool is not None
         else None
     )
-    pool = await capture_relationship_pool(definition, base_url=args.base_url)
+    print(
+        f"Requesting the bounded incident graph with a {args.timeout_seconds:g}s timeout...",
+        flush=True,
+    )
+    pool = await capture_relationship_pool(
+        definition,
+        base_url=args.base_url,
+        timeout_seconds=args.timeout_seconds,
+    )
     sheet = build_relationship_judgment_sheet(pool, seed_pool=seed_pool)
     _write(args.output, pool.model_dump_json(indent=2) + "\n")
     _write(args.judgments_output, sheet.content)
@@ -303,6 +311,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     capture.add_argument("--definition", type=Path, required=True)
     capture.add_argument("--base-url", default="http://localhost:8000")
+    capture.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=300.0,
+        help="HTTP timeout for the bounded incident request (1 to 900 seconds)",
+    )
     capture.add_argument("--output", type=Path, required=True)
     capture.add_argument("--judgments-output", type=Path, required=True)
     capture.add_argument(
@@ -431,7 +445,15 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
         ValidationError,
         httpx.HTTPError,
     ) as error:
-        print(f"relationship evaluation failed: {error}", file=sys.stderr)
+        detail = str(error).strip()
+        summary = type(error).__name__ if not detail else f"{type(error).__name__}: {detail}"
+        print(f"relationship evaluation failed: {summary}", file=sys.stderr)
+        if isinstance(error, httpx.TimeoutException):
+            print(
+                "relationship evaluation hint: confirm API health, then retry with a larger "
+                "--timeout-seconds value (maximum 900)",
+                file=sys.stderr,
+            )
         return 2
 
 

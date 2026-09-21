@@ -51,6 +51,11 @@ Protected evidence columns are checked byte-for-byte on import. Spreadsheet form
 public text are neutralized. Every row must receive exactly one rubric label before reviewer name
 and UTC review time can be attached to the immutable pool.
 
+The one bounded incident-graph request defaults to a 300-second HTTP timeout because it is more
+expensive than health and event-list requests over a retained live corpus. Operators can set
+`--timeout-seconds` from 1 through 900 without changing benchmark identity. Transport failures
+always include their exception type, so a timeout cannot collapse into a blank CLI error.
+
 ## Measurements
 
 The scorer reports:

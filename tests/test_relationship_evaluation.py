@@ -291,6 +291,18 @@ async def test_capture_rejects_unsafe_endpoint_empty_graph_and_rule_drift() -> N
         await capture_relationship_pool(_definition(), base_url="localhost:8000")
     with pytest.raises(ValueError, match="embedded credentials"):
         await capture_relationship_pool(_definition(), base_url="http://user:pass@test")
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        await capture_relationship_pool(
+            _definition(),
+            base_url="http://test",
+            timeout_seconds=float("nan"),
+        )
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        await capture_relationship_pool(
+            _definition(),
+            base_url="http://test",
+            timeout_seconds=901,
+        )
 
     empty_store = StubSignalStore(CorrelationBatch(()))
     empty_transport = httpx.ASGITransport(app=create_app(InMemoryEventBus(), empty_store))
@@ -552,9 +564,11 @@ def test_cli_review_score_capture_and_failure_paths(
         definition: RelationshipBenchmarkDefinition,
         *,
         base_url: str,
+        timeout_seconds: float,
     ) -> RelationshipPool:
         assert definition.benchmark_id == pool.benchmark_id
         assert base_url == "http://localhost:8000"
+        assert timeout_seconds == 300
         return pool
 
     monkeypatch.setattr(
@@ -630,6 +644,51 @@ def test_cli_review_score_capture_and_failure_paths(
         == 2
     )
     assert "refusing to overwrite" in capsys.readouterr().err
+
+
+def test_cli_capture_names_blank_timeout_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    definition_path = tmp_path / "definition.json"
+    definition_path.write_text(_definition().model_dump_json(indent=2), encoding="utf-8")
+
+    async def timeout_capture(
+        definition: RelationshipBenchmarkDefinition,
+        *,
+        base_url: str,
+        timeout_seconds: float,
+    ) -> RelationshipPool:
+        assert definition.benchmark_id == "live-claim-pairs.test"
+        assert base_url == "http://localhost:8000"
+        assert timeout_seconds == 450
+        raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr(
+        "atlas_pulse.relationship_evaluation.cli.capture_relationship_pool",
+        timeout_capture,
+    )
+    assert (
+        run_cli(
+            [
+                "capture",
+                "--definition",
+                str(definition_path),
+                "--timeout-seconds",
+                "450",
+                "--output",
+                str(tmp_path / "pool.json"),
+                "--judgments-output",
+                str(tmp_path / "judgments.csv"),
+            ]
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert "450s timeout" in captured.out
+    assert "relationship evaluation failed: ReadTimeout" in captured.err
+    assert "--timeout-seconds" in captured.err
 
 
 def test_unreviewed_pool_cannot_be_scored_or_seed_reuse() -> None:

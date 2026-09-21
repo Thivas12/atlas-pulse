@@ -43,6 +43,12 @@ hours, candidate edges `1..5000`, and returned components `1..100`. Fetch one ex
 candidate truncation. Return both edge and component truncation flags plus the exact effective
 parameters.
 
+Keep the bound effective before distance calculation: join the two current-revision relations
+directly, constrain the indexed occurrence-time range in the join, and index the exact
+`COALESCE(footprint, point)::geography` expression used by `ST_DWithin`. Do not materialize the
+eligible corpus before the spatial join, because that discards the base-table GiST access path and
+turns the edge cap into a bound on output only rather than on practical query work.
+
 Every response and detail panel states that an edge proves bounded spatial and temporal
 co-occurrence only. It does not establish causation, corroboration, or a shared real-world
 incident. Preserve full normalized events and evidence URLs on graph nodes so a human or future

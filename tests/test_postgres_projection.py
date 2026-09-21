@@ -331,7 +331,7 @@ async def test_query_current_supports_empty_unfiltered_and_strict_spatial_pages(
     assert "er.footprint IS NULL AND er.point IS NULL" not in statement
 
 
-async def test_query_correlations_uses_bounded_geography_join_and_marks_truncation() -> None:
+async def test_query_correlations_uses_indexable_bounded_join_and_marks_truncation() -> None:
     fire = make_event(
         "fire-1",
         source="firms",
@@ -375,12 +375,17 @@ async def test_query_correlations_uses_bounded_geography_join_and_marks_truncati
     assert candidate.left_geometry_basis == "point"
     assert candidate.right_geometry_basis == "polygon"
     statement, parameters = engine.connection.executions[0]
-    assert "WITH eligible AS MATERIALIZED" in statement
+    assert "WITH eligible AS MATERIALIZED" not in statement
+    assert "JOIN event_revisions AS right_signal" in statement
+    assert "right_signal.occurred_at BETWEEN" in statement
+    assert "make_interval(secs => :time_window_seconds)" in statement
+    assert "right_current.source = right_signal.source" in statement
     assert "left_signal.source < right_signal.source" in statement
     assert "ST_DWithin" in statement
-    assert "::geography" in statement
-    assert "ST_Intersects" in statement
-    assert "er.expires_at IS NULL" in statement
+    assert statement.count("::geography") >= 4
+    assert statement.count("ST_Intersects") == 2
+    assert "left_signal.expires_at IS NULL" in statement
+    assert "right_signal.expires_at IS NULL" in statement
     assert parameters == {
         "lookback_hours": 48,
         "time_window_seconds": 5_400,
@@ -403,7 +408,8 @@ async def test_query_correlations_supports_empty_unbounded_inactive_window() -> 
     assert batch.truncated is False
     statement, parameters = engine.connection.executions[0]
     assert "ST_Intersects" not in statement
-    assert "er.expires_at IS NULL" not in statement
+    assert "left_signal.expires_at IS NULL" not in statement
+    assert "right_signal.expires_at IS NULL" not in statement
     assert isinstance(parameters, dict)
     assert parameters["fetch_limit"] == 11
 

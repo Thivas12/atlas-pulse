@@ -246,6 +246,13 @@ def test_compose_trust_graph_is_machine_checked() -> None:
     assert "verify_compose_security.py --deployment workstation-funnel" in workflow
 
 
+def test_postgres_healthcheck_waits_for_the_tcp_listener() -> None:
+    compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+
+    assert 'test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U atlas -d atlas"]' in compose
+    assert 'test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]' not in compose
+
+
 def test_frontend_ci_smoke_tests_the_production_bundle() -> None:
     workflow = (WORKFLOW_DIRECTORY / "ci.yml").read_text(encoding="utf-8")
     build_step = "run: npm run build"

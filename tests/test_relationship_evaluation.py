@@ -30,6 +30,7 @@ from atlas_pulse.relationship_evaluation import (
     RelationshipCandidateComparisonReport,
     RelationshipCaptureParameters,
     RelationshipCase,
+    RelationshipDevelopmentCandidateComparisonReport,
     RelationshipPool,
     SystemPrediction,
     apply_candidate_predictions,
@@ -37,6 +38,7 @@ from atlas_pulse.relationship_evaluation import (
     apply_relationship_judgments,
     build_candidate_evaluation_task,
     build_candidate_prediction_sheet,
+    build_development_candidate_evaluation_task,
     build_relationship_adjudication_sheet,
     build_relationship_judgment_sheet,
     calculate_relationship_scores,
@@ -51,6 +53,7 @@ from atlas_pulse.relationship_evaluation import (
     render_relationship_markdown,
     render_review_agreement_markdown,
     score_relationship_candidate,
+    score_relationship_development_candidate,
     score_relationship_pool,
 )
 from atlas_pulse.relationship_evaluation.cli import run_cli
@@ -1080,6 +1083,64 @@ def test_candidate_task_is_deterministic_gold_blind_and_adjudication_gated() -> 
         CandidateEvaluationTask.model_validate(changed)
 
 
+def test_development_candidate_path_is_single_review_explicit_and_non_promoting() -> None:
+    pool = _reviewed_pool(
+        asyncio.run(_captured_pool()),
+        reviewer="OpenAI Codex (AI-assisted)",
+    )
+    task = build_development_candidate_evaluation_task(pool)
+    batch = apply_candidate_predictions(
+        task,
+        _completed_candidate_sheet(task),
+        system=_candidate_system(),
+        generated_at=datetime(2026, 9, 13, 15, tzinfo=UTC),
+    )
+    report = score_relationship_development_candidate(
+        pool,
+        task,
+        batch,
+        review_assistance="ai_assisted",
+        generated_at=datetime(2026, 9, 13, 16, tzinfo=UTC),
+    )
+
+    assert report.evaluation_scope == "single_review_development"
+    assert report.promotion_status == "blocked"
+    assert report.development_review.reviewer == "OpenAI Codex (AI-assisted)"
+    assert report.development_review.review_assistance == "ai_assisted"
+    assert report.development_review.reviewed_pool_sha256 == report.reviewed_pool_sha256
+    assert len(report.promotion_blockers) == 4
+    assert report.paired_outcomes.improvements == 0
+    assert report.paired_outcomes.regressions == 2
+    assert report.report_id.startswith(f"{pool.pool_id}-development-candidate-")
+
+    serialized_task = task.model_dump_json()
+    assert "gold_label" not in serialized_task
+    assert "OpenAI Codex" not in serialized_task
+    markdown = render_candidate_comparison_markdown(report)
+    assert "SINGLE-REVIEW DEVELOPMENT ONLY" in markdown
+    assert "Review assistance: `ai_assisted`" in markdown
+    assert "single-review development labels" in markdown
+    with pytest.raises(ValidationError):
+        RelationshipCandidateComparisonReport.model_validate(report.model_dump(mode="python"))
+
+    with pytest.raises(ValueError, match="single-review pool"):
+        build_development_candidate_evaluation_task(_candidate_gold_pool())
+    with pytest.raises(ValueError, match="one complete reviewed pool"):
+        build_development_candidate_evaluation_task(asyncio.run(_captured_pool()))
+    with pytest.raises(ValueError, match="review_assistance"):
+        score_relationship_development_candidate(
+            pool,
+            task,
+            batch,
+            review_assistance="undeclared",  # type: ignore[arg-type]
+        )
+
+    changed = report.model_dump(mode="python")
+    changed["promotion_blockers"] = ()
+    with pytest.raises(ValidationError, match="fixed promotion blocker"):
+        RelationshipDevelopmentCandidateComparisonReport.model_validate(changed)
+
+
 def test_candidate_predictions_and_paired_score_retain_tradeoffs_without_mutation() -> None:
     pool = _candidate_gold_pool()
     original_pool = pool.model_dump_json()
@@ -1285,3 +1346,71 @@ def test_cli_candidate_task_score_and_input_protection(
     )
     assert "must not replace input artifacts" in capsys.readouterr().err
     assert pool_path.read_text(encoding="utf-8") == original_pool
+
+
+def test_cli_development_candidate_task_and_score(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pool = _reviewed_pool(
+        asyncio.run(_captured_pool()),
+        reviewer="OpenAI Codex (AI-assisted)",
+    )
+    pool_path = tmp_path / "reviewed-pool.json"
+    pool_path.write_text(pool.model_dump_json(indent=2), encoding="utf-8")
+    task_path = tmp_path / "development-task.json"
+    predictions_path = tmp_path / "development-predictions.csv"
+
+    assert (
+        run_cli(
+            [
+                "development-candidate-task",
+                "--pool",
+                str(pool_path),
+                "--output",
+                str(task_path),
+                "--predictions-output",
+                str(predictions_path),
+            ]
+        )
+        == 0
+    )
+    assert "development-only label-blind" in capsys.readouterr().out
+    task = CandidateEvaluationTask.model_validate_json(task_path.read_text(encoding="utf-8"))
+    predictions_path.write_text(_completed_candidate_sheet(task), encoding="utf-8")
+    definition_path = tmp_path / "candidate-definition.json"
+    definition_path.write_text(_candidate_system().model_dump_json(indent=2), encoding="utf-8")
+    batch_path = tmp_path / "development-batch.json"
+    report_path = tmp_path / "development-report.json"
+    markdown_path = tmp_path / "development-report.md"
+
+    assert (
+        run_cli(
+            [
+                "development-candidate-score",
+                "--pool",
+                str(pool_path),
+                "--task",
+                str(task_path),
+                "--predictions",
+                str(predictions_path),
+                "--candidate-definition",
+                str(definition_path),
+                "--review-assistance",
+                "ai_assisted",
+                "--output-batch",
+                str(batch_path),
+                "--output-json",
+                str(report_path),
+                "--output-markdown",
+                str(markdown_path),
+            ]
+        )
+        == 0
+    )
+    assert "development-only blocked comparison" in capsys.readouterr().out
+    report = RelationshipDevelopmentCandidateComparisonReport.model_validate_json(
+        report_path.read_text(encoding="utf-8")
+    )
+    assert report.development_review.review_assistance == "ai_assisted"
+    assert "SINGLE-REVIEW DEVELOPMENT ONLY" in markdown_path.read_text(encoding="utf-8")

@@ -15,6 +15,7 @@ from atlas_pulse.relationship_evaluation.base import (
 )
 from atlas_pulse.relationship_evaluation.candidates import (
     RelationshipCandidateComparisonReport,
+    RelationshipDevelopmentCandidateComparisonReport,
     RelationshipSliceComparison,
 )
 from atlas_pulse.relationships import RelationshipLabel
@@ -82,7 +83,9 @@ def _confusion_lines(
 
 
 def render_candidate_comparison_markdown(
-    report: RelationshipCandidateComparisonReport,
+    report: (
+        RelationshipCandidateComparisonReport | RelationshipDevelopmentCandidateComparisonReport
+    ),
 ) -> str:
     """Render a paired candidate comparison with an explicit closed release boundary."""
     overall = report.overall
@@ -93,20 +96,50 @@ def render_candidate_comparison_markdown(
     paired = report.paired_outcomes
     latency = report.candidate_latency
     parameters = json.dumps(system.parameters, sort_keys=True, separators=(",", ":"))
+    if isinstance(report, RelationshipDevelopmentCandidateComparisonReport):
+        title = f"# Development relationship comparison: {report.report_id}"
+        status = (
+            "> **Evaluation scope: SINGLE-REVIEW DEVELOPMENT ONLY. Promotion status: "
+            "BLOCKED.** This artifact cannot support a public quality or production-promotion "
+            "claim."
+        )
+        pool_line = (
+            f"- Reviewed pool: `{report.reviewed_pool_id}` (`{report.reviewed_pool_sha256}`)"
+        )
+        provenance_lines = [
+            f"- Review process: `{report.development_review.process_version}`",
+            f"- Reviewer: `{report.development_review.reviewer}`",
+            f"- Review assistance: `{report.development_review.review_assistance}`",
+            f"- Reviewed at: `{report.development_review.reviewed_at.isoformat()}`",
+        ]
+        reference_label = "single-review development labels"
+        task_label = "Label-blind task"
+    else:
+        title = f"# Candidate relationship comparison: {report.report_id}"
+        status = (
+            "> **Promotion status: BLOCKED.** This artifact measures a candidate; it cannot "
+            "authorize a production relationship rule."
+        )
+        pool_line = f"- Gold pool: `{report.gold_pool_id}` (`{report.gold_pool_sha256}`)"
+        provenance_lines = [
+            f"- Human review process: `{report.adjudication.process_version}`",
+            "- Independent reviewers: "
+            + ", ".join(f"`{reviewer}`" for reviewer in report.adjudication.independent_reviewers),
+            f"- Adjudicator: `{report.adjudication.adjudicator}`",
+            f"- Observed agreement / Cohen's kappa: {_metric(report.adjudication.observed_agreement)} / {_metric(report.adjudication.cohen_kappa)}",
+        ]
+        reference_label = "adjudicated gold labels"
+        task_label = "Gold-blind task"
     lines = [
-        f"# Candidate relationship comparison: {report.report_id}",
+        title,
         "",
-        "> **Promotion status: BLOCKED.** This artifact measures a candidate; it cannot authorize a production relationship rule.",
+        status,
         "",
-        f"- Gold pool: `{report.gold_pool_id}` (`{report.gold_pool_sha256}`)",
-        f"- Gold-blind task: `{report.task_id}` (`{report.task_sha256}`)",
+        pool_line,
+        f"- {task_label}: `{report.task_id}` (`{report.task_sha256}`)",
         f"- Prediction batch: `{report.prediction_batch_id}` (`{report.prediction_batch_sha256}`)",
         f"- Generated: `{report.generated_at.isoformat()}`",
-        f"- Human review process: `{report.adjudication.process_version}`",
-        "- Independent reviewers: "
-        + ", ".join(f"`{reviewer}`" for reviewer in report.adjudication.independent_reviewers),
-        f"- Adjudicator: `{report.adjudication.adjudicator}`",
-        f"- Observed agreement / Cohen's kappa: {_metric(report.adjudication.observed_agreement)} / {_metric(report.adjudication.cohen_kappa)}",
+        *provenance_lines,
         f"- Baseline relationship rule: `{report.baseline_relationship_rule_version}`",
         f"- Candidate: `{system.candidate_id}` via `{system.adapter_version}`",
         f"- Model: `{system.model_id}` at immutable revision `{system.model_revision}`",
@@ -174,13 +207,13 @@ def render_candidate_comparison_markdown(
             "",
             "## Baseline confusion matrix",
             "",
-            "Rows are adjudicated gold labels; columns are captured deployed-rule predictions.",
+            f"Rows are {reference_label}; columns are captured deployed-rule predictions.",
             "",
             *_confusion_lines(report.baseline_confusion_matrix),
             "",
             "## Candidate confusion matrix",
             "",
-            "Rows are adjudicated gold labels; columns are external candidate predictions.",
+            f"Rows are {reference_label}; columns are external candidate predictions.",
             "",
             *_confusion_lines(report.candidate_confusion_matrix),
             "",

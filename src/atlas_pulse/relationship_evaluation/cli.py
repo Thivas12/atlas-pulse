@@ -25,7 +25,9 @@ from atlas_pulse.relationship_evaluation.candidates import (
     apply_candidate_predictions,
     build_candidate_evaluation_task,
     build_candidate_prediction_sheet,
+    build_development_candidate_evaluation_task,
     score_relationship_candidate,
+    score_relationship_development_candidate,
 )
 from atlas_pulse.relationship_evaluation.capture import capture_relationship_pool
 from atlas_pulse.relationship_evaluation.judgments import (
@@ -212,6 +214,24 @@ def _candidate_task(args: argparse.Namespace) -> int:
     return 0
 
 
+def _development_candidate_task(args: argparse.Namespace) -> int:
+    _ensure_writable(
+        (args.output, args.predictions_output),
+        force=args.force,
+        inputs=(args.pool,),
+    )
+    pool = _json_model(args.pool, RelationshipPool)
+    task = build_development_candidate_evaluation_task(pool)
+    sheet = build_candidate_prediction_sheet(task)
+    _write(args.output, task.model_dump_json(indent=2) + "\n")
+    _write(args.predictions_output, sheet.content)
+    print(
+        f"Wrote development-only label-blind {task.task_id} with {task.case_count} case(s); "
+        f"complete predicted_label and latency_ms in {args.predictions_output}"
+    )
+    return 0
+
+
 def _candidate_score(args: argparse.Namespace) -> int:
     _ensure_writable(
         (args.output_batch, args.output_json, args.output_markdown),
@@ -238,11 +258,42 @@ def _candidate_score(args: argparse.Namespace) -> int:
     return 0
 
 
+def _development_candidate_score(args: argparse.Namespace) -> int:
+    _ensure_writable(
+        (args.output_batch, args.output_json, args.output_markdown),
+        force=args.force,
+        inputs=(args.pool, args.task, args.predictions, args.candidate_definition),
+    )
+    pool = _json_model(args.pool, RelationshipPool)
+    task = _json_model(args.task, CandidateEvaluationTask)
+    system = _json_model(args.candidate_definition, CandidateSystemDefinition)
+    batch = apply_candidate_predictions(
+        task,
+        args.predictions.read_text(encoding="utf-8"),
+        system=system,
+    )
+    report = score_relationship_development_candidate(
+        pool,
+        task,
+        batch,
+        review_assistance=args.review_assistance,
+    )
+    _write(args.output_batch, batch.model_dump_json(indent=2) + "\n")
+    _write(args.output_json, report.model_dump_json(indent=2) + "\n")
+    _write(args.output_markdown, render_candidate_comparison_markdown(report))
+    print(
+        f"Wrote development-only blocked comparison {report.report_id}: "
+        f"{report.paired_outcomes.improvements} improvement(s), "
+        f"{report.paired_outcomes.regressions} regression(s)"
+    )
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="atlas-pulse-evaluate-relationships",
         description=(
-            "Capture, independently review, adjudicate, and score live AtlasPulse claim pairs."
+            "Capture, review, and score live AtlasPulse claim pairs with explicit evidence scope."
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -307,6 +358,15 @@ def _parser() -> argparse.ArgumentParser:
     candidate_task.add_argument("--predictions-output", type=Path, required=True)
     candidate_task.add_argument("--force", action="store_true")
 
+    development_candidate_task = subparsers.add_parser(
+        "development-candidate-task",
+        help="export one-reviewed evidence for a permanently non-promoting comparison",
+    )
+    development_candidate_task.add_argument("--pool", type=Path, required=True)
+    development_candidate_task.add_argument("--output", type=Path, required=True)
+    development_candidate_task.add_argument("--predictions-output", type=Path, required=True)
+    development_candidate_task.add_argument("--force", action="store_true")
+
     candidate_score = subparsers.add_parser(
         "candidate-score",
         help="import external predictions and compare them with the captured deployed rule",
@@ -319,6 +379,25 @@ def _parser() -> argparse.ArgumentParser:
     candidate_score.add_argument("--output-json", type=Path, required=True)
     candidate_score.add_argument("--output-markdown", type=Path, required=True)
     candidate_score.add_argument("--force", action="store_true")
+
+    development_candidate_score = subparsers.add_parser(
+        "development-candidate-score",
+        help="compare external predictions with one review and keep promotion blocked",
+    )
+    development_candidate_score.add_argument("--pool", type=Path, required=True)
+    development_candidate_score.add_argument("--task", type=Path, required=True)
+    development_candidate_score.add_argument("--predictions", type=Path, required=True)
+    development_candidate_score.add_argument("--candidate-definition", type=Path, required=True)
+    development_candidate_score.add_argument(
+        "--review-assistance",
+        choices=("unassisted", "ai_assisted"),
+        required=True,
+        help="declare whether AI assistance contributed to the single review",
+    )
+    development_candidate_score.add_argument("--output-batch", type=Path, required=True)
+    development_candidate_score.add_argument("--output-json", type=Path, required=True)
+    development_candidate_score.add_argument("--output-markdown", type=Path, required=True)
+    development_candidate_score.add_argument("--force", action="store_true")
     return parser
 
 
@@ -339,7 +418,11 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             return _adjudicate(args)
         if args.command == "candidate-task":
             return _candidate_task(args)
-        return _candidate_score(args)
+        if args.command == "development-candidate-task":
+            return _development_candidate_task(args)
+        if args.command == "candidate-score":
+            return _candidate_score(args)
+        return _development_candidate_score(args)
     except (
         FileExistsError,
         OSError,

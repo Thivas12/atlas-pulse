@@ -26,11 +26,16 @@ from atlas_pulse.relationship_evaluation.base import (
     StrictModel,
     relationship_case_id,
 )
-from atlas_pulse.relationship_evaluation.metrics import calculate_relationship_scores
+from atlas_pulse.relationship_evaluation.metrics import (
+    RelationshipScoreSet,
+    calculate_relationship_scores,
+)
 from atlas_pulse.relationships import ClaimPredicate, RelationshipLabel
 
 CandidateArtifactSchemaVersion = Literal["1.0.0"]
 CandidatePromotionStatus = Literal["blocked"]
+DevelopmentEvaluationScope = Literal["single_review_development"]
+ReviewAssistance = Literal["unassisted", "ai_assisted"]
 CandidateOutcomeKind = Literal[
     "unchanged_correct",
     "unchanged_incorrect",
@@ -61,6 +66,22 @@ _CANDIDATE_CAVEATS = (
     "Only pairs in the bounded measured graph are evaluated, and source-pair caps do not estimate live source prevalence.",
     "Candidate latency is supplied by the external runner and is descriptive; the artifact cannot verify the measurement environment.",
     "The software binds predictions to exact evidence and an adjudicated pool but cannot prove that model selection or tuning was blind to the gold labels.",
+    "Scoring a candidate never changes the captured pool or the production relationship annotation version.",
+)
+
+_DEVELOPMENT_PROMOTION_BLOCKERS = (
+    "The labels come from one development review; no independent agreement or adjudication exists.",
+    *_PROMOTION_BLOCKERS,
+)
+
+_DEVELOPMENT_CAVEATS = (
+    "This is single-review development evidence, not independently adjudicated gold or support for a public quality claim.",
+    "Review assistance is declared by the operator; the software cannot independently verify how labels were produced.",
+    "The candidate task contains reviewer-visible evidence only; it excludes review labels, rationales, reviewer identity, and deployed predictions.",
+    "Review labels compare what two public source records explicitly say and do not establish that either source is true.",
+    "Only pairs in the bounded measured graph are evaluated, and source-pair caps do not estimate live source prevalence.",
+    "Candidate latency is supplied by the external runner and is descriptive; the artifact cannot verify the measurement environment.",
+    "The software binds predictions to exact evidence and one reviewed pool but cannot prove that model selection or tuning was blind to the review labels.",
     "Scoring a candidate never changes the captured pool or the production relationship annotation version.",
 )
 
@@ -98,6 +119,30 @@ class CandidateSystemDefinition(StrictModel):
             if isinstance(item, float) and not math.isfinite(item):
                 raise ValueError("candidate parameter values must be finite")
         return value
+
+
+class SingleReviewDevelopmentProvenance(StrictModel):
+    """Declared provenance for a non-promoting single-review comparison."""
+
+    process_version: Literal["single-review-development-v1"] = "single-review-development-v1"
+    reviewer: str = Field(min_length=1, max_length=200)
+    reviewed_at: datetime
+    reviewed_pool_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    review_assistance: ReviewAssistance
+
+    @field_validator("reviewer")
+    @classmethod
+    def normalize_reviewer(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("development reviewer must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_review(self) -> SingleReviewDevelopmentProvenance:
+        if self.reviewed_at.tzinfo is None:
+            raise ValueError("development reviewed_at must be timezone-aware")
+        return self
 
 
 class CandidateCaseInput(StrictModel):
@@ -421,6 +466,87 @@ class RelationshipCandidateComparisonReport(StrictModel):
         return self
 
 
+class RelationshipDevelopmentCandidateComparisonReport(StrictModel):
+    """Single-review candidate comparison that is permanently development-only."""
+
+    schema_version: CandidateArtifactSchemaVersion = "1.0.0"
+    report_id: str = Field(min_length=1, max_length=240)
+    generated_at: datetime
+    reviewed_pool_id: str
+    reviewed_pool_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_capture_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    task_id: str = Field(pattern=r"^candidate-task-[0-9a-f]{20}$")
+    task_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    prediction_batch_id: str = Field(pattern=r"^candidate-batch-[0-9a-f]{20}$")
+    prediction_batch_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rubric_version: ReviewRubricVersion
+    baseline_relationship_rule_version: str
+    candidate_system: CandidateSystemDefinition
+    development_review: SingleReviewDevelopmentProvenance
+    evaluation_scope: DevelopmentEvaluationScope = "single_review_development"
+    case_count: int = Field(ge=1)
+    overall: RelationshipSliceComparison
+    predicates: dict[ClaimPredicate, RelationshipSliceComparison]
+    source_pairs: dict[str, RelationshipSliceComparison]
+    baseline_confusion_matrix: dict[RelationshipLabel, dict[RelationshipLabel, int]]
+    candidate_confusion_matrix: dict[RelationshipLabel, dict[RelationshipLabel, int]]
+    prediction_transition_matrix: dict[RelationshipLabel, dict[RelationshipLabel, int]]
+    paired_outcomes: PairedOutcomeSummary
+    candidate_latency: CandidateLatencyMetrics
+    outcomes: tuple[CandidateCaseOutcome, ...]
+    promotion_status: CandidatePromotionStatus = "blocked"
+    promotion_blockers: tuple[str, ...] = _DEVELOPMENT_PROMOTION_BLOCKERS
+    caveats: tuple[str, ...] = _DEVELOPMENT_CAVEATS
+
+    @model_validator(mode="after")
+    def validate_report(self) -> RelationshipDevelopmentCandidateComparisonReport:
+        if self.generated_at.tzinfo is None:
+            raise ValueError("development comparison generated_at must be timezone-aware")
+        if self.overall.baseline.case_count != self.case_count:
+            raise ValueError("development report case_count must match overall metrics")
+        if self.paired_outcomes.case_count != self.case_count:
+            raise ValueError("development report case_count must match paired outcomes")
+        if self.candidate_latency.case_count != self.case_count:
+            raise ValueError("development report case_count must match latency metrics")
+        if len(self.outcomes) != self.case_count:
+            raise ValueError("development report must retain every case outcome")
+        outcome_ids = [outcome.case_id for outcome in self.outcomes]
+        if len(outcome_ids) != len(set(outcome_ids)):
+            raise ValueError("development report outcome IDs must be unique")
+        for matrix_name in (
+            "baseline_confusion_matrix",
+            "candidate_confusion_matrix",
+            "prediction_transition_matrix",
+        ):
+            matrix = getattr(self, matrix_name)
+            if set(matrix) != set(RELATIONSHIP_LABELS) or any(
+                set(row) != set(RELATIONSHIP_LABELS) for row in matrix.values()
+            ):
+                raise ValueError(f"{matrix_name} must contain every relationship label")
+            if any(count < 0 for row in matrix.values() for count in row.values()):
+                raise ValueError(f"{matrix_name} counts must be non-negative")
+            if sum(sum(row.values()) for row in matrix.values()) != self.case_count:
+                raise ValueError(f"{matrix_name} must cover every case")
+        identity = canonical_sha256(
+            {
+                "reviewed_pool_sha256": self.reviewed_pool_sha256,
+                "prediction_batch_sha256": self.prediction_batch_sha256,
+            }
+        )
+        expected_report_id = f"{self.reviewed_pool_id}-development-candidate-{identity[:12]}"
+        if self.report_id != expected_report_id:
+            raise ValueError(
+                "development report_id must match its reviewed pool and prediction batch"
+            )
+        if self.development_review.reviewed_pool_sha256 != self.reviewed_pool_sha256:
+            raise ValueError("development review must match reviewed_pool_sha256")
+        if self.promotion_blockers != _DEVELOPMENT_PROMOTION_BLOCKERS:
+            raise ValueError("development report must retain every fixed promotion blocker")
+        if self.caveats != _DEVELOPMENT_CAVEATS:
+            raise ValueError("development report must retain every fixed caveat")
+        return self
+
+
 def candidate_task_sha256(task: CandidateEvaluationTask) -> str:
     """Hash a candidate task without its self-describing identity fields."""
     return canonical_sha256(
@@ -443,10 +569,8 @@ def candidate_prediction_batch_sha256(batch: CandidatePredictionBatch) -> str:
     )
 
 
-def build_candidate_evaluation_task(pool: RelationshipPool) -> CandidateEvaluationTask:
-    """Export exact model inputs only after independent adjudication is complete."""
-    if pool.adjudication is None:
-        raise ValueError("candidate evaluation requires a finalized independently adjudicated pool")
+def _build_candidate_evaluation_task(pool: RelationshipPool) -> CandidateEvaluationTask:
+    """Build the label-free task after the caller enforces its review boundary."""
     cases = tuple(
         sorted(
             (CandidateCaseInput.model_validate(case.review_identity()) for case in pool.cases),
@@ -468,6 +592,27 @@ def build_candidate_evaluation_task(pool: RelationshipPool) -> CandidateEvaluati
         task_sha256=digest,
         **payload,
     )
+
+
+def build_candidate_evaluation_task(pool: RelationshipPool) -> CandidateEvaluationTask:
+    """Export exact model inputs only after independent adjudication is complete."""
+    if pool.adjudication is None:
+        raise ValueError("candidate evaluation requires a finalized independently adjudicated pool")
+    return _build_candidate_evaluation_task(pool)
+
+
+def build_development_candidate_evaluation_task(
+    pool: RelationshipPool,
+) -> CandidateEvaluationTask:
+    """Export exact model inputs from one reviewed pool for development use only."""
+    if pool.adjudication is not None:
+        raise ValueError(
+            "development candidate evaluation requires a single-review pool; "
+            "use candidate-task for independently adjudicated gold"
+        )
+    if pool.judgment_status != "reviewed" or pool.reviewer is None or pool.reviewed_at is None:
+        raise ValueError("development candidate evaluation requires one complete reviewed pool")
+    return _build_candidate_evaluation_task(pool)
 
 
 def _prediction_metadata(task: CandidateEvaluationTask, case: CandidateCaseInput) -> dict[str, str]:
@@ -674,22 +819,19 @@ def _transition_matrix(
     }
 
 
-def score_relationship_candidate(
-    pool: RelationshipPool,
-    task: CandidateEvaluationTask,
-    batch: CandidatePredictionBatch,
-    *,
-    generated_at: datetime | None = None,
-) -> RelationshipCandidateComparisonReport:
-    """Compare one candidate with captured deployed labels over exact adjudicated gold."""
-    if pool.adjudication is None:
-        raise ValueError("candidate scoring requires a finalized independently adjudicated pool")
-    expected_task = build_candidate_evaluation_task(pool)
-    if task != expected_task:
-        raise ValueError("candidate task does not match the exact adjudicated pool capture")
-    if batch.task_id != task.task_id or batch.task_sha256 != task.task_sha256:
-        raise ValueError("candidate prediction batch does not match the evaluation task")
+@dataclass(frozen=True, slots=True)
+class _CandidateMeasurements:
+    baseline: RelationshipScoreSet
+    candidate: RelationshipScoreSet
+    outcomes: tuple[CandidateCaseOutcome, ...]
+    paired: PairedOutcomeSummary
 
+
+def _measure_candidate(
+    pool: RelationshipPool,
+    batch: CandidatePredictionBatch,
+) -> _CandidateMeasurements:
+    """Calculate paired measurements after task and review provenance are verified."""
     baseline_predictions = {case.case_id: case.system_prediction.label for case in pool.cases}
     candidate_predictions = {
         prediction.case_id: prediction.predicted_label for prediction in batch.predictions
@@ -702,7 +844,7 @@ def score_relationship_candidate(
     for case_id in sorted(case_by_id):
         case = case_by_id[case_id]
         if case.gold_label is None:
-            raise ValueError("adjudicated pool contains an unlabeled case")
+            raise ValueError("reviewed pool contains an unlabeled case")
         baseline_label = baseline_predictions[case_id]
         candidate_label = candidate_predictions[case_id]
         outcomes.append(
@@ -732,6 +874,34 @@ def score_relationship_candidate(
             outcome.baseline_label != outcome.candidate_label for outcome in outcome_tuple
         ),
     )
+    return _CandidateMeasurements(
+        baseline=baseline,
+        candidate=candidate,
+        outcomes=outcome_tuple,
+        paired=paired,
+    )
+
+
+def score_relationship_candidate(
+    pool: RelationshipPool,
+    task: CandidateEvaluationTask,
+    batch: CandidatePredictionBatch,
+    *,
+    generated_at: datetime | None = None,
+) -> RelationshipCandidateComparisonReport:
+    """Compare one candidate with captured deployed labels over exact adjudicated gold."""
+    if pool.adjudication is None:
+        raise ValueError("candidate scoring requires a finalized independently adjudicated pool")
+    expected_task = build_candidate_evaluation_task(pool)
+    if task != expected_task:
+        raise ValueError("candidate task does not match the exact adjudicated pool capture")
+    if batch.task_id != task.task_id or batch.task_sha256 != task.task_sha256:
+        raise ValueError("candidate prediction batch does not match the evaluation task")
+
+    measurements = _measure_candidate(pool, batch)
+    baseline = measurements.baseline
+    candidate = measurements.candidate
+    outcome_tuple = measurements.outcomes
 
     gold_pool_hash = canonical_sha256(pool)
     report_identity = canonical_sha256(
@@ -768,7 +938,75 @@ def score_relationship_candidate(
         baseline_confusion_matrix=baseline.confusion_matrix,
         candidate_confusion_matrix=candidate.confusion_matrix,
         prediction_transition_matrix=_transition_matrix(outcome_tuple),
-        paired_outcomes=paired,
+        paired_outcomes=measurements.paired,
+        candidate_latency=_latency(batch.predictions),
+        outcomes=outcome_tuple,
+    )
+
+
+def score_relationship_development_candidate(
+    pool: RelationshipPool,
+    task: CandidateEvaluationTask,
+    batch: CandidatePredictionBatch,
+    *,
+    review_assistance: ReviewAssistance,
+    generated_at: datetime | None = None,
+) -> RelationshipDevelopmentCandidateComparisonReport:
+    """Compare a candidate against one review without creating promotion evidence."""
+    expected_task = build_development_candidate_evaluation_task(pool)
+    if task != expected_task:
+        raise ValueError("candidate task does not match the exact single-review pool capture")
+    if batch.task_id != task.task_id or batch.task_sha256 != task.task_sha256:
+        raise ValueError("candidate prediction batch does not match the evaluation task")
+    if review_assistance not in {"unassisted", "ai_assisted"}:
+        raise ValueError("review_assistance must be unassisted or ai_assisted")
+
+    assert pool.reviewer is not None and pool.reviewed_at is not None
+    measurements = _measure_candidate(pool, batch)
+    baseline = measurements.baseline
+    candidate = measurements.candidate
+    outcome_tuple = measurements.outcomes
+    reviewed_pool_hash = canonical_sha256(pool)
+    report_identity = canonical_sha256(
+        {
+            "reviewed_pool_sha256": reviewed_pool_hash,
+            "prediction_batch_sha256": batch.batch_sha256,
+        }
+    )
+    completed_at = generated_at or datetime.now(UTC)
+    return RelationshipDevelopmentCandidateComparisonReport(
+        report_id=(f"{pool.pool_id}-development-candidate-{report_identity[:12]}"),
+        generated_at=completed_at,
+        reviewed_pool_id=pool.pool_id,
+        reviewed_pool_sha256=reviewed_pool_hash,
+        source_capture_sha256=task.source_capture_sha256,
+        task_id=task.task_id,
+        task_sha256=task.task_sha256,
+        prediction_batch_id=batch.batch_id,
+        prediction_batch_sha256=batch.batch_sha256,
+        rubric_version=pool.rubric_version,
+        baseline_relationship_rule_version=pool.relationship_rule_version,
+        candidate_system=batch.system,
+        development_review=SingleReviewDevelopmentProvenance(
+            reviewer=pool.reviewer,
+            reviewed_at=pool.reviewed_at,
+            reviewed_pool_sha256=reviewed_pool_hash,
+            review_assistance=review_assistance,
+        ),
+        case_count=len(pool.cases),
+        overall=_comparison(baseline.overall, candidate.overall),
+        predicates={
+            name: _comparison(baseline.predicates[name], value)
+            for name, value in candidate.predicates.items()
+        },
+        source_pairs={
+            name: _comparison(baseline.source_pairs[name], value)
+            for name, value in candidate.source_pairs.items()
+        },
+        baseline_confusion_matrix=baseline.confusion_matrix,
+        candidate_confusion_matrix=candidate.confusion_matrix,
+        prediction_transition_matrix=_transition_matrix(outcome_tuple),
+        paired_outcomes=measurements.paired,
         candidate_latency=_latency(batch.predictions),
         outcomes=outcome_tuple,
     )

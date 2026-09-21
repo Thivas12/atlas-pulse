@@ -96,6 +96,21 @@ count. The ordinary scorer consumes this pool and surfaces the provenance in bot
 Markdown. Software can verify artifact identity and distinct names; it cannot prove that the
 humans worked independently.
 
+## Single-review development path
+
+Independent adjudication remains the requirement for public comparative evidence, but it is too
+heavy for every exploratory iteration by one operator. A separate development path accepts one
+complete schema `1.0.0` reviewed pool and never upgrades it to public gold. It does not create
+placeholder reviewers or treat an AI system as an independent second person.
+
+`development-candidate-task` exports the same label-free evidence contract used by the strict
+sandbox. `development-candidate-score` records the exact reviewed-pool hash, reviewer, review time,
+and an explicit `unassisted` or `ai_assisted` declaration. Its separately typed report carries
+`single_review_development` scope, adds the missing independent agreement/adjudication as a fixed
+promotion blocker, and is rejected by the agent release workflow's independently adjudicated
+relationship-report contract. This makes the result useful for bounded error analysis while
+preventing it from silently becoming release evidence.
+
 ## Gold-blind candidate sandbox
 
 Candidate evaluation is a separate, non-promoting stage. It accepts only a final schema `1.1.0`
@@ -173,5 +188,7 @@ See [ADR 0014](adr/0014-human-reviewed-claim-pair-benchmark.md) for the benchmar
 [ADR 0015](adr/0015-independent-review-adjudication.md) for gold-label finalization,
 [ADR 0019](adr/0019-gold-blind-relationship-candidate-sandbox.md) for candidate isolation and the
 non-promotion boundary,
-[ADR 0020](adr/0020-pinned-local-relationship-nli-runner.md) for local NLI execution, and
+[ADR 0020](adr/0020-pinned-local-relationship-nli-runner.md) for local NLI execution,
+[ADR 0041](adr/0041-single-review-relationship-development-evaluation.md) for the separate
+single-review development boundary, and
 [`evals/relationships/README.md`](../evals/relationships/README.md) for commands and the rubric.

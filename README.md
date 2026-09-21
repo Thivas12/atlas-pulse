@@ -408,6 +408,12 @@ then feed its complete predictions into a content-addressed paired comparison. E
 report remains blocked from promotion until representative evidence, an explicit quality/latency
 policy, regression verification, and human approval exist.
 
+For bounded work by one operator, the relationship evaluator also provides separately named
+`development-candidate-*` commands. They accept one complete review, disclose whether labeling was
+AI-assisted, emit a separately typed development-only report, and cannot enter the independently
+adjudicated agent-release path. This supports honest iteration without inventing reviewer
+identities or weakening the stricter public-evidence contract.
+
 Grounded briefs have a separate evaluator so a generator never receives human answers or grades.
 Capture the live evidence task first; model execution remains a deliberately separate local step:
 
@@ -792,25 +798,17 @@ credential solely for transaction metering.
 
 ## Next milestones
 
-1. Populate the first multi-capture campaign after deployment and use its globally pooled slice
-   trajectories to decide whether a free local cross-encoder earns its added latency and
-   complexity.
-2. Run the live claim-pair benchmark through two independent reviews and adjudication, execute the
-   checked-in revision-pinned local NLI candidate, and populate the gold-blind paired report before
-   proposing any annotation version or release threshold.
-3. Execute the checked-in Qwen grounded-answer candidate over a fresh live gold-free task, complete
-   two independent model-blind reviews, resolve disputed fields through the checked-in adjudication
-   workflow, and populate the final descriptive report before proposing any threshold or preflight
-   policy change.
-4. Deploy one reviewed exact commit through a resource-capped public HTTPS slice, schedule the
-   checked-in probe and resource collectors, then accumulate at least 30 consecutive aligned UTC
-   sample dates with passing poll-heartbeat and upstream-age checks for every required source, plus
-   real restart, encrypted off-host backup, and isolated restore evidence. Publish only the
-   measurements actually observed; sampled freshness is not an SLA or completeness guarantee.
-5. Run at least three fresh grounded-answer/trajectory captures through independent review and the
-   pinned release policy. Only after real evidence is eligible and an exact-scope approval exists,
-   design a separately authenticated canary execution, kill switch, and rollback boundary; do not
-   enable evidence triage, impact assessment, or forecasting agents beforehand.
+1. Run one live claim-pair capture through the single-review development path and the checked-in,
+   revision-pinned local NLI candidate.
+2. Inspect the exact paired gains and regressions, then either improve the deterministic claim rule
+   or record why the local candidate does not justify its added latency and complexity.
+3. Run one bounded Qwen grounded-answer development capture after the relationship findings are
+   settled; keep agent execution disabled until its existing release requirements are genuinely met.
+
+Independent duplicate review, multi-capture campaigns, and 30-day operational sampling remain
+available when a future claim specifically requires them. They are not prerequisites for ongoing
+single-operator development. Existing point-in-time retrieval, restart, encrypted-backup, and
+isolated-restore artifacts should be described only as the observations they actually contain.
 
 ## Data and attribution
 

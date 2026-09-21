@@ -24,6 +24,10 @@ can change results while retaining the same marketing name.
 
 Add a separate `candidate-task` and `candidate-score` workflow after final adjudication.
 
+[ADR 0041](0041-single-review-relationship-development-evaluation.md) later adds separately named
+and separately typed development-only commands for one reviewed pool. It does not relax this
+independently adjudicated candidate or promotion boundary.
+
 1. Refuse to create a candidate task from an unreviewed or single-review pool. A schema `1.1.0`
    pool with independent adjudication provenance is mandatory.
 2. Export only the evidence fields shown to human reviewers: exact source documents and hashes,

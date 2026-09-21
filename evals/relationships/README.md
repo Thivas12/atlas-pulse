@@ -148,7 +148,45 @@ representative pool has completed the independent-review and adjudication workfl
 [`docs/adr/0015-independent-review-adjudication.md`](../../docs/adr/0015-independent-review-adjudication.md)
 for the provenance and blinding decision.
 
-## 5. Evaluate an external local candidate without exposing gold
+## 5. Run a bounded single-review development comparison
+
+Independent duplicate review is necessary only when the result will support a public comparative
+or promotion claim. An independently operated development loop can use one complete reviewed pool
+without inventing extra reviewer identities. This path is explicit, separately typed, and always
+blocked from promotion.
+
+After importing one completed review with the ordinary `review` command, export a label-blind task:
+
+```bash
+uv run atlas-pulse-evaluate-relationships development-candidate-task \
+  --pool artifacts/relationship-evaluation/reviewed-pool.json \
+  --output artifacts/relationship-evaluation/development-task.json \
+  --predictions-output artifacts/relationship-evaluation/development-predictions.csv
+```
+
+Run the pinned local NLI candidate exactly as shown below, using the development task and prediction
+template paths. Then create a development-only comparison and declare whether the single review
+used AI assistance:
+
+```bash
+uv run atlas-pulse-evaluate-relationships development-candidate-score \
+  --pool artifacts/relationship-evaluation/reviewed-pool.json \
+  --task artifacts/relationship-evaluation/development-task.json \
+  --predictions artifacts/relationship-evaluation/development-predictions.completed.csv \
+  --candidate-definition artifacts/relationship-evaluation/candidate-system.json \
+  --review-assistance ai_assisted \
+  --output-batch artifacts/relationship-evaluation/development-batch.json \
+  --output-json artifacts/relationship-evaluation/development-report.json \
+  --output-markdown artifacts/relationship-evaluation/development-report.md
+```
+
+Use `--review-assistance unassisted` only when no AI system contributed to the labels. The report
+records `single-review-development-v1`, the reviewer and pool hash, the assistance declaration, and
+an additional single-review promotion blocker. It is not accepted as the independently adjudicated
+relationship report required by the agent release workflow. Keep the stricter path below for any
+future public quality or promotion claim.
+
+## 6. Evaluate an external local candidate without exposing adjudicated gold
 
 Create a model-facing task only after adjudication:
 
@@ -244,3 +282,5 @@ does not execute a model or modify the gold pool or production annotations. See
 [`docs/adr/0019-gold-blind-relationship-candidate-sandbox.md`](../../docs/adr/0019-gold-blind-relationship-candidate-sandbox.md)
 and
 [`docs/adr/0020-pinned-local-relationship-nli-runner.md`](../../docs/adr/0020-pinned-local-relationship-nli-runner.md).
+The separately constrained one-review path is documented in
+[`docs/adr/0041-single-review-relationship-development-evaluation.md`](../../docs/adr/0041-single-review-relationship-development-evaluation.md).

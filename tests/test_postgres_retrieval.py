@@ -338,6 +338,79 @@ async def test_candidates_apply_all_filters_in_one_repeatable_read_snapshot() ->
     }
 
 
+async def test_lexical_candidates_skip_dense_setup_and_query() -> None:
+    lexical_event = make_event("event-1")
+    lexical_row = {
+        "stream_id": "200-0",
+        "event_json": lexical_event.model_dump(mode="json"),
+        "document_text": "Tornado warning",
+        "score": 0.81,
+        "distance_km": None,
+    }
+    engine = FakeEngine(results=[FakeResult(), FakeResult(rows=[lexical_row])])
+
+    batch = await store_with(engine).candidates(
+        SearchQuery(text="dangerous storm", ranking_mode="lexical"),
+        None,
+        embedding_model="test/model",
+    )
+
+    assert batch.lexical[0].message.event.event_id == "event-1"
+    assert batch.dense == ()
+    executions = engine.connection.executions
+    assert len(executions) == 2
+    assert "REPEATABLE READ" in executions[0][0]
+    assert "websearch_to_tsquery" in executions[1][0]
+    assert "hnsw.iterative_scan" not in "\n".join(statement for statement, _ in executions)
+    parameters = cast(dict[str, object], executions[1][1])
+    assert parameters["lexical_query"] == "dangerous OR storm"
+    assert "query_embedding" not in parameters
+    assert "embedding_model" not in parameters
+
+
+async def test_dense_candidates_skip_lexical_query() -> None:
+    dense_event = make_event("event-2")
+    dense_row = {
+        "stream_id": "201-0",
+        "event_json": dense_event.model_dump_json(),
+        "document_text": "Residents should shelter",
+        "score": 0.93,
+        "distance_km": None,
+    }
+    engine = FakeEngine(results=[FakeResult(), FakeResult(), FakeResult(rows=[dense_row])])
+
+    batch = await store_with(engine).candidates(
+        SearchQuery(text="dangerous storm", ranking_mode="dense"),
+        (0.6, 0.8, 0.0),
+        embedding_model="test/model",
+    )
+
+    assert batch.lexical == ()
+    assert batch.dense[0].message.event.event_id == "event-2"
+    executions = engine.connection.executions
+    assert len(executions) == 3
+    assert "REPEATABLE READ" in executions[0][0]
+    assert "hnsw.iterative_scan" in executions[1][0]
+    assert "embedding <=>" in executions[2][0]
+    parameters = cast(dict[str, object], executions[2][1])
+    assert parameters["query_embedding"] == "[0.6,0.8,0]"
+    assert parameters["embedding_model"] == "test/model"
+    assert "lexical_query" not in parameters
+
+
+async def test_dense_candidates_require_a_query_embedding() -> None:
+    engine = FakeEngine()
+
+    with pytest.raises(ValueError, match="query embedding"):
+        await store_with(engine).candidates(
+            SearchQuery(text="dangerous storm", ranking_mode="dense"),
+            None,
+            embedding_model="test/model",
+        )
+
+    assert engine.connection.executions == []
+
+
 async def test_candidates_support_unfiltered_inactive_search_without_distance() -> None:
     event = make_event("event-1", expires_at=None)
     row = {

@@ -743,7 +743,11 @@ and [ADR 0036](docs/adr/0036-retrieval-independent-review-adjudication.md) for e
 retrieval reviews, agreement measurement, reviewer-blind disagreement resolution, and final gold
 provenance, and
 [ADR 0037](docs/adr/0037-explicit-typed-retrieval-constraints.md) for source-native eligibility
-filters, shared-mode predicate parity, and the frozen v2 evaluation boundary.
+filters, shared-mode predicate parity, and the frozen v2 evaluation boundary,
+[ADR 0038](docs/adr/0038-retrieval-capture-readiness.md) for commit-bound source-to-index
+diagnostics before live capture, and
+[ADR 0039](docs/adr/0039-mode-aware-retrieval-execution.md) for mode-isolated ablation execution
+and honest per-mode latency measurement.
 A repository-level [security policy](SECURITY.md) and versioned
 [threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current
 controls, residual risks, and owner-configured branch protections.

@@ -118,7 +118,11 @@ class HybridSearchService:
 
     async def search(self, query: SearchQuery) -> SearchResult:
         with tracer.start_as_current_span("retrieval.search") as span:
-            embedding = await self._embedder.embed_query(query.text)
+            uses_lexical = query.ranking_mode != "dense"
+            uses_dense = query.ranking_mode != "lexical"
+            span.set_attribute("atlas.retrieval.lexical_channel", uses_lexical)
+            span.set_attribute("atlas.retrieval.dense_channel", uses_dense)
+            embedding = await self._embedder.embed_query(query.text) if uses_dense else None
             candidates = await self._store.candidates(
                 query,
                 embedding,

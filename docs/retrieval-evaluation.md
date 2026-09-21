@@ -8,7 +8,7 @@ proofs beneath it.
 ## What is compared
 
 The production `/v1/search` endpoint exposes four versioned ranking modes over the same bounded
-dual-channel candidate contract:
+eligibility contract:
 
 | Mode | Ranking rule | Purpose |
 | --- | --- | --- |
@@ -18,13 +18,14 @@ dual-channel candidate contract:
 | `hybrid` | `rrf60-evidence-tiebreak-v2` | RRF with exact-phrase/token coverage only for ties |
 
 All modes preserve identical source, time, expiry, bounding-box, radius, source-native structured
-constraints, candidate-cap, model, and citation boundaries. Lexical and dense ablations select
-only candidates returned by their
-channel. RRF and hybrid use their union. Raw FTS and cosine scores are never treated as if they
-shared a calibrated scale. The reviewed v1 baseline showed that the original all-term lexical
+constraints, candidate-cap, model, and citation boundaries. Lexical and dense ablations execute
+and select only their own channel. RRF and hybrid execute both channels in one repeatable-read
+snapshot and use their union. Raw FTS and cosine scores are never treated as if they shared a
+calibrated scale. The reviewed v1 baseline showed that the original all-term lexical
 query returned no candidates and that additive hand-selected reranking weights reduced quality.
 [ADR 0011](adr/0011-baseline-driven-retrieval-hardening.md) records the measured decision to
-recover lexical candidates before considering a cross-encoder.
+recover lexical candidates before considering a cross-encoder. [ADR 0039](adr/0039-mode-aware-retrieval-execution.md)
+records the mode-isolated execution and latency boundary.
 
 ## Evidence workflow
 
@@ -223,8 +224,9 @@ uv run atlas-pulse-evaluate campaign \
 - Recall is pooled recall. Relevant evidence outside the union of captured results is unknown.
 - Live capture is a short sequence of requests, not a database-wide time-travel snapshot. A
   changed event revision aborts capture, but arrivals between modes can still alter rank context.
-- The lexical and dense ablations retain shared dual-channel candidate generation in the current
-  service implementation; their latency is end-to-end request latency, not isolated operator cost.
+- Latency remains an end-to-end client observation. Lexical and dense requests now avoid the
+  unused channel, but the measurement still includes API, database, filtering, serialization, and
+  dense query-embedding work when applicable; it is not a database-operator benchmark.
 - Unjudged documents receive zero gain and reduce judged rate; they are not proven irrelevant.
 - Citation traceability validates safe URL structure and event attachment, not factual truth.
 - One reviewer supports development decisions only. Public comparative claims require independent

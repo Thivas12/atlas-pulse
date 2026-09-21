@@ -247,6 +247,21 @@ class DeploymentTarget(StrictModel):
         _require_utc(self.deployed_at, "deployed_at")
         if self.execution_enabled is not False or self.caveats != DEPLOYMENT_TARGET_CAVEATS:
             raise ValueError("deployment targets must retain the closed execution boundary")
+        if self.environment == "workstation-funnel-public":
+            hostname = urlsplit(self.origin).hostname
+            assert hostname is not None
+            labels = hostname.split(".")
+            valid_label = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+            if (
+                len(labels) < 4
+                or labels[-2:] != ["ts", "net"]
+                or any(valid_label.fullmatch(label) is None for label in labels)
+            ):
+                raise ValueError("workstation Funnel targets require a full Tailscale DNS origin")
+            if "deploy/workstation-funnel/compose.yaml" not in self.compose_files:
+                raise ValueError(
+                    "workstation Funnel targets require the workstation Funnel Compose overlay"
+                )
         _validate_identity(
             self,
             prefix="deployment-target",

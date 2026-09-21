@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -19,6 +20,11 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
 
+import dns.exception
+import dns.message
+import dns.query
+import dns.rcode
+import dns.rdatatype
 import httpx
 from pydantic import ValidationError
 
@@ -50,6 +56,10 @@ from atlas_pulse.source_polling import SourceFreshnessItem, SourceFreshnessRespo
 _MAX_RESPONSE_BYTES = 1_048_576
 _READ_CHUNK_BYTES = 1_048_576
 _SOURCE_NAMES = frozenset({"usgs", "nws", "firms", "gdelt"})
+_PUBLIC_DOH_RESOLVERS = (
+    ("https://cloudflare-dns.com/dns-query", "1.1.1.1"),
+    ("https://dns.google/dns-query", "8.8.8.8"),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,15 +417,192 @@ def observe_certificate(
         return _failed_certificate(observed_at, "dns_or_connect_error")
 
 
-def _public_resolution(origin: str) -> bool:
+def _ordered_global_addresses(values: Sequence[str]) -> tuple[str, ...]:
+    try:
+        addresses = {ipaddress.ip_address(value) for value in values}
+    except ValueError:
+        return ()
+    if not addresses or any(not address.is_global for address in addresses):
+        return ()
+    return tuple(
+        str(address) for address in sorted(addresses, key=lambda item: (item.version, int(item)))
+    )
+
+
+def _system_public_addresses(origin: str) -> tuple[str, ...]:
     parsed = urlsplit(origin)
     assert parsed.hostname is not None
     try:
         answers = socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)
     except OSError:
-        return False
-    addresses = {answer[4][0] for answer in answers}
-    return bool(addresses) and all(ipaddress.ip_address(value).is_global for value in addresses)
+        return ()
+    return _ordered_global_addresses(tuple(str(answer[4][0]) for answer in answers))
+
+
+def _funnel_public_addresses(origin: str, timeout_seconds: float) -> tuple[str, ...]:
+    """Resolve a Funnel name through public DNS rather than local MagicDNS."""
+    parsed = urlsplit(origin)
+    assert parsed.hostname is not None
+    deadline = time.monotonic() + timeout_seconds
+    addresses: list[str] = []
+    for record_type in (dns.rdatatype.A, dns.rdatatype.AAAA):
+        query = dns.message.make_query(parsed.hostname, record_type)
+        for resolver_url, bootstrap_address in _PUBLIC_DOH_RESOLVERS:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                response = dns.query.https(
+                    query,
+                    resolver_url,
+                    timeout=min(remaining, 5.0),
+                    bootstrap_address=bootstrap_address,
+                    verify=True,
+                )
+            except (dns.exception.DNSException, httpx.HTTPError, OSError, ValueError):
+                continue
+            if response.rcode() != dns.rcode.NOERROR:
+                continue
+            records = [
+                str(record)
+                for answer in response.answer
+                if answer.rdtype == record_type
+                for record in answer
+            ]
+            addresses.extend(records)
+            if records:
+                break
+    return _ordered_global_addresses(addresses)
+
+
+def _public_addresses(target: DeploymentTarget, timeout_seconds: float) -> tuple[str, ...]:
+    if target.environment == "workstation-funnel-public":
+        return _funnel_public_addresses(target.origin, timeout_seconds)
+    return _system_public_addresses(target.origin)
+
+
+def _pinned_exchange(
+    hostname: str,
+    addresses: tuple[str, ...],
+    name: ProbeName,
+    timeout_seconds: float,
+) -> _Exchange:
+    """Issue one fixed HTTPS request to a prevalidated global address."""
+    started = time.perf_counter()
+    deadline = time.monotonic() + timeout_seconds
+    failures: set[ProbeFailureCode] = set()
+    request = (
+        f"GET {PROBE_PATHS[name]} HTTP/1.1\r\n"
+        f"Host: {hostname}\r\n"
+        "Accept: application/json\r\n"
+        "Connection: close\r\n"
+        "User-Agent: AtlasPulse-Operational-Evidence/1.1\r\n\r\n"
+    ).encode("ascii")
+    for address in addresses:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            failures.add("timeout")
+            break
+        try:
+            context = ssl.create_default_context()
+            with (
+                socket.create_connection((address, 443), timeout=remaining) as raw,
+                context.wrap_socket(raw, server_hostname=hostname) as wrapped,
+            ):
+                wrapped.settimeout(max(deadline - time.monotonic(), 0.001))
+                wrapped.sendall(request)
+                response = http.client.HTTPResponse(wrapped)
+                response.begin()
+                body = response.read(_MAX_RESPONSE_BYTES + 1)
+                status_code = response.status
+        except TimeoutError:
+            failures.add("timeout")
+            continue
+        except ssl.SSLError:
+            failures.add("tls_error")
+            continue
+        except (OSError, http.client.HTTPException):
+            failures.add("dns_or_connect_error")
+            continue
+        truncated = len(body) > _MAX_RESPONSE_BYTES
+        bounded = body[:_MAX_RESPONSE_BYTES]
+        elapsed = (time.perf_counter() - started) * 1_000
+        if truncated:
+            failure: ProbeFailureCode | None = "response_too_large"
+        elif status_code != 200:
+            failure = "http_status"
+        else:
+            failure = None
+        return _Exchange(status_code, elapsed, bounded, truncated, failure)
+    failure_code: ProbeFailureCode
+    if "tls_error" in failures:
+        failure_code = "tls_error"
+    elif "timeout" in failures:
+        failure_code = "timeout"
+    else:
+        failure_code = "dns_or_connect_error"
+    return _Exchange(
+        status_code=None,
+        latency_ms=(time.perf_counter() - started) * 1_000,
+        body=b"",
+        body_truncated=False,
+        failure_code=failure_code,
+    )
+
+
+def _observe_certificate_at_addresses(
+    target: DeploymentTarget,
+    observed_at: datetime,
+    timeout_seconds: float,
+    addresses: tuple[str, ...],
+) -> CertificateObservation:
+    parsed = urlsplit(target.origin)
+    assert parsed.hostname is not None
+    deadline = time.monotonic() + timeout_seconds
+    failures: set[ProbeFailureCode] = set()
+    for address in addresses:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            failures.add("timeout")
+            break
+        try:
+            context = ssl.create_default_context()
+            with (
+                socket.create_connection((address, 443), timeout=remaining) as raw,
+                context.wrap_socket(raw, server_hostname=parsed.hostname) as wrapped,
+            ):
+                der = wrapped.getpeercert(binary_form=True)
+                decoded = wrapped.getpeercert()
+                tls_version = wrapped.version()
+            if not isinstance(der, bytes) or not der or not decoded or not tls_version:
+                return _failed_certificate(observed_at, "invalid_payload")
+            not_before_raw = decoded.get("notBefore")
+            not_after_raw = decoded.get("notAfter")
+            if not isinstance(not_before_raw, str) or not isinstance(not_after_raw, str):
+                return _failed_certificate(observed_at, "invalid_payload")
+            not_before = datetime.fromtimestamp(ssl.cert_time_to_seconds(not_before_raw), tz=UTC)
+            not_after = datetime.fromtimestamp(ssl.cert_time_to_seconds(not_after_raw), tz=UTC)
+            return CertificateObservation(
+                checked_at=observed_at,
+                leaf_sha256=hashlib.sha256(der).hexdigest(),
+                not_before=not_before,
+                not_after=not_after,
+                remaining_seconds=(not_after - observed_at).total_seconds(),
+                hostname_verified=True,
+                tls_version=tls_version,
+                passed=not_before <= observed_at < not_after,
+            )
+        except TimeoutError:
+            failures.add("timeout")
+        except ssl.SSLError:
+            failures.add("tls_error")
+        except OSError:
+            failures.add("dns_or_connect_error")
+    if "tls_error" in failures:
+        return _failed_certificate(observed_at, "tls_error")
+    if "timeout" in failures:
+        return _failed_certificate(observed_at, "timeout")
+    return _failed_certificate(observed_at, "dns_or_connect_error")
 
 
 def _unreachable_probe(
@@ -506,21 +693,37 @@ def capture_deployment_probe(
     if not 0 < timeout_seconds <= 60:
         raise ValueError("probe timeout must be greater than zero and at most 60 seconds")
     timestamp = _require_utc(observed_at or datetime.now(UTC), "observed_at")
-    if transport is None and not _public_resolution(target.origin):
-        return _unreachable_probe(target, timestamp)
-    with httpx.Client(
-        base_url=target.origin,
-        timeout=timeout_seconds,
-        follow_redirects=False,
-        transport=transport,
-        trust_env=False,
-        headers={"User-Agent": "AtlasPulse-Operational-Evidence/1.1"},
-    ) as client:
-        health_exchange = _exchange(client, "health")
-        readiness_exchange = _exchange(client, "readiness")
-        freshness_exchange = _exchange(client, "source_freshness")
-        events_exchange = _exchange(client, "events")
-        preflight_exchange = _exchange(client, "agent_preflight")
+    addresses: tuple[str, ...] = ()
+    if transport is None:
+        addresses = _public_addresses(target, timeout_seconds)
+        if not addresses:
+            return _unreachable_probe(target, timestamp)
+        hostname = urlsplit(target.origin).hostname
+        assert hostname is not None
+        exchanges = tuple(
+            _pinned_exchange(hostname, addresses, name, timeout_seconds) for name in PROBE_PATHS
+        )
+        (
+            health_exchange,
+            readiness_exchange,
+            freshness_exchange,
+            events_exchange,
+            preflight_exchange,
+        ) = exchanges
+    else:
+        with httpx.Client(
+            base_url=target.origin,
+            timeout=timeout_seconds,
+            follow_redirects=False,
+            transport=transport,
+            trust_env=False,
+            headers={"User-Agent": "AtlasPulse-Operational-Evidence/1.1"},
+        ) as client:
+            health_exchange = _exchange(client, "health")
+            readiness_exchange = _exchange(client, "readiness")
+            freshness_exchange = _exchange(client, "source_freshness")
+            events_exchange = _exchange(client, "events")
+            preflight_exchange = _exchange(client, "agent_preflight")
     health, observed_version, observed_commit_sha = _parse_health(
         health_exchange,
         expected_status="ok",
@@ -542,7 +745,15 @@ def capture_deployment_probe(
         observed_at=timestamp,
     )
     preflight, boundary = _parse_preflight(preflight_exchange)
-    certificate = certificate_loader(target, timestamp, timeout_seconds)
+    if transport is None and certificate_loader is observe_certificate:
+        certificate = _observe_certificate_at_addresses(
+            target,
+            timestamp,
+            timeout_seconds,
+            addresses,
+        )
+    else:
+        certificate = certificate_loader(target, timestamp, timeout_seconds)
     return _build_probe(
         target,
         observed_at=timestamp,

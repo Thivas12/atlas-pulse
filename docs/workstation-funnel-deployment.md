@@ -197,6 +197,12 @@ was invalid. The helper refuses to capture when Git `HEAD` differs from the immu
 records one shared UTC timestamp for both observations, refreshes the current report, and appends a
 private local log without reading container logs or environments.
 
+For this profile, the public probe deliberately bypasses local MagicDNS. It resolves the full
+`*.ts.net` origin through public DNS-over-HTTPS, accepts only globally routable relay addresses,
+connects directly to one of those addresses, and still sends the original hostname for HTTP and
+verified TLS SNI. If public DNS, the relay, or certificate validation is unavailable, the sample is
+written as failing instead of falling back to the device's tailnet address.
+
 On Windows, schedule that exact checked-in command from an ordinary PowerShell session. Replace
 only the WSL username, distribution, project path, and desired local trigger time:
 

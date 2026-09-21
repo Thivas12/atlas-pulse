@@ -747,7 +747,9 @@ filters, shared-mode predicate parity, and the frozen v2 evaluation boundary,
 [ADR 0038](docs/adr/0038-retrieval-capture-readiness.md) for commit-bound source-to-index
 diagnostics before live capture, and
 [ADR 0039](docs/adr/0039-mode-aware-retrieval-execution.md) for mode-isolated ablation execution
-and honest per-mode latency measurement.
+and honest per-mode latency measurement, and
+[ADR 0040](docs/adr/0040-pin-workstation-funnel-probes-to-public-relays.md) for public-DNS Funnel
+resolution, global relay pinning, and preserved hostname verification.
 A repository-level [security policy](SECURITY.md) and versioned
 [threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current
 controls, residual risks, and owner-configured branch protections.

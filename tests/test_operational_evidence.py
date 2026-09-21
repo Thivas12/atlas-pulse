@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import http.client
 import json
+import socket
 import ssl
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypedDict, Unpack
 
+import dns.message
+import dns.query
+import dns.rdatatype
+import dns.rrset
 import httpx
 import pytest
 from pydantic import ValidationError
 
+import atlas_pulse.operational_evidence.capture as capture_module
 from atlas_pulse.operational_evidence import (
     BackupEvidence,
     CertificateObservation,
@@ -401,10 +408,312 @@ def test_probe_records_http_connection_and_oversized_failures(
     assert probe.certificate.failure_code == "tls_error"
 
     monkeypatch.setattr(
-        "atlas_pulse.operational_evidence.capture._public_resolution", lambda _origin: False
+        "atlas_pulse.operational_evidence.capture._public_addresses",
+        lambda _target, _timeout: (),
     )
     unreachable = capture_deployment_probe(target, observed_at=_START + timedelta(minutes=2))
     assert all(item.failure_code == "dns_or_connect_error" for item in unreachable.endpoints)
+
+
+def test_system_resolution_rejects_mixed_private_and_public_addresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answers = (
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", 443)),
+        (
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            6,
+            "",
+            ("100.101.102.103", 443),
+        ),
+    )
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_args, **_kwargs: answers)
+
+    assert capture_module._system_public_addresses("https://atlas.example") == ()
+
+
+def test_workstation_funnel_resolution_uses_public_resolvers_and_global_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def resolve(
+        query: dns.message.Message,
+        where: str,
+        *,
+        timeout: float,
+        bootstrap_address: str,
+        verify: bool,
+    ) -> dns.message.Message:
+        assert timeout > 0
+        assert verify is True
+        question = query.question[0]
+        record_type = dns.rdatatype.to_text(question.rdtype)
+        calls.append((record_type, where, bootstrap_address))
+        response = dns.message.make_response(query)
+        value = "1.1.1.1" if record_type == "A" else "2606:4700:4700::1111"
+        response.answer.append(
+            dns.rrset.from_text(
+                "atlas-pc.example-tailnet.ts.net",
+                60,
+                "IN",
+                record_type,
+                value,
+            )
+        )
+        return response
+
+    monkeypatch.setattr(dns.query, "https", resolve)
+    target = build_deployment_target(
+        origin="https://atlas-pc.example-tailnet.ts.net",
+        commit_sha=_COMMIT,
+        application_version="0.12.0",
+        environment="workstation-funnel-public",
+        deployed_at=_START,
+        compose_files=("compose.yaml", "deploy/workstation-funnel/compose.yaml"),
+    )
+
+    assert capture_module._public_addresses(target, 10.0) == (
+        "1.1.1.1",
+        "2606:4700:4700::1111",
+    )
+    assert calls == [
+        ("A", "https://cloudflare-dns.com/dns-query", "1.1.1.1"),
+        ("AAAA", "https://cloudflare-dns.com/dns-query", "1.1.1.1"),
+    ]
+
+
+def test_pinned_exchange_connects_to_validated_address_with_original_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connections: list[tuple[str, int]] = []
+    server_names: list[str] = []
+    requests: list[bytes] = []
+
+    class Socket:
+        def __enter__(self) -> Socket:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def settimeout(self, _timeout: float) -> None:
+            return None
+
+        def sendall(self, request: bytes) -> None:
+            requests.append(request)
+
+    class Context:
+        def wrap_socket(self, raw: Socket, *, server_hostname: str) -> Socket:
+            server_names.append(server_hostname)
+            return raw
+
+    class Response:
+        status = 200
+
+        def __init__(self, _socket: Socket) -> None:
+            pass
+
+        def begin(self) -> None:
+            return None
+
+        def read(self, _amount: int) -> bytes:
+            return b"{}"
+
+    def connect(address: tuple[str, int], *, timeout: float) -> Socket:
+        assert timeout > 0
+        connections.append(address)
+        return Socket()
+
+    monkeypatch.setattr(socket, "create_connection", connect)
+    monkeypatch.setattr(ssl, "create_default_context", Context)
+    monkeypatch.setattr(http.client, "HTTPResponse", Response)
+
+    exchange = capture_module._pinned_exchange(
+        "atlas-pc.example-tailnet.ts.net",
+        ("1.1.1.1",),
+        "health",
+        10.0,
+    )
+
+    assert exchange.status_code == 200
+    assert exchange.failure_code is None
+    assert connections == [("1.1.1.1", 443)]
+    assert server_names == ["atlas-pc.example-tailnet.ts.net"]
+    assert requests == [
+        b"GET /api/healthz HTTP/1.1\r\n"
+        b"Host: atlas-pc.example-tailnet.ts.net\r\n"
+        b"Accept: application/json\r\n"
+        b"Connection: close\r\n"
+        b"User-Agent: AtlasPulse-Operational-Evidence/1.1\r\n\r\n"
+    ]
+
+
+def test_real_probe_path_reuses_validated_addresses_for_http_and_tls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _target()
+    observed_at = _START + timedelta(minutes=5)
+    transport = _handler(target, observed_at)
+    exchanges: dict[str, capture_module._Exchange] = {}
+    with httpx.Client(base_url=target.origin, transport=transport) as client:
+        for name in PROBE_PATHS:
+            exchanges[name] = capture_module._exchange(client, name)
+    calls: list[tuple[str, tuple[str, ...], str]] = []
+
+    monkeypatch.setattr(
+        capture_module,
+        "_public_addresses",
+        lambda _target, _timeout: ("1.1.1.1",),
+    )
+
+    def exchange(
+        hostname: str,
+        addresses: tuple[str, ...],
+        name: str,
+        _timeout: float,
+    ) -> capture_module._Exchange:
+        calls.append((hostname, addresses, name))
+        return exchanges[name]
+
+    monkeypatch.setattr(capture_module, "_pinned_exchange", exchange)
+    monkeypatch.setattr(
+        capture_module,
+        "_observe_certificate_at_addresses",
+        lambda target_value, timestamp, _timeout, addresses: (
+            _certificate(target_value, timestamp, 10.0)
+            if addresses == ("1.1.1.1",)
+            else pytest.fail("certificate probe did not reuse the validated address")
+        ),
+    )
+
+    probe = capture_deployment_probe(target, observed_at=observed_at)
+
+    assert probe.passed is True
+    assert calls == [("atlas.example", ("1.1.1.1",), name) for name in PROBE_PATHS]
+
+
+def test_pinned_certificate_observation_uses_hostname_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _target()
+    connections: list[tuple[str, int]] = []
+    server_names: list[str] = []
+
+    class Socket:
+        def __enter__(self) -> Socket:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def getpeercert(self, binary_form: bool = False) -> bytes | dict[str, str]:
+            if binary_form:
+                return b"verified-leaf"
+            return {
+                "notBefore": "Sep 13 12:00:00 2026 GMT",
+                "notAfter": "Dec 12 12:00:00 2026 GMT",
+            }
+
+        def version(self) -> str:
+            return "TLSv1.3"
+
+    class Context:
+        def wrap_socket(self, raw: Socket, *, server_hostname: str) -> Socket:
+            server_names.append(server_hostname)
+            return raw
+
+    def connect(address: tuple[str, int], *, timeout: float) -> Socket:
+        assert timeout > 0
+        connections.append(address)
+        return Socket()
+
+    monkeypatch.setattr(socket, "create_connection", connect)
+    monkeypatch.setattr(ssl, "create_default_context", Context)
+
+    observation = capture_module._observe_certificate_at_addresses(
+        target,
+        _START,
+        10.0,
+        ("1.1.1.1",),
+    )
+
+    assert observation.passed is True
+    assert observation.hostname_verified is True
+    assert observation.tls_version == "TLSv1.3"
+    assert connections == [("1.1.1.1", 443)]
+    assert server_names == ["atlas.example"]
+
+
+def test_funnel_public_resolution_fails_closed_on_private_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def resolve(
+        query: dns.message.Message,
+        where: str,
+        *,
+        timeout: float,
+        bootstrap_address: str,
+        verify: bool,
+    ) -> dns.message.Message:
+        del timeout, bootstrap_address, verify
+        calls.append(where)
+        if "cloudflare" in where:
+            raise httpx.ConnectError("resolver unavailable")
+        question = query.question[0]
+        record_type = dns.rdatatype.to_text(question.rdtype)
+        response = dns.message.make_response(query)
+        value = "100.101.102.103" if record_type == "A" else "fd7a:115c:a1e0::1"
+        response.answer.append(
+            dns.rrset.from_text(
+                "atlas-pc.example-tailnet.ts.net",
+                60,
+                "IN",
+                record_type,
+                value,
+            )
+        )
+        return response
+
+    monkeypatch.setattr(dns.query, "https", resolve)
+
+    assert (
+        capture_module._funnel_public_addresses(
+            "https://atlas-pc.example-tailnet.ts.net",
+            10.0,
+        )
+        == ()
+    )
+    assert calls == [
+        "https://cloudflare-dns.com/dns-query",
+        "https://dns.google/dns-query",
+        "https://cloudflare-dns.com/dns-query",
+        "https://dns.google/dns-query",
+    ]
+
+
+def test_workstation_funnel_target_requires_matching_origin_and_overlay() -> None:
+    with pytest.raises(ValidationError, match="full Tailscale DNS origin"):
+        build_deployment_target(
+            origin="https://atlas.example",
+            commit_sha=_COMMIT,
+            application_version="0.12.0",
+            environment="workstation-funnel-public",
+            deployed_at=_START,
+            compose_files=("compose.yaml", "deploy/workstation-funnel/compose.yaml"),
+        )
+    with pytest.raises(ValidationError, match="workstation Funnel Compose overlay"):
+        build_deployment_target(
+            origin="https://atlas-pc.example-tailnet.ts.net",
+            commit_sha=_COMMIT,
+            application_version="0.12.0",
+            environment="workstation-funnel-public",
+            deployed_at=_START,
+            compose_files=("compose.yaml", "deploy/free-tier/compose.yaml"),
+        )
 
 
 def test_probe_models_reject_internally_inconsistent_observations() -> None:

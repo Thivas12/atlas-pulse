@@ -12,6 +12,7 @@ dependencies = [
     "alembic>=1.16.4,<2",
     "asyncpg>=0.30.0,<1",
     "cryptography>=50.0.1,<51",
+    "dnspython[doh]>=2.8.0,<3",
     "fastapi>=0.116.1,<1",
     "fastembed>=0.8.0,<0.9",
     "httpx[socks]>=0.28.1,<1",

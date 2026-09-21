@@ -47,11 +47,15 @@ independent attestations.
 The collector host, deployment operator, system clock, DNS resolver, Docker daemon, and statements
 that a backup is encrypted or off-host remain trusted inputs. Docker access is effectively root
 authority. Public HTTP uses fixed paths, verified hostname TLS, no redirects or proxy environment,
-and a preflight global-address check, but this is not a third-party availability monitor. Evidence
-retains response digests and bounded typed fields rather than source text, logs, container
-environments, credentials, or agent output. Review artifacts before publishing the evidence
-directory because origins, service names, timings, and backup file names are still operational
-metadata.
+and a preflight global-address check, but this is not a third-party availability monitor. A
+`workstation-funnel-public` target resolves its `*.ts.net` origin through certificate-verified
+public DNS-over-HTTPS and pins each probe connection to the returned global relay address. This
+prevents local MagicDNS from silently turning the sample into a tailnet-only request. Other
+profiles retain the system-resolver check and reject the entire result when any resolved address
+is non-global. Evidence retains response digests and bounded typed fields rather than source text,
+logs, container environments, credentials, or agent output. Review artifacts before publishing
+the evidence directory because origins, service names, timings, and backup file names are still
+operational metadata.
 
 ## 1. Bind the deployed commit
 

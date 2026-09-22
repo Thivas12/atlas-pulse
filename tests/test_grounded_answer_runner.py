@@ -773,7 +773,16 @@ def test_llama_runtime_owns_loopback_authenticated_tool_free_process(
     health_client = _QueueClient([_FakeResponse({"status": "ok"})])
 
     def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess([], 0, stdout="llama.cpp build-42\n", stderr="")
+        return subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=(
+                "0.00.000.343 I srv llama_server: initializing ...\n"
+                "version: 0.4.1-dev (build 11073, commit 1aa2954bd)\n"
+                "built with GNU 11.4.0 for Linux x86_64\n"
+            ),
+            stderr="",
+        )
 
     def fake_popen(command: list[str], **kwargs: object) -> _FakeProcess:
         commands.append(command)
@@ -815,6 +824,9 @@ def test_llama_runtime_owns_loopback_authenticated_tool_free_process(
     assert client_kwargs[0]["trust_env"] is False
     assert client_kwargs[0]["headers"] == {"Authorization": "Bearer local-secret"}
     assert health_client.requests == [("/health", None)]
+    assert runtime.system.runtime_version.startswith(
+        "version: 0.4.1-dev (build 11073, commit 1aa2954bd);binary_sha256="
+    )
     runtime.close()
     assert health_client.closed is True
     assert process.terminated is True

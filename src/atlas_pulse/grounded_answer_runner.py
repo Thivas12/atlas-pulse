@@ -334,6 +334,16 @@ def build_grounded_answer_system_definition(
     )
 
 
+def _llama_server_runtime_version(stdout: str, stderr: str) -> str:
+    """Extract the stable version line from modern llama-server banners."""
+    output = "\n".join(part for part in (stdout, stderr) if part)
+    normalized_lines = [" ".join(line.split()) for line in output.splitlines() if line.strip()]
+    for line in normalized_lines:
+        if line.casefold().startswith("version:"):
+            return line
+    return " ".join(output.split())
+
+
 class GroundedAnswerGeneration(StrictModel):
     """One schema-constrained runtime result with measured context usage."""
 
@@ -621,8 +631,10 @@ class LlamaServerRuntime:
             )
             if version_result.returncode != 0:
                 raise RuntimeError("llama-server --version failed")
-            version_text = version_result.stdout or version_result.stderr
-            normalized_version = " ".join(version_text.split())
+            normalized_version = _llama_server_runtime_version(
+                version_result.stdout,
+                version_result.stderr,
+            )
             self._system = build_grounded_answer_system_definition(
                 config,
                 executable_sha256=executable_hash,

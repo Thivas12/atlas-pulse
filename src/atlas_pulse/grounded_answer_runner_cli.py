@@ -67,6 +67,7 @@ class _CheckpointingRuntime:
         self._runtime = runtime
         self._task = task
         self._config_sha256 = canonical_sha256(config)
+        self._template_version = config.template_version
         self._checkpoint_path = checkpoint_path
         self._notify = notify
         self._cases: list[_CheckpointCase]
@@ -104,7 +105,10 @@ class _CheckpointingRuntime:
         for saved, expected in zip(checkpoint.cases, expected_cases, strict=True):
             if saved.case_id != expected.case_id or saved.query_id != expected.query_id:
                 raise ValueError("grounded-answer checkpoint is not an exact canonical task prefix")
-            if saved.generation.prompt_sha256 != grounded_answer_prompt_sha256(expected):
+            if saved.generation.prompt_sha256 != grounded_answer_prompt_sha256(
+                expected,
+                self._template_version,
+            ):
                 raise ValueError(
                     "grounded-answer checkpoint prompt identity does not match the task"
                 )
@@ -133,7 +137,10 @@ class _CheckpointingRuntime:
                 if index != expected_index:
                     raise ValueError("grounded-answer cases were requested outside canonical order")
                 generation = self._runtime.generate(expected)
-                if generation.prompt_sha256 != grounded_answer_prompt_sha256(expected):
+                if generation.prompt_sha256 != grounded_answer_prompt_sha256(
+                    expected,
+                    self._template_version,
+                ):
                     raise ValueError(
                         "grounded-answer runtime prompt identity changed before checkpoint"
                     )

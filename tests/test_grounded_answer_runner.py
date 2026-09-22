@@ -32,6 +32,7 @@ from atlas_pulse.grounded_answer_runner import (
     GroundedAnswerCandidateRun,
     GroundedAnswerGeneration,
     GroundedAnswerRunnerConfig,
+    GroundedAnswerRunnerTemplateVersion,
     LlamaServerRuntime,
     build_grounded_answer_system_definition,
     grounded_answer_candidate_run_sha256,
@@ -150,7 +151,11 @@ def _task() -> GroundedAnswerTask:
     )
 
 
-def _config(*, model_sha256: str = "c" * 64) -> GroundedAnswerRunnerConfig:
+def _config(
+    *,
+    model_sha256: str = "c" * 64,
+    template_version: GroundedAnswerRunnerTemplateVersion = GROUNDING_RUNNER_TEMPLATE_VERSION,
+) -> GroundedAnswerRunnerConfig:
     return GroundedAnswerRunnerConfig(
         candidate_id="local-grounded-runner-v1",
         model_id="example/revision-pinned-gguf",
@@ -158,6 +163,8 @@ def _config(*, model_sha256: str = "c" * 64) -> GroundedAnswerRunnerConfig:
         model_license="apache-2.0",
         model_file="model.gguf",
         model_file_sha256=model_sha256,
+        adapter_version=template_version,
+        template_version=template_version,
         context_length=4096,
         max_output_tokens=256,
         temperature=0.7,
@@ -210,6 +217,7 @@ class _FakeRuntime:
         system: CandidateSystemDefinition | None = None,
     ) -> None:
         self._system = system or _system(config)
+        self.template_version = config.template_version
         self.prompt_hash = prompt_hash
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
@@ -226,7 +234,8 @@ class _FakeRuntime:
         return GroundedAnswerGeneration(
             response=response,
             response_sha256=canonical_sha256(response),
-            prompt_sha256=self.prompt_hash or grounded_answer_prompt_sha256(case),
+            prompt_sha256=self.prompt_hash
+            or grounded_answer_prompt_sha256(case, self.template_version),
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             latency_ms=12.5,
@@ -264,6 +273,42 @@ def test_prompt_is_gold_free_injection_quoted_and_case_constrained() -> None:
     ]
     assert len(grounded_answer_prompt_sha256(available)) == 64
     assert len(grounded_answer_input_template_sha256()) == 64
+
+
+def test_v3_prompt_narrows_abstention_without_changing_v2_identity() -> None:
+    available = next(case for case in _task().cases if case.evidence)
+    v2 = "grounded-brief-qwen3-v2"
+    v3 = "grounded-brief-qwen3-v3"
+
+    v2_messages = render_grounded_answer_messages(available, v2)
+    v3_messages = render_grounded_answer_messages(available, v3)
+
+    assert (
+        "excerpts are absent, insufficient, or materially conflicting" in v2_messages[0]["content"]
+    )
+    assert "zero responsive claims are possible" not in v2_messages[1]["content"]
+    assert "supported negative finding is still an answer" in v3_messages[1]["content"]
+    assert "zero responsive claims are possible" in v3_messages[1]["content"]
+    assert grounded_answer_input_template_sha256(v2) == (
+        "e8dfd7aba49e02d4d73b84441ffb1e217ed2a681d4c1804935359d3e36fc148f"
+    )
+    assert grounded_answer_prompt_sha256(available, v2) == (
+        "6f4936cb40acc702a3ae6f72c28be858c8ccc0b2d4d2994262a8aa3f0031fde4"
+    )
+    assert grounded_answer_input_template_sha256(v2) != grounded_answer_input_template_sha256(v3)
+    assert grounded_answer_prompt_sha256(available, v2) != grounded_answer_prompt_sha256(
+        available,
+        v3,
+    )
+
+    legacy_config = _config(template_version=v2)
+    _submission, legacy_run, _batch = run_grounded_answer_candidate(
+        _task(),
+        legacy_config,
+        _FakeRuntime(legacy_config),
+        generated_at=GENERATED_AT,
+    )
+    assert legacy_run.template_version == v2
 
 
 def test_runner_produces_complete_submission_batch_and_blocked_trace() -> None:
@@ -1189,12 +1234,19 @@ def test_cache_cli_downloads_exact_revision_and_rejects_wrong_bytes(
     assert "outside the exact output artifact" in capsys.readouterr().err
 
 
-def test_checked_in_qwen_candidate_is_exactly_pinned() -> None:
-    path = (
-        Path(__file__).parents[1]
-        / "evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v2.json"
+@pytest.mark.parametrize(
+    ("version", "is_current"),
+    (("v2", False), ("v3", True)),
+)
+def test_checked_in_qwen_candidates_are_exactly_pinned(
+    version: str,
+    is_current: bool,
+) -> None:
+    path = Path(__file__).parents[1] / (
+        f"evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-{version}.json"
     )
     config = GroundedAnswerRunnerConfig.model_validate_json(path.read_text(encoding="utf-8"))
+    assert config.candidate_id == f"qwen3-1.7b-q8-grounded-brief-{version}"
     assert config.model_id == "Qwen/Qwen3-1.7B-GGUF"
     assert config.model_revision == "90862c4b9d2787eaed51d12237eafdfe7c5f6077"
     assert config.model_license == "apache-2.0"
@@ -1202,6 +1254,8 @@ def test_checked_in_qwen_candidate_is_exactly_pinned() -> None:
     assert config.model_file_sha256 == (
         "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a"
     )
-    assert config.template_version == GROUNDING_RUNNER_TEMPLATE_VERSION
+    assert config.template_version == f"grounded-brief-qwen3-{version}"
+    assert config.adapter_version == config.template_version
+    assert (config.template_version == GROUNDING_RUNNER_TEMPLATE_VERSION) is is_current
     assert config.context_length == 8192
     assert config.max_output_tokens == 512

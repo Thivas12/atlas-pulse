@@ -764,7 +764,9 @@ resolution, global relay pinning, and preserved hostname verification, and
 [ADR 0041](docs/adr/0041-single-review-relationship-development-evaluation.md) for honest,
 permanently non-promoting single-review relationship comparisons, and
 [ADR 0042](docs/adr/0042-single-review-grounded-answer-development-evaluation.md) for declared
-single-review grounded-answer evidence and reviewable abstentions.
+single-review grounded-answer evidence and reviewable abstentions, and
+[ADR 0043](docs/adr/0043-narrow-grounded-answer-abstention-policy.md) for the versioned grounded
+brief policy that distinguishes partial bounded answers from genuinely unanswerable cases.
 A repository-level [security policy](SECURITY.md) and versioned
 [threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current
 controls, residual risks, and owner-configured branch protections.

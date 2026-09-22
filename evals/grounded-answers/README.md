@@ -42,18 +42,18 @@ citation identity, or pack identity. A task case with no admitted evidence is re
 
 ## 2. Run the pinned local candidate
 
-The checked-in baseline is the official Apache-2.0
+The current checked-in development candidate uses the official Apache-2.0
 [`Qwen/Qwen3-1.7B-GGUF`](https://huggingface.co/Qwen/Qwen3-1.7B-GGUF) Q8 artifact. Its identity is
 fixed before review:
 
 | Field | Pinned value |
 | --- | --- |
-| Candidate | `qwen3-1.7b-q8-grounded-brief-v2` |
+| Candidate | `qwen3-1.7b-q8-grounded-brief-v3` |
 | Repository | `Qwen/Qwen3-1.7B-GGUF` |
 | Revision | `90862c4b9d2787eaed51d12237eafdfe7c5f6077` |
 | File | `Qwen3-1.7B-Q8_0.gguf` (about 1.8 GB) |
 | File SHA-256 | `061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a` |
-| Template | `grounded-brief-qwen3-v2` |
+| Template | `grounded-brief-qwen3-v3` |
 | Context / output budget | 8,192 / 512 tokens |
 
 Build a local `llama-server` executable using the
@@ -63,7 +63,7 @@ then provision the exact model in a network-enabled step:
 ```bash
 mkdir -p artifacts/models/qwen3-1.7b-q8
 uv run atlas-pulse-cache-grounded-answer-model \
-  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v2.json \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v3.json \
   --output artifacts/models/qwen3-1.7b-q8
 ```
 
@@ -74,12 +74,12 @@ task and the local executable:
 ```bash
 uv run atlas-pulse-run-grounded-answer \
   --task artifacts/grounded-answer-evaluation/task.json \
-  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v2.json \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v3.json \
   --model-dir artifacts/models/qwen3-1.7b-q8 \
   --llama-server /absolute/path/to/llama-server \
-  --output-submission artifacts/grounded-answer-evaluation/submission.qwen3.json \
-  --output-definition artifacts/grounded-answer-evaluation/candidate.qwen3.json \
-  --output-run artifacts/grounded-answer-evaluation/run.qwen3.json
+  --output-submission artifacts/grounded-answer-evaluation/submission.qwen3-v3.json \
+  --output-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v3.json \
+  --output-run artifacts/grounded-answer-evaluation/run.qwen3-v3.json
 ```
 
 The runner hashes the exact model and `llama-server` bytes, records the runtime version and fixed
@@ -90,10 +90,13 @@ The runner atomically checkpoints each completed case beside the requested run a
 only when the task, candidate configuration, runtime identity, and completed canonical prefix match
 exactly. The content-addressed run trace remains `promotion_status: blocked`.
 
-The v2 brief contract supersedes the non-completing v1 development attempt before human review. It
-retains the same pinned model and task boundary while limiting output to three short claims, two
-citations per claim, and 512 tokens so a single live case cannot consume an unbounded evaluation
-window.
+The v3 contract retains the exact v2 model, runtime, decoding parameters, task boundary, claim
+limit, citation limit, and output budget. It changes only the versioned instruction template:
+partial coverage, uncertainty, unrelated extra records, and supported negative findings no longer
+justify an automatic abstention. The v2 configuration remains checked in as the reproducible
+development baseline. A single assisted development review found that v2 abstained on all ten
+cases even though only two abstentions were appropriate; that result informed v3 but cannot support
+a public quality or promotion claim.
 
 No live candidate execution or quality result is checked into this repository. Run latency and
 answer quality remain unknown until the captured task is executed on target hardware and reviewed.
@@ -151,8 +154,8 @@ fully declared candidate—and create the protected review sheet:
 ```bash
 uv run atlas-pulse-evaluate-grounded-answers candidate-import \
   --task artifacts/grounded-answer-evaluation/task.json \
-  --submission artifacts/grounded-answer-evaluation/submission.qwen3.json \
-  --candidate-definition artifacts/grounded-answer-evaluation/candidate.qwen3.json \
+  --submission artifacts/grounded-answer-evaluation/submission.qwen3-v3.json \
+  --candidate-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v3.json \
   --output-batch artifacts/grounded-answer-evaluation/batch.json \
   --output-review-sheet artifacts/grounded-answer-evaluation/review.csv
 ```
@@ -293,4 +296,6 @@ execution boundary is recorded in
 field-only adjudication are recorded in
 [`ADR 0023`](../../docs/adr/0023-grounded-answer-independent-review-adjudication.md).
 The explicitly non-promoting single-review alternative is recorded in
-[`ADR 0042`](../../docs/adr/0042-single-review-grounded-answer-development-evaluation.md).
+[`ADR 0042`](../../docs/adr/0042-single-review-grounded-answer-development-evaluation.md). The
+versioned v3 abstention-policy change is recorded in
+[`ADR 0043`](../../docs/adr/0043-narrow-grounded-answer-abstention-policy.md).

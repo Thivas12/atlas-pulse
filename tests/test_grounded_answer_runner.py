@@ -277,8 +277,8 @@ def test_prompt_is_gold_free_injection_quoted_and_case_constrained() -> None:
 
 def test_v3_prompt_narrows_abstention_without_changing_v2_identity() -> None:
     available = next(case for case in _task().cases if case.evidence)
-    v2 = "grounded-brief-qwen3-v2"
-    v3 = "grounded-brief-qwen3-v3"
+    v2: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v2"
+    v3: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v3"
 
     v2_messages = render_grounded_answer_messages(available, v2)
     v3_messages = render_grounded_answer_messages(available, v3)

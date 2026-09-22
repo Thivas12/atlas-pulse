@@ -449,6 +449,7 @@ def test_model_and_system_identity_fail_closed(tmp_path: Path) -> None:
     assert system.runtime == "llama.cpp-server-cpu"
     assert system.model_artifact_sha256 == digest
     assert system.parameters["tokenizer_artifact_sha256"] == digest
+    assert system.parameters["structured_output_transport"] == "llama.cpp-json-schema-wrapper-v1"
     assert system.runtime_version.startswith("llama.cpp build-42;")
 
     model_path.write_bytes(b"changed")
@@ -624,7 +625,11 @@ def test_llama_runtime_counts_before_generation_and_validates_response() -> None
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     assert body["response_format"] == {
         "type": "json_schema",
-        "schema": grounded_answer_response_schema(available),
+        "json_schema": {
+            "name": "grounded_answer_response",
+            "strict": True,
+            "schema": grounded_answer_response_schema(available),
+        },
     }
 
 

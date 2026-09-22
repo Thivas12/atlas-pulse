@@ -67,6 +67,7 @@ _RUN_CAVEATS = (
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SERVER_ALIAS = "atlas-grounded-answer"
+_STRUCTURED_OUTPUT_TRANSPORT = "llama.cpp-json-schema-wrapper-v1"
 
 
 def _relative_path(value: str) -> str:
@@ -300,6 +301,7 @@ def _candidate_parameters(
         "threads": config.threads,
         "llama_server_executable_sha256": executable_sha256,
         "schema_constrained": True,
+        "structured_output_transport": _STRUCTURED_OUTPUT_TRANSPORT,
         "thinking": False,
         "cpu_only": True,
         "loopback_only": True,
@@ -744,7 +746,11 @@ class LlamaServerRuntime:
             "reasoning_effort": "none",
             "response_format": {
                 "type": "json_schema",
-                "schema": grounded_answer_response_schema(case),
+                "json_schema": {
+                    "name": "grounded_answer_response",
+                    "strict": True,
+                    "schema": grounded_answer_response_schema(case),
+                },
             },
         }
 

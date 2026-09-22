@@ -67,7 +67,11 @@ _RUN_CAVEATS = (
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SERVER_ALIAS = "atlas-grounded-answer"
-_STRUCTURED_OUTPUT_TRANSPORT = "llama.cpp-json-schema-wrapper-v1"
+_STRUCTURED_OUTPUT_TRANSPORT = "llama.cpp-sse-json-schema-wrapper-v1"
+_TOKEN_COUNT_TRANSPORT = "llama.cpp-chat-input-tokens-without-response-format-v1"
+_CONNECT_TIMEOUT_SECONDS = 10
+_WRITE_TIMEOUT_SECONDS = 30
+_POOL_TIMEOUT_SECONDS = 10
 
 
 def _relative_path(value: str) -> str:
@@ -302,6 +306,10 @@ def _candidate_parameters(
         "llama_server_executable_sha256": executable_sha256,
         "schema_constrained": True,
         "structured_output_transport": _STRUCTURED_OUTPUT_TRANSPORT,
+        "token_count_transport": _TOKEN_COUNT_TRANSPORT,
+        "connect_timeout_seconds": _CONNECT_TIMEOUT_SECONDS,
+        "write_timeout_seconds": _WRITE_TIMEOUT_SECONDS,
+        "pool_timeout_seconds": _POOL_TIMEOUT_SECONDS,
         "thinking": False,
         "cpu_only": True,
         "loopback_only": True,
@@ -489,6 +497,7 @@ def run_grounded_answer_candidate(
     runtime: GroundedAnswerRuntime,
     *,
     generated_at: datetime | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[GroundedAnswerSubmission, GroundedAnswerCandidateRun, GroundedAnswerCandidateBatch]:
     """Generate one complete submission without exposing review or scoring artifacts."""
     _validate_runtime_system(config, runtime.system)
@@ -497,8 +506,16 @@ def run_grounded_answer_candidate(
         raise ValueError("grounded-answer candidate generated_at must be timezone-aware")
     submission_cases: list[GroundedAnswerSubmissionCase] = []
     traces: list[GroundedAnswerRunnerCase] = []
-    for case in task.cases:
+    for index, case in enumerate(task.cases, start=1):
+        if progress is not None:
+            progress(f"Generating grounded answer {index}/{task.case_count}: {case.query_id}")
         generation = runtime.generate(case)
+        if progress is not None:
+            progress(
+                f"Completed grounded answer {index}/{task.case_count}: {case.query_id} "
+                f"({generation.output_tokens} output tokens, "
+                f"{generation.latency_ms / 1_000:.1f}s)"
+            )
         expected_prompt_hash = grounded_answer_prompt_sha256(case)
         if generation.prompt_sha256 != expected_prompt_hash:
             raise ValueError(
@@ -685,7 +702,12 @@ class LlamaServerRuntime:
             self._client = httpx.Client(
                 base_url=f"http://127.0.0.1:{port}",
                 headers={"Authorization": f"Bearer {api_key}"},
-                timeout=config.request_timeout_seconds,
+                timeout=httpx.Timeout(
+                    connect=_CONNECT_TIMEOUT_SECONDS,
+                    read=float(config.request_timeout_seconds),
+                    write=_WRITE_TIMEOUT_SECONDS,
+                    pool=_POOL_TIMEOUT_SECONDS,
+                ),
                 trust_env=False,
             )
             self._wait_until_ready()
@@ -740,7 +762,8 @@ class LlamaServerRuntime:
             "min_p": self._config.min_p,
             "presence_penalty": self._config.presence_penalty,
             "seed": self._config.seed,
-            "stream": False,
+            "stream": True,
+            "stream_options": {"include_usage": True},
             "cache_prompt": False,
             "chat_template_kwargs": {"enable_thinking": False},
             "reasoning_effort": "none",
@@ -754,6 +777,35 @@ class LlamaServerRuntime:
             },
         }
 
+    def _token_count_body(self, case: GroundedAnswerTaskCase) -> dict[str, object]:
+        """Count only rendered input; response grammar cannot change prompt tokens."""
+        body = self._completion_body(case)
+        body["stream"] = False
+        body.pop("stream_options")
+        body.pop("response_format")
+        return body
+
+    def _post(
+        self,
+        path: str,
+        *,
+        body: dict[str, object],
+        case: GroundedAnswerTaskCase,
+        stage: str,
+    ) -> httpx.Response:
+        if self._client is None:
+            raise RuntimeError("llama-server runtime was not initialized")
+        try:
+            return self._client.post(path, json=body)
+        except httpx.TimeoutException as error:
+            log_tail = self._log_tail()
+            diagnostic = f"; llama-server log tail: {log_tail}" if log_tail else ""
+            raise TimeoutError(
+                f"{stage} timed out for {case.query_id} after "
+                f"{self._config.request_timeout_seconds}s without response progress"
+                f"{diagnostic}"
+            ) from error
+
     @staticmethod
     def _object(value: object, name: str) -> dict[str, object]:
         if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
@@ -766,12 +818,86 @@ class LlamaServerRuntime:
             raise RuntimeError(f"llama-server returned invalid {name}")
         return value
 
+    @classmethod
+    def _streamed_completion_payload(cls, response: httpx.Response) -> dict[str, object]:
+        """Reassemble SSE while treating the HTTP read deadline as an idle deadline."""
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        finish_reason: object = None
+        usage: object = None
+        saw_choice = False
+        saw_done = False
+        for raw_line in response.text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(":"):
+                continue
+            if not line.startswith("data:"):
+                raise RuntimeError("llama-server returned malformed completion stream framing")
+            data = line.removeprefix("data:").strip()
+            if data == "[DONE]":
+                saw_done = True
+                continue
+            try:
+                event = cls._object(json.loads(data), "completion stream event")
+            except (json.JSONDecodeError, TypeError) as error:
+                raise RuntimeError(
+                    "llama-server returned malformed completion stream JSON"
+                ) from error
+            choices = event.get("choices")
+            if not isinstance(choices, list):
+                raise RuntimeError("llama-server returned invalid completion stream choices")
+            if choices:
+                if len(choices) != 1:
+                    raise RuntimeError("llama-server must stream exactly one completion choice")
+                saw_choice = True
+                choice = cls._object(choices[0], "completion stream choice")
+                delta = cls._object(choice.get("delta"), "completion stream delta")
+                content = delta.get("content")
+                if content is not None:
+                    if not isinstance(content, str):
+                        raise RuntimeError("llama-server returned invalid streamed content")
+                    content_parts.append(content)
+                reasoning = delta.get("reasoning_content")
+                if reasoning is not None:
+                    if not isinstance(reasoning, str):
+                        raise RuntimeError("llama-server returned invalid streamed reasoning")
+                    reasoning_parts.append(reasoning)
+                observed_finish = choice.get("finish_reason")
+                if observed_finish is not None:
+                    if finish_reason is not None and observed_finish != finish_reason:
+                        raise RuntimeError("llama-server returned conflicting finish reasons")
+                    finish_reason = observed_finish
+            observed_usage = event.get("usage")
+            if observed_usage is not None:
+                if usage is not None:
+                    raise RuntimeError("llama-server returned duplicate streamed token usage")
+                usage = observed_usage
+        if not saw_done:
+            raise RuntimeError("llama-server completion stream ended without [DONE]")
+        choices_payload: list[dict[str, object]] = []
+        if saw_choice:
+            choices_payload.append(
+                {
+                    "finish_reason": finish_reason,
+                    "message": {
+                        "content": "".join(content_parts),
+                        "reasoning_content": "".join(reasoning_parts) or None,
+                    },
+                }
+            )
+        return {"choices": choices_payload, "usage": usage}
+
     def generate(self, case: GroundedAnswerTaskCase) -> GroundedAnswerGeneration:
         """Count exact prompt tokens, generate constrained JSON, and verify server accounting."""
         if self._client is None or self._process is None or self._process.poll() is not None:
             raise RuntimeError("llama-server is not running")
         body = self._completion_body(case)
-        token_response = self._client.post("/v1/chat/completions/input_tokens", json=body)
+        token_response = self._post(
+            "/v1/chat/completions/input_tokens",
+            body=self._token_count_body(case),
+            case=case,
+            stage="input-token preflight",
+        )
         token_response.raise_for_status()
         token_payload = self._object(token_response.json(), "input-token response")
         input_tokens = self._positive_integer(token_payload.get("input_tokens"), "input_tokens")
@@ -779,10 +905,15 @@ class LlamaServerRuntime:
             raise ValueError("grounded-answer prompt plus output budget exceeds context length")
 
         started = self._clock()
-        response = self._client.post("/v1/chat/completions", json=body)
+        response = self._post(
+            "/v1/chat/completions",
+            body=body,
+            case=case,
+            stage="schema-constrained completion",
+        )
         latency_ms = round((self._clock() - started) * 1_000, 6)
         response.raise_for_status()
-        payload = self._object(response.json(), "completion response")
+        payload = self._streamed_completion_payload(response)
         choices = payload.get("choices")
         if not isinstance(choices, list) or len(choices) != 1:
             raise RuntimeError("llama-server must return exactly one completion choice")

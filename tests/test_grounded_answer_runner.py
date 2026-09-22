@@ -449,7 +449,13 @@ def test_model_and_system_identity_fail_closed(tmp_path: Path) -> None:
     assert system.runtime == "llama.cpp-server-cpu"
     assert system.model_artifact_sha256 == digest
     assert system.parameters["tokenizer_artifact_sha256"] == digest
-    assert system.parameters["structured_output_transport"] == "llama.cpp-json-schema-wrapper-v1"
+    assert (
+        system.parameters["structured_output_transport"] == "llama.cpp-sse-json-schema-wrapper-v1"
+    )
+    assert (
+        system.parameters["token_count_transport"]
+        == "llama.cpp-chat-input-tokens-without-response-format-v1"
+    )
     assert system.runtime_version.startswith("llama.cpp build-42;")
 
     model_path.write_bytes(b"changed")
@@ -517,9 +523,16 @@ def test_model_artifact_rejects_non_directory_symlink_and_directory(tmp_path: Pa
 
 
 class _FakeResponse:
-    def __init__(self, payload: object, *, status_code: int = 200) -> None:
+    def __init__(
+        self,
+        payload: object,
+        *,
+        status_code: int = 200,
+        text: str | None = None,
+    ) -> None:
         self._payload = payload
         self.status_code = status_code
+        self.text = json.dumps(payload) if text is None else text
 
     def json(self) -> object:
         return self._payload
@@ -532,21 +545,53 @@ class _FakeResponse:
 
 
 class _QueueClient:
-    def __init__(self, responses: list[_FakeResponse]) -> None:
+    def __init__(self, responses: list[_FakeResponse | BaseException]) -> None:
         self.responses = responses
         self.requests: list[tuple[str, dict[str, object] | None]] = []
         self.closed = False
 
     def get(self, path: str) -> _FakeResponse:
         self.requests.append((path, None))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
     def post(self, path: str, *, json: dict[str, object]) -> _FakeResponse:
         self.requests.append((path, json))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
     def close(self) -> None:
         self.closed = True
+
+
+def _stream_response(completion: dict[str, object]) -> _FakeResponse:
+    events: list[dict[str, object]] = []
+    choices = completion.get("choices")
+    if isinstance(choices, list):
+        for raw_choice in choices:
+            choice = cast(dict[str, object], raw_choice)
+            message = cast(dict[str, object], choice.get("message", {}))
+            events.append(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "content": message.get("content"),
+                                "reasoning_content": message.get("reasoning_content"),
+                            },
+                            "finish_reason": choice.get("finish_reason"),
+                        }
+                    ]
+                }
+            )
+    if "usage" in completion:
+        events.append({"choices": [], "usage": completion["usage"]})
+    text = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+    return _FakeResponse(None, text=text + "data: [DONE]\n\n")
 
 
 class _FakeProcess:
@@ -595,7 +640,7 @@ def test_llama_runtime_counts_before_generation_and_validates_response() -> None
     client = _QueueClient(
         [
             _FakeResponse({"input_tokens": 120}),
-            _FakeResponse(
+            _stream_response(
                 {
                     "choices": [
                         {
@@ -619,11 +664,18 @@ def test_llama_runtime_counts_before_generation_and_validates_response() -> None
         "/v1/chat/completions/input_tokens",
         "/v1/chat/completions",
     ]
-    body = client.requests[0][1]
-    assert body is not None
-    assert body["reasoning_effort"] == "none"
-    assert body["chat_template_kwargs"] == {"enable_thinking": False}
-    assert body["response_format"] == {
+    token_body = client.requests[0][1]
+    assert token_body is not None
+    assert token_body["stream"] is False
+    assert "stream_options" not in token_body
+    assert "response_format" not in token_body
+    completion_body = client.requests[1][1]
+    assert completion_body is not None
+    assert completion_body["reasoning_effort"] == "none"
+    assert completion_body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert completion_body["stream"] is True
+    assert completion_body["stream_options"] == {"include_usage": True}
+    assert completion_body["response_format"] == {
         "type": "json_schema",
         "json_schema": {
             "name": "grounded_answer_response",
@@ -650,7 +702,7 @@ def test_llama_runtime_rejects_context_and_server_accounting_drift() -> None:
         _QueueClient(
             [
                 _FakeResponse({"input_tokens": 120}),
-                _FakeResponse(
+                _stream_response(
                     {
                         "choices": [
                             {
@@ -727,7 +779,7 @@ def test_llama_runtime_rejects_malformed_completion_contracts(
     available = next(case for case in _task().cases if case.evidence)
     runtime = _bare_runtime(
         _config(),
-        _QueueClient([_FakeResponse({"input_tokens": 120}), _FakeResponse(completion)]),
+        _QueueClient([_FakeResponse({"input_tokens": 120}), _stream_response(completion)]),
         iter((0.0, 0.01)),
     )
     with pytest.raises(RuntimeError, match=message):
@@ -757,6 +809,32 @@ def test_llama_runtime_rejects_invalid_token_payload_and_stopped_process() -> No
     cast(_FakeProcess, stopped._process).return_code = 1
     with pytest.raises(RuntimeError, match="not running"):
         stopped.generate(available)
+
+
+def test_llama_runtime_reports_timed_out_stage_and_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    available = next(case for case in _task().cases if case.evidence)
+    runtime = _bare_runtime(
+        _config(),
+        _QueueClient(
+            [
+                _FakeResponse({"input_tokens": 120}),
+                httpx.ReadTimeout("timed out"),
+            ]
+        ),
+        iter((0.0,)),
+    )
+    monkeypatch.setattr(runtime, "_log_tail", lambda: "generation still active")
+
+    with pytest.raises(
+        TimeoutError,
+        match=(
+            rf"schema-constrained completion timed out for {available.query_id} after "
+            r"10s without response progress; llama-server log tail: generation still active"
+        ),
+    ):
+        runtime.generate(available)
 
 
 def test_llama_runtime_owns_loopback_authenticated_tool_free_process(
@@ -828,6 +906,11 @@ def test_llama_runtime_owns_loopback_authenticated_tool_free_process(
     assert client_kwargs[0]["base_url"] == "http://127.0.0.1:43123"
     assert client_kwargs[0]["trust_env"] is False
     assert client_kwargs[0]["headers"] == {"Authorization": "Bearer local-secret"}
+    timeout = cast(httpx.Timeout, client_kwargs[0]["timeout"])
+    assert timeout.connect == 10
+    assert timeout.read == config.request_timeout_seconds
+    assert timeout.write == 30
+    assert timeout.pool == 10
     assert health_client.requests == [("/health", None)]
     assert runtime.system.runtime_version.startswith(
         "version: 0.4.1-dev (build 11073, commit 1aa2954bd);binary_sha256="
@@ -929,7 +1012,10 @@ def test_runner_cli_writes_only_gold_free_outputs_and_protects_inputs(
         str(run_path),
     ]
     assert run_cli(arguments, runtime_factory=runtime_factory) == 0
-    assert "Wrote blocked" in capsys.readouterr().out
+    cli_output = capsys.readouterr().out
+    assert "Generating grounded answer 1/2" in cli_output
+    assert "Completed grounded answer 2/2" in cli_output
+    assert "Wrote blocked" in cli_output
     assert "reviewer" not in run_path.read_text(encoding="utf-8")
     assert (
         CandidateSystemDefinition.model_validate_json(

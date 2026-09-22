@@ -81,7 +81,12 @@ def run_cli(
         task = _json_model(args.task, GroundedAnswerTask)
         config = _json_model(args.candidate_config, GroundedAnswerRunnerConfig)
         with runtime_factory(config, args.model_dir, args.llama_server) as runtime:
-            submission, run, _batch = run_grounded_answer_candidate(task, config, runtime)
+            submission, run, _batch = run_grounded_answer_candidate(
+                task,
+                config,
+                runtime,
+                progress=lambda message: print(message, flush=True),
+            )
         _write(args.output_submission, submission.model_dump_json(indent=2) + "\n")
         _write(args.output_definition, run.system.model_dump_json(indent=2) + "\n")
         _write(args.output_run, run.model_dump_json(indent=2) + "\n")

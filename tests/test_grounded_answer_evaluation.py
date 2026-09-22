@@ -44,6 +44,7 @@ from atlas_pulse.grounded_answer_evaluation import (
     GroundedAnswerTaskCase,
     ReviewedGroundedAnswerBatch,
     apply_grounded_answer_adjudication,
+    apply_grounded_answer_development_review,
     apply_grounded_answer_review,
     apply_grounded_answer_submission,
     build_grounded_answer_adjudication_sheet,
@@ -465,6 +466,68 @@ def test_model_blind_review_and_descriptive_score() -> None:
     assert "Promotion status: **BLOCKED**" in markdown
     assert "A second independent review" in markdown
     assert "p95 ms" in markdown
+
+
+def test_abstention_review_exposes_the_candidate_visible_evidence_pack() -> None:
+    task = _task()
+    submission = _completed_submission(task)
+    available_index = next(index for index, case in enumerate(task.cases) if case.evidence)
+    cases = list(submission.cases)
+    cases[available_index] = cases[available_index].model_copy(
+        update={
+            "response": GroundedAnswerResponse(
+                status="abstained",
+                abstention_reason="insufficient_evidence",
+            ),
+            "output_tokens": 4,
+        }
+    )
+    batch = apply_grounded_answer_submission(
+        task,
+        submission.model_copy(update={"cases": tuple(cases)}),
+        system=_system(),
+        generated_at=GENERATED_AT,
+    )
+    rows = list(
+        csv.DictReader(io.StringIO(build_grounded_answer_review_sheet(task, batch).content))
+    )
+    available_case = task.cases[available_index]
+    row = next(item for item in rows if item["case_id"] == available_case.case_id)
+    visible = json.loads(row["evidence_json"])
+
+    assert row["claim_id"] == ""
+    assert row["evidence_ids"] == available_case.evidence[0].evidence_id
+    assert visible[0]["evidence_id"] == available_case.evidence[0].evidence_id
+    assert visible[0]["text"] == available_case.evidence[0].text
+
+
+def test_single_review_development_path_is_explicit_and_non_promoting() -> None:
+    task = _task()
+    batch = _batch(task)
+    review = apply_grounded_answer_development_review(
+        task,
+        batch,
+        _completed_review_csv(task, batch),
+        reviewer="OpenAI Codex (AI-assisted)",
+        review_assistance="ai_assisted",
+        reviewed_at=REVIEWED_AT,
+    )
+
+    assert review.schema_version == "1.2.0"
+    assert review.review_status == "single_review_development_complete"
+    assert review.development_review is not None
+    assert review.development_review.process_version == "single-review-development-v1"
+    assert review.development_review.review_assistance == "ai_assisted"
+    assert review.promotion_status == "blocked"
+
+    report = score_grounded_answer_review(task, batch, review, generated_at=REPORTED_AT)
+    assert report.schema_version == "1.2.0"
+    assert report.development_review == review.development_review
+    assert report.promotion_status == "blocked"
+    assert any("one development review" in item for item in report.promotion_blockers)
+    markdown = render_grounded_answer_markdown(report)
+    assert "SINGLE-REVIEW DEVELOPMENT ONLY" in markdown
+    assert "Review assistance: `ai_assisted`" in markdown
 
 
 def test_independent_review_agreement_is_canonical_and_dimension_specific() -> None:
@@ -1735,6 +1798,89 @@ def test_cli_candidate_review_score_and_input_protection(
     )
     assert "must not replace input artifacts" in capsys.readouterr().err
     assert task_path.read_text(encoding="utf-8") == original
+
+
+def test_cli_development_review_and_score_are_separately_named(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    task = _task()
+    batch = _batch(task)
+    task_path = tmp_path / "task.json"
+    batch_path = tmp_path / "batch.json"
+    judgments_path = tmp_path / "review.csv"
+    review_path = tmp_path / "development-review.json"
+    report_path = tmp_path / "development-report.json"
+    markdown_path = tmp_path / "development-report.md"
+    task_path.write_text(task.model_dump_json(indent=2), encoding="utf-8")
+    batch_path.write_text(batch.model_dump_json(indent=2), encoding="utf-8")
+    judgments_path.write_text(_completed_review_csv(task, batch), encoding="utf-8")
+
+    assert (
+        grounded_cli.run_cli(
+            [
+                "development-review",
+                "--task",
+                str(task_path),
+                "--batch",
+                str(batch_path),
+                "--judgments",
+                str(judgments_path),
+                "--reviewer",
+                "OpenAI Codex (AI-assisted)",
+                "--review-assistance",
+                "ai_assisted",
+                "--output-review",
+                str(review_path),
+            ]
+        )
+        == 0
+    )
+    assert "development-only" in capsys.readouterr().out
+    review = ReviewedGroundedAnswerBatch.model_validate_json(
+        review_path.read_text(encoding="utf-8")
+    )
+    assert review.development_review is not None
+
+    assert (
+        grounded_cli.run_cli(
+            [
+                "score",
+                "--task",
+                str(task_path),
+                "--batch",
+                str(batch_path),
+                "--review",
+                str(review_path),
+                "--output-json",
+                str(report_path),
+                "--output-markdown",
+                str(markdown_path),
+            ]
+        )
+        == 2
+    )
+    assert "require development-score" in capsys.readouterr().err
+
+    assert (
+        grounded_cli.run_cli(
+            [
+                "development-score",
+                "--task",
+                str(task_path),
+                "--batch",
+                str(batch_path),
+                "--review",
+                str(review_path),
+                "--output-json",
+                str(report_path),
+                "--output-markdown",
+                str(markdown_path),
+            ]
+        )
+        == 0
+    )
+    assert "development-only blocked report" in capsys.readouterr().out
+    assert "SINGLE-REVIEW DEVELOPMENT ONLY" in markdown_path.read_text(encoding="utf-8")
 
 
 def test_cli_compare_adjudicate_and_score_final_review(

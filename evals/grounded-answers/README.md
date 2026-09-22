@@ -12,6 +12,8 @@ generator and contains no reference answer, human grade, or production release s
 | Submission JSON | `capture`, completed by external runner | Atomic cited claims or explicit abstentions, token counts, latency | Human judgments |
 | Candidate batch | `candidate-import` | Exact task binding and immutable candidate identity | Promotion approval |
 | Review CSV copies | `candidate-import`, completed independently by two humans | Model-blind claims and only their cited evidence | Candidate/model identity, preset grades |
+| Development review | `development-review` | One declared review plus `unassisted` or `ai_assisted` provenance | Independent agreement, promotion approval |
+| Development report | `development-score` | Descriptive metrics for one explicitly development-only review | Public quality or production-promotion claim |
 | First-pass reviews | `review` twice | Named, content-addressed judgments and rationales | Adjudicated judgment set |
 | Agreement report | `compare-reviews` | Per-field observed agreement, Cohen's kappa, exact disagreements, both review hashes | Release verdict |
 | Adjudication CSV | `compare-reviews`, completed by a third human | Disputed rows, blinded review A/B grades and rationales | Candidate/model/reviewer identity, agreed-row edits |
@@ -158,7 +160,38 @@ uv run atlas-pulse-evaluate-grounded-answers candidate-import \
 Import rejects missing outputs, foreign citations, changed case identities, floating or malformed
 model identity, missing tokenizer identity, context overflow, and output-budget overflow.
 
-## 3. Complete two independent model-blind reviews
+For an answered response, each review row contains only the evidence cited by that claim. For an
+abstained response, the row contains the complete candidate-visible evidence pack so a reviewer can
+actually decide whether abstention was appropriate. Candidate and model identity remain excluded.
+
+## 3A. Bounded single-review development path
+
+An individual development loop does not need to invent independent reviewers. Complete the one
+model-blind review sheet, then import it with an explicit assistance declaration:
+
+```bash
+uv run atlas-pulse-evaluate-grounded-answers development-review \
+  --task artifacts/grounded-answer-evaluation/task.json \
+  --batch artifacts/grounded-answer-evaluation/batch.json \
+  --judgments artifacts/grounded-answer-evaluation/review.development.csv \
+  --reviewer "OpenAI Codex (AI-assisted)" \
+  --review-assistance ai_assisted \
+  --output-review artifacts/grounded-answer-evaluation/reviewed.development.json
+
+uv run atlas-pulse-evaluate-grounded-answers development-score \
+  --task artifacts/grounded-answer-evaluation/task.json \
+  --batch artifacts/grounded-answer-evaluation/batch.json \
+  --review artifacts/grounded-answer-evaluation/reviewed.development.json \
+  --output-json artifacts/grounded-answer-evaluation/report.development.json \
+  --output-markdown artifacts/grounded-answer-evaluation/report.development.md
+```
+
+This path records `single-review-development-v1`, the reviewer, timestamp, exact task and batch
+hashes, and whether assistance was declared. Its artifacts use a separate schema, remain
+permanently blocked, and cannot enter the independent agreement or adjudication workflow. Use the
+full process below only when independently adjudicated evidence is actually required.
+
+## 3B. Complete two independent model-blind reviews
 
 The CSV intentionally excludes candidate and model identity. Before either reviewer starts, make
 two independent copies of the untouched template. Reviewers grade only the question, candidate
@@ -259,3 +292,5 @@ execution boundary is recorded in
 [`ADR 0022`](../../docs/adr/0022-pinned-local-grounded-answer-runner.md). Independent review and
 field-only adjudication are recorded in
 [`ADR 0023`](../../docs/adr/0023-grounded-answer-independent-review-adjudication.md).
+The explicitly non-promoting single-review alternative is recorded in
+[`ADR 0042`](../../docs/adr/0042-single-review-grounded-answer-development-evaluation.md).

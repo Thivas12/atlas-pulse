@@ -16,7 +16,7 @@ from atlas_pulse.projections.base import SourceName
 from atlas_pulse.relationship_evaluation.candidates import CandidateSystemDefinition
 
 GroundedAnswerSchemaVersion = Literal["1.0.0"]
-GroundedAnswerReviewArtifactSchemaVersion = Literal["1.0.0", "1.1.0"]
+GroundedAnswerReviewArtifactSchemaVersion = Literal["1.0.0", "1.1.0", "1.2.0"]
 GroundedAnswerStatus = Literal["answered", "abstained"]
 GroundedAnswerAbstentionReason = Literal[
     "no_traceable_evidence",
@@ -33,6 +33,8 @@ GroundedAnswerReviewDimension = Literal[
     "abstention_appropriate",
 ]
 GroundedAnswerReviewProcessVersion = Literal["independent-review-adjudication-v1"]
+GroundedAnswerDevelopmentReviewProcessVersion = Literal["single-review-development-v1"]
+GroundedAnswerReviewAssistance = Literal["unassisted", "ai_assisted"]
 GroundedAnswerReviewId = Annotated[str, Field(pattern=r"^grounded-review-[0-9a-f]{20}$")]
 Sha256Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
@@ -61,6 +63,13 @@ ADJUDICATED_GROUNDED_ANSWER_REVIEW_CAVEATS = (
     "Two independent human reviews were compared and every disputed rubric field was resolved by a separate adjudicator.",
     "Agreement and adjudication measure judgments over the bounded retrieved excerpts; they do not verify upstream source truth, freshness, or completeness.",
     "The adjudicated review cannot authorize a model, policy, answer endpoint, or agent execution.",
+)
+
+DEVELOPMENT_GROUNDED_ANSWER_REVIEW_CAVEATS = (
+    "This is one development review, not independently adjudicated gold or support for a public quality claim.",
+    "Review assistance is declared by the operator; the software cannot independently verify how judgments were produced.",
+    "Support, citation quality, relevance, and abstention appropriateness are bounded rubric judgments rather than automated truth claims.",
+    "The development review cannot authorize a model, policy, answer endpoint, or agent execution.",
 )
 
 
@@ -471,8 +480,33 @@ class GroundedAnswerIndependentAdjudicationProvenance(StrictModel):
         return self
 
 
+class GroundedAnswerDevelopmentReviewProvenance(StrictModel):
+    """Declared lineage for a permanently non-promoting single-review evaluation."""
+
+    process_version: GroundedAnswerDevelopmentReviewProcessVersion = "single-review-development-v1"
+    reviewer: str = Field(min_length=2, max_length=200)
+    reviewed_at: datetime
+    task_sha256: Sha256Digest
+    batch_sha256: Sha256Digest
+    review_assistance: GroundedAnswerReviewAssistance
+
+    @field_validator("reviewer")
+    @classmethod
+    def normalize_reviewer(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if len(normalized) < 2:
+            raise ValueError("development reviewer identity requires at least two characters")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> GroundedAnswerDevelopmentReviewProvenance:
+        if self.reviewed_at.tzinfo is None:
+            raise ValueError("development review timestamp must be timezone-aware")
+        return self
+
+
 class ReviewedGroundedAnswerBatch(StrictModel):
-    """Content-addressed first-pass or independently adjudicated human review."""
+    """Content-addressed first-pass, adjudicated, or development review."""
 
     schema_version: GroundedAnswerReviewArtifactSchemaVersion = "1.0.0"
     review_id: str = Field(pattern=r"^grounded-review-[0-9a-f]{20}$")
@@ -486,10 +520,13 @@ class ReviewedGroundedAnswerBatch(StrictModel):
     reviewed_at: datetime
     judgment_count: int = Field(ge=1)
     judgments: tuple[GroundedAnswerJudgment, ...] = Field(min_length=1)
-    review_status: Literal["first_pass_complete", "independent_adjudication_complete"] = (
-        "first_pass_complete"
-    )
+    review_status: Literal[
+        "first_pass_complete",
+        "independent_adjudication_complete",
+        "single_review_development_complete",
+    ] = "first_pass_complete"
     adjudication: GroundedAnswerIndependentAdjudicationProvenance | None = None
+    development_review: GroundedAnswerDevelopmentReviewProvenance | None = None
     promotion_status: Literal["blocked"] = "blocked"
     caveats: tuple[str, ...] = _REVIEW_CAVEATS
 
@@ -510,7 +547,27 @@ class ReviewedGroundedAnswerBatch(StrictModel):
         identities = [(item.case_id, item.claim_id or "") for item in self.judgments]
         if len(identities) != len(set(identities)) or identities != sorted(identities):
             raise ValueError("grounded-answer judgments must be unique and canonically ordered")
-        if self.adjudication is None:
+        expected_caveats: tuple[str, ...]
+        if self.adjudication is not None and self.development_review is not None:
+            raise ValueError("grounded-answer review cannot be both adjudicated and development")
+        if self.development_review is not None:
+            if (
+                self.schema_version != "1.2.0"
+                or self.review_status != "single_review_development_complete"
+            ):
+                raise ValueError(
+                    "development grounded-answer reviews require artifact schema 1.2.0"
+                )
+            provenance = self.development_review
+            if self.reviewer != provenance.reviewer or self.reviewed_at != provenance.reviewed_at:
+                raise ValueError("development review identity must match its provenance")
+            if (
+                self.task_sha256 != provenance.task_sha256
+                or self.batch_sha256 != provenance.batch_sha256
+            ):
+                raise ValueError("development review hashes must match its provenance")
+            expected_caveats = DEVELOPMENT_GROUNDED_ANSWER_REVIEW_CAVEATS
+        elif self.adjudication is None:
             if self.schema_version != "1.0.0" or self.review_status != "first_pass_complete":
                 raise ValueError("unadjudicated grounded-answer reviews must remain first-pass")
             expected_caveats = _REVIEW_CAVEATS
@@ -546,4 +603,6 @@ def grounded_answer_review_sha256(review: ReviewedGroundedAnswerBatch) -> str:
     )
     if data.get("adjudication") is None:
         data.pop("adjudication", None)
+    if data.get("development_review") is None:
+        data.pop("development_review", None)
     return canonical_sha256(data)

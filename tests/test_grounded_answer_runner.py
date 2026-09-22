@@ -260,9 +260,9 @@ def test_prompt_is_gold_free_injection_quoted_and_case_constrained() -> None:
     assert "no_traceable_evidence" not in schema_text
     answered_schema = cast(list[dict[str, Any]], schema["oneOf"])[0]
     claims_schema = answered_schema["properties"]["claims"]
-    assert claims_schema["maxItems"] == 3
+    assert claims_schema["maxItems"] == 2
     claim_properties = claims_schema["items"]["properties"]
-    assert claim_properties["text"]["maxLength"] == 180
+    assert claim_properties["text"]["maxLength"] == 120
     assert claim_properties["evidence_ids"]["maxItems"] == min(
         2,
         len(available.evidence),
@@ -275,13 +275,15 @@ def test_prompt_is_gold_free_injection_quoted_and_case_constrained() -> None:
     assert len(grounded_answer_input_template_sha256()) == 64
 
 
-def test_v3_prompt_narrows_abstention_without_changing_v2_identity() -> None:
+def test_versioned_prompts_preserve_history_and_bound_v4_completion() -> None:
     available = next(case for case in _task().cases if case.evidence)
     v2: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v2"
     v3: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v3"
+    v4: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v4"
 
     v2_messages = render_grounded_answer_messages(available, v2)
     v3_messages = render_grounded_answer_messages(available, v3)
+    v4_messages = render_grounded_answer_messages(available, v4)
 
     assert (
         "excerpts are absent, insufficient, or materially conflicting" in v2_messages[0]["content"]
@@ -289,26 +291,45 @@ def test_v3_prompt_narrows_abstention_without_changing_v2_identity() -> None:
     assert "zero responsive claims are possible" not in v2_messages[1]["content"]
     assert "supported negative finding is still an answer" in v3_messages[1]["content"]
     assert "zero responsive claims are possible" in v3_messages[1]["content"]
+    assert "never more than two" in v4_messages[1]["content"]
+    assert "Finish the JSON immediately" in v4_messages[0]["content"]
     assert grounded_answer_input_template_sha256(v2) == (
         "e8dfd7aba49e02d4d73b84441ffb1e217ed2a681d4c1804935359d3e36fc148f"
     )
     assert grounded_answer_prompt_sha256(available, v2) == (
         "6f4936cb40acc702a3ae6f72c28be858c8ccc0b2d4d2994262a8aa3f0031fde4"
     )
+    assert grounded_answer_input_template_sha256(v3) == (
+        "8625275563f836abd3d98022dc50fceafed1e0b44d604e53872e4aa041459ca8"
+    )
+    assert grounded_answer_prompt_sha256(available, v3) == (
+        "147b912b590ba3c0a35db80aa2fb862793576716a5ab9754c6cc85dee0ed4fa5"
+    )
     assert grounded_answer_input_template_sha256(v2) != grounded_answer_input_template_sha256(v3)
     assert grounded_answer_prompt_sha256(available, v2) != grounded_answer_prompt_sha256(
         available,
         v3,
     )
-
-    legacy_config = _config(template_version=v2)
-    _submission, legacy_run, _batch = run_grounded_answer_candidate(
-        _task(),
-        legacy_config,
-        _FakeRuntime(legacy_config),
-        generated_at=GENERATED_AT,
+    assert grounded_answer_input_template_sha256(v3) != grounded_answer_input_template_sha256(v4)
+    assert grounded_answer_prompt_sha256(available, v3) != grounded_answer_prompt_sha256(
+        available,
+        v4,
     )
-    assert legacy_run.template_version == v2
+    v4_schema = grounded_answer_response_schema(available, v4)
+    v4_answered = cast(list[dict[str, Any]], v4_schema["oneOf"])[0]
+    v4_claims = v4_answered["properties"]["claims"]
+    assert v4_claims["maxItems"] == 2
+    assert v4_claims["items"]["properties"]["text"]["maxLength"] == 120
+
+    for legacy_version in (v2, v3):
+        legacy_config = _config(template_version=legacy_version)
+        _submission, legacy_run, _batch = run_grounded_answer_candidate(
+            _task(),
+            legacy_config,
+            _FakeRuntime(legacy_config),
+            generated_at=GENERATED_AT,
+        )
+        assert legacy_run.template_version == legacy_version
 
 
 def test_runner_produces_complete_submission_batch_and_blocked_trace() -> None:
@@ -1236,7 +1257,7 @@ def test_cache_cli_downloads_exact_revision_and_rejects_wrong_bytes(
 
 @pytest.mark.parametrize(
     ("version", "is_current"),
-    (("v2", False), ("v3", True)),
+    (("v2", False), ("v3", False), ("v4", True)),
 )
 def test_checked_in_qwen_candidates_are_exactly_pinned(
     version: str,

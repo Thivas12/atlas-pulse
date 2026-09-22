@@ -249,6 +249,15 @@ def test_prompt_is_gold_free_injection_quoted_and_case_constrained() -> None:
     schema_text = json.dumps(schema)
     assert available.evidence[0].evidence_id in schema_text
     assert "no_traceable_evidence" not in schema_text
+    answered_schema = cast(list[dict[str, Any]], schema["oneOf"])[0]
+    claims_schema = answered_schema["properties"]["claims"]
+    assert claims_schema["maxItems"] == 3
+    claim_properties = claims_schema["items"]["properties"]
+    assert claim_properties["text"]["maxLength"] == 180
+    assert claim_properties["evidence_ids"]["maxItems"] == min(
+        2,
+        len(available.evidence),
+    )
     empty_schema = grounded_answer_response_schema(empty)
     assert empty_schema["properties"]["abstention_reason"]["enum"] == [  # type: ignore[index]
         "no_traceable_evidence"
@@ -733,7 +742,7 @@ def test_llama_runtime_rejects_context_and_server_accounting_drift() -> None:
                 "choices": [{"finish_reason": "length", "message": {"content": "{}"}}],
                 "usage": {"prompt_tokens": 120, "completion_tokens": 18},
             },
-            "did not finish cleanly",
+            "finish_reason='length' after 18 output tokens",
         ),
         (
             {
@@ -1017,6 +1026,9 @@ def test_runner_cli_writes_only_gold_free_outputs_and_protects_inputs(
     assert "Completed grounded answer 2/2" in cli_output
     assert "Wrote blocked" in cli_output
     assert "reviewer" not in run_path.read_text(encoding="utf-8")
+    checkpoint_path = run_path.with_name("run.checkpoint.json")
+    checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert len(checkpoint_payload["cases"]) == task.case_count
     assert (
         CandidateSystemDefinition.model_validate_json(
             definition_path.read_text(encoding="utf-8")
@@ -1039,6 +1051,77 @@ def test_runner_cli_writes_only_gold_free_outputs_and_protects_inputs(
     duplicate_outputs[duplicate_outputs.index(str(definition_path))] = str(submission_path)
     assert run_cli(duplicate_outputs, runtime_factory=runtime_factory) == 2
     assert "output paths must be distinct" in capsys.readouterr().err
+
+
+def test_runner_cli_checkpoints_and_resumes_an_exact_prefix(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    task = _task()
+    config = _config()
+    task_path = tmp_path / "task.json"
+    config_path = tmp_path / "config.json"
+    task_path.write_text(task.model_dump_json(indent=2), encoding="utf-8")
+    config_path.write_text(config.model_dump_json(indent=2), encoding="utf-8")
+    submission_path = tmp_path / "submission.json"
+    definition_path = tmp_path / "definition.json"
+    run_path = tmp_path / "run.json"
+    created_runtimes: list[_FakeRuntime] = []
+
+    class _FailsOnSecondCase(_FakeRuntime):
+        def generate(self, case: GroundedAnswerTaskCase) -> GroundedAnswerGeneration:
+            if case.case_id == task.cases[1].case_id:
+                raise RuntimeError("planned second-case failure")
+            return super().generate(case)
+
+    def failing_factory(
+        supplied: GroundedAnswerRunnerConfig,
+        _model_dir: Path,
+        _server: Path,
+    ) -> _RuntimeContext:
+        runtime = _FailsOnSecondCase(supplied)
+        created_runtimes.append(runtime)
+        return _RuntimeContext(runtime)
+
+    arguments = [
+        "--task",
+        str(task_path),
+        "--candidate-config",
+        str(config_path),
+        "--model-dir",
+        str(tmp_path / "model"),
+        "--llama-server",
+        str(tmp_path / "llama-server"),
+        "--output-submission",
+        str(submission_path),
+        "--output-definition",
+        str(definition_path),
+        "--output-run",
+        str(run_path),
+    ]
+    assert run_cli(arguments, runtime_factory=failing_factory) == 2
+    assert "planned second-case failure" in capsys.readouterr().err
+    checkpoint_path = run_path.with_name("run.checkpoint.json")
+    checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert len(checkpoint_payload["cases"]) == 1
+
+    def resumed_factory(
+        supplied: GroundedAnswerRunnerConfig,
+        _model_dir: Path,
+        _server: Path,
+    ) -> _RuntimeContext:
+        runtime = _FakeRuntime(supplied)
+        created_runtimes.append(runtime)
+        return _RuntimeContext(runtime)
+
+    assert run_cli(arguments, runtime_factory=resumed_factory) == 0
+    resumed_output = capsys.readouterr().out
+    assert "Resuming from checkpoint: 1/2 case(s)" in resumed_output
+    assert "Reusing checkpointed case" in resumed_output
+    assert created_runtimes[1].calls == [task.cases[1].case_id]
+    assert submission_path.exists()
+    assert definition_path.exists()
+    assert run_path.exists()
 
 
 def test_cache_cli_downloads_exact_revision_and_rejects_wrong_bytes(
@@ -1109,7 +1192,7 @@ def test_cache_cli_downloads_exact_revision_and_rejects_wrong_bytes(
 def test_checked_in_qwen_candidate_is_exactly_pinned() -> None:
     path = (
         Path(__file__).parents[1]
-        / "evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v1.json"
+        / "evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v2.json"
     )
     config = GroundedAnswerRunnerConfig.model_validate_json(path.read_text(encoding="utf-8"))
     assert config.model_id == "Qwen/Qwen3-1.7B-GGUF"
@@ -1121,4 +1204,4 @@ def test_checked_in_qwen_candidate_is_exactly_pinned() -> None:
     )
     assert config.template_version == GROUNDING_RUNNER_TEMPLATE_VERSION
     assert config.context_length == 8192
-    assert config.max_output_tokens == 768
+    assert config.max_output_tokens == 512

@@ -35,8 +35,8 @@ from atlas_pulse.grounded_answer_evaluation.candidates import apply_grounded_ans
 from atlas_pulse.relationship_evaluation.candidates import CandidateSystemDefinition
 
 GroundedAnswerRunnerSchemaVersion = Literal["1.0.0"]
-GroundedAnswerRunnerTemplateVersion = Literal["grounded-brief-qwen3-v1"]
-GROUNDING_RUNNER_TEMPLATE_VERSION: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v1"
+GroundedAnswerRunnerTemplateVersion = Literal["grounded-brief-qwen3-v2"]
+GROUNDING_RUNNER_TEMPLATE_VERSION: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v2"
 
 _SYSTEM_PROMPT = (
     "You produce a short operational evidence brief from a bounded AtlasPulse evidence pack. "
@@ -45,7 +45,8 @@ _SYSTEM_PROMPT = (
     "JSON object required by the supplied schema. When answering, split prose into atomic claims "
     "and cite only the evidence_id values that directly support each claim. Do not infer causation, "
     "verified truth, or a shared incident. Abstain when the excerpts are absent, insufficient, or "
-    "materially conflicting."
+    "materially conflicting. Use no more than three claims and keep every claim to one short "
+    "sentence."
 )
 
 _USER_TEMPLATE = (
@@ -54,8 +55,9 @@ _USER_TEMPLATE = (
     "Pack identity: {pack_id}\n"
     "Evidence caveat: {evidence_caveat}\n\n"
     "Quoted evidence JSON:\n{evidence_json}\n\n"
-    "Return either 1-8 consecutive atomic claims named claim-01, claim-02, and so on, each with "
-    "1-4 exact evidence_ids, or one explicit abstention. Output JSON only."
+    "Return either 1-3 consecutive atomic claims named claim-01, claim-02, and so on, each no "
+    "longer than 180 characters and citing 1-2 exact evidence_ids, or one explicit abstention. "
+    "Output JSON only."
 )
 
 _RUN_CAVEATS = (
@@ -98,7 +100,7 @@ class GroundedAnswerRunnerConfig(StrictModel):
     adapter_version: GroundedAnswerRunnerTemplateVersion = GROUNDING_RUNNER_TEMPLATE_VERSION
     template_version: GroundedAnswerRunnerTemplateVersion = GROUNDING_RUNNER_TEMPLATE_VERSION
     context_length: int = Field(default=8_192, ge=1_024, le=32_768)
-    max_output_tokens: int = Field(default=768, ge=64, le=4_096)
+    max_output_tokens: int = Field(default=512, ge=64, le=4_096)
     temperature: float = Field(default=0.7, ge=0, le=2, allow_inf_nan=False)
     top_p: float = Field(default=0.8, gt=0, le=1, allow_inf_nan=False)
     top_k: int = Field(default=20, ge=1, le=200)
@@ -126,6 +128,8 @@ class GroundedAnswerRunnerConfig(StrictModel):
     def validate_token_budget(self) -> GroundedAnswerRunnerConfig:
         if self.max_output_tokens >= self.context_length:
             raise ValueError("max_output_tokens must be smaller than context_length")
+        if self.adapter_version != self.template_version:
+            raise ValueError("grounded-answer adapter and template versions must match")
         return self
 
 
@@ -149,7 +153,7 @@ def grounded_answer_input_template_sha256() -> str:
                 "truncated",
                 "citation_url",
             ),
-            "output_schema_algorithm": "case-local-grounded-answer-json-schema-v1",
+            "output_schema_algorithm": "case-local-concise-grounded-answer-json-schema-v2",
             "thinking": False,
         }
     )
@@ -220,18 +224,18 @@ def grounded_answer_response_schema(case: GroundedAnswerTaskCase) -> dict[str, o
             "claims": {
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 8,
+                "maxItems": 3,
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
                     "required": ["claim_id", "text", "evidence_ids"],
                     "properties": {
                         "claim_id": {"type": "string", "pattern": "^claim-[0-9]{2}$"},
-                        "text": {"type": "string", "minLength": 2, "maxLength": 600},
+                        "text": {"type": "string", "minLength": 2, "maxLength": 180},
                         "evidence_ids": {
                             "type": "array",
                             "minItems": 1,
-                            "maxItems": min(4, len(evidence_ids)),
+                            "maxItems": min(2, len(evidence_ids)),
                             "uniqueItems": True,
                             "items": {"type": "string", "enum": evidence_ids},
                         },
@@ -918,8 +922,15 @@ class LlamaServerRuntime:
         if not isinstance(choices, list) or len(choices) != 1:
             raise RuntimeError("llama-server must return exactly one completion choice")
         choice = self._object(choices[0], "completion choice")
-        if choice.get("finish_reason") != "stop":
-            raise RuntimeError("llama-server completion did not finish cleanly")
+        usage = self._object(payload.get("usage"), "token usage")
+        observed_input = self._positive_integer(usage.get("prompt_tokens"), "prompt_tokens")
+        output_tokens = self._positive_integer(usage.get("completion_tokens"), "completion_tokens")
+        finish_reason = choice.get("finish_reason")
+        if finish_reason != "stop":
+            raise RuntimeError(
+                f"llama-server completion for {case.query_id} ended with "
+                f"finish_reason={finish_reason!r} after {output_tokens} output tokens"
+            )
         message = self._object(choice.get("message"), "completion message")
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
@@ -927,9 +938,6 @@ class LlamaServerRuntime:
         reasoning = message.get("reasoning_content")
         if reasoning is not None and reasoning != "":
             raise RuntimeError("llama-server emitted reasoning despite the disabled thinking mode")
-        usage = self._object(payload.get("usage"), "token usage")
-        observed_input = self._positive_integer(usage.get("prompt_tokens"), "prompt_tokens")
-        output_tokens = self._positive_integer(usage.get("completion_tokens"), "completion_tokens")
         if observed_input != input_tokens:
             raise RuntimeError("llama-server token preflight and completion usage disagree")
         if output_tokens > self._config.max_output_tokens:

@@ -46,13 +46,13 @@ fixed before review:
 
 | Field | Pinned value |
 | --- | --- |
-| Candidate | `qwen3-1.7b-q8-grounded-brief-v1` |
+| Candidate | `qwen3-1.7b-q8-grounded-brief-v2` |
 | Repository | `Qwen/Qwen3-1.7B-GGUF` |
 | Revision | `90862c4b9d2787eaed51d12237eafdfe7c5f6077` |
 | File | `Qwen3-1.7B-Q8_0.gguf` (about 1.8 GB) |
 | File SHA-256 | `061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a` |
-| Template | `grounded-brief-qwen3-v1` |
-| Context / output budget | 8,192 / 768 tokens |
+| Template | `grounded-brief-qwen3-v2` |
+| Context / output budget | 8,192 / 512 tokens |
 
 Build a local `llama-server` executable using the
 [`llama.cpp` server instructions](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md),
@@ -61,7 +61,7 @@ then provision the exact model in a network-enabled step:
 ```bash
 mkdir -p artifacts/models/qwen3-1.7b-q8
 uv run atlas-pulse-cache-grounded-answer-model \
-  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v1.json \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v2.json \
   --output artifacts/models/qwen3-1.7b-q8
 ```
 
@@ -72,7 +72,7 @@ task and the local executable:
 ```bash
 uv run atlas-pulse-run-grounded-answer \
   --task artifacts/grounded-answer-evaluation/task.json \
-  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v1.json \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v2.json \
   --model-dir artifacts/models/qwen3-1.7b-q8 \
   --llama-server /absolute/path/to/llama-server \
   --output-submission artifacts/grounded-answer-evaluation/submission.qwen3.json \
@@ -84,7 +84,14 @@ The runner hashes the exact model and `llama-server` bytes, records the runtime 
 parameters, starts an authenticated loopback-only CPU process in llama.cpp offline mode, disables
 agent tools and thinking, counts the exact rendered prompt before generation, constrains JSON to
 case-local evidence IDs, and reimports every result through the independent evaluator contracts.
-The content-addressed run trace remains `promotion_status: blocked`.
+The runner atomically checkpoints each completed case beside the requested run artifact and resumes
+only when the task, candidate configuration, runtime identity, and completed canonical prefix match
+exactly. The content-addressed run trace remains `promotion_status: blocked`.
+
+The v2 brief contract supersedes the non-completing v1 development attempt before human review. It
+retains the same pinned model and task boundary while limiting output to three short claims, two
+citations per claim, and 512 tokens so a single live case cannot consume an unbounded evaluation
+window.
 
 No live candidate execution or quality result is checked into this repository. Run latency and
 answer quality remain unknown until the captured task is executed on target hardware and reviewed.

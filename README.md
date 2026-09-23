@@ -772,7 +772,9 @@ claim and character limits after the bounded v3 run exhausted its output budget,
 [ADR 0045](docs/adr/0045-normalize-grounded-answer-citation-order.md) for the explicit v5 adapter
 that canonically orders model-selected citation sets without changing their membership, and
 [ADR 0046](docs/adr/0046-normalize-grounded-answer-claim-identifiers.md) for the explicit v6 adapter
-that assigns presentation-only claim IDs by preserved list position before validation.
+that assigns presentation-only claim IDs by preserved list position before validation, and
+[ADR 0047](docs/adr/0047-normalize-grounded-answer-citation-sets.md) for the explicit v7 adapter
+that removes repeated IDs from model-selected citation sets before canonical sorting.
 A repository-level [security policy](SECURITY.md) and versioned
 [threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current
 controls, residual risks, and owner-configured branch protections.

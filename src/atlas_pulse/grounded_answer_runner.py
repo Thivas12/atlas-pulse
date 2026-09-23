@@ -41,8 +41,9 @@ GroundedAnswerRunnerTemplateVersion = Literal[
     "grounded-brief-qwen3-v4",
     "grounded-brief-qwen3-v5",
     "grounded-brief-qwen3-v6",
+    "grounded-brief-qwen3-v7",
 ]
-GROUNDING_RUNNER_TEMPLATE_VERSION: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v6"
+GROUNDING_RUNNER_TEMPLATE_VERSION: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v7"
 
 _SYSTEM_PROMPT_V2 = (
     "You produce a short operational evidence brief from a bounded AtlasPulse evidence pack. "
@@ -129,6 +130,7 @@ _PROMPTS: dict[GroundedAnswerRunnerTemplateVersion, tuple[str, str]] = {
     "grounded-brief-qwen3-v4": (_SYSTEM_PROMPT_V4, _USER_TEMPLATE_V4),
     "grounded-brief-qwen3-v5": (_SYSTEM_PROMPT_V4, _USER_TEMPLATE_V4),
     "grounded-brief-qwen3-v6": (_SYSTEM_PROMPT_V4, _USER_TEMPLATE_V4),
+    "grounded-brief-qwen3-v7": (_SYSTEM_PROMPT_V4, _USER_TEMPLATE_V4),
 }
 
 _RESPONSE_LIMITS: dict[GroundedAnswerRunnerTemplateVersion, tuple[int, int]] = {
@@ -137,11 +139,13 @@ _RESPONSE_LIMITS: dict[GroundedAnswerRunnerTemplateVersion, tuple[int, int]] = {
     "grounded-brief-qwen3-v4": (2, 120),
     "grounded-brief-qwen3-v5": (2, 120),
     "grounded-brief-qwen3-v6": (2, 120),
+    "grounded-brief-qwen3-v7": (2, 120),
 }
 
 _RESPONSE_NORMALIZATIONS: dict[GroundedAnswerRunnerTemplateVersion, str] = {
     "grounded-brief-qwen3-v5": "sort-claim-evidence-ids-v1",
     "grounded-brief-qwen3-v6": "canonicalize-claim-ids-and-evidence-order-v1",
+    "grounded-brief-qwen3-v7": "canonicalize-claim-ids-and-evidence-sets-v1",
 }
 
 _RUN_CAVEATS = (
@@ -248,6 +252,7 @@ def grounded_answer_input_template_sha256(
         "grounded-brief-qwen3-v4",
         "grounded-brief-qwen3-v5",
         "grounded-brief-qwen3-v6",
+        "grounded-brief-qwen3-v7",
     }:
         payload.update(
             {
@@ -453,6 +458,7 @@ def _parse_grounded_answer_response(
     if template_version not in {
         "grounded-brief-qwen3-v5",
         "grounded-brief-qwen3-v6",
+        "grounded-brief-qwen3-v7",
     }:
         return GroundedAnswerResponse.model_validate_json(content)
     payload = json.loads(content)
@@ -466,8 +472,15 @@ def _parse_grounded_answer_response(
                 if isinstance(evidence_ids, list) and all(
                     isinstance(evidence_id, str) for evidence_id in evidence_ids
                 ):
-                    claim["evidence_ids"] = sorted(evidence_ids)
-            if template_version == "grounded-brief-qwen3-v6" and all(
+                    claim["evidence_ids"] = (
+                        sorted(set(evidence_ids))
+                        if template_version == "grounded-brief-qwen3-v7"
+                        else sorted(evidence_ids)
+                    )
+            if template_version in {
+                "grounded-brief-qwen3-v6",
+                "grounded-brief-qwen3-v7",
+            } and all(
                 isinstance(claim, dict)
                 and isinstance(claim.get("claim_id"), str)
                 and _CLAIM_ID.fullmatch(claim["claim_id"]) is not None

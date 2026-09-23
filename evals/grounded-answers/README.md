@@ -48,12 +48,12 @@ fixed before review:
 
 | Field | Pinned value |
 | --- | --- |
-| Candidate | `qwen3-1.7b-q8-grounded-brief-v6` |
+| Candidate | `qwen3-1.7b-q8-grounded-brief-v7` |
 | Repository | `Qwen/Qwen3-1.7B-GGUF` |
 | Revision | `90862c4b9d2787eaed51d12237eafdfe7c5f6077` |
 | File | `Qwen3-1.7B-Q8_0.gguf` (about 1.8 GB) |
 | File SHA-256 | `061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a` |
-| Template | `grounded-brief-qwen3-v6` |
+| Template | `grounded-brief-qwen3-v7` |
 | Context / output budget | 8,192 / 512 tokens |
 
 Build a local `llama-server` executable using the
@@ -63,7 +63,7 @@ then provision the exact model in a network-enabled step:
 ```bash
 mkdir -p artifacts/models/qwen3-1.7b-q8
 uv run atlas-pulse-cache-grounded-answer-model \
-  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v6.json \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v7.json \
   --output artifacts/models/qwen3-1.7b-q8
 ```
 
@@ -74,12 +74,12 @@ task and the local executable:
 ```bash
 uv run atlas-pulse-run-grounded-answer \
   --task artifacts/grounded-answer-evaluation/task.json \
-  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v6.json \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v7.json \
   --model-dir artifacts/models/qwen3-1.7b-q8 \
   --llama-server /absolute/path/to/llama-server \
-  --output-submission artifacts/grounded-answer-evaluation/submission.qwen3-v6.json \
-  --output-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v6.json \
-  --output-run artifacts/grounded-answer-evaluation/run.qwen3-v6.json
+  --output-submission artifacts/grounded-answer-evaluation/submission.qwen3-v7.json \
+  --output-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v7.json \
+  --output-run artifacts/grounded-answer-evaluation/run.qwen3-v7.json
 ```
 
 The runner hashes the exact model and `llama-server` bytes, records the runtime version and fixed
@@ -101,8 +101,12 @@ correctly rejected. V5 kept the exact v4 prompt and response bounds and canonica
 selected citation set before validation. Its first live response then used well-formed claim IDs in
 nonconsecutive or noncanonical order. V6 preserves claim list order, text, and citation membership,
 then assigns the presentation-only IDs `claim-01`, `claim-02` by list position while retaining v5's
-citation sorting. Malformed claim identifiers still fail validation. V2 through v5 remain checked in
-for exact reproduction. These development results inform v6 and cannot support a public quality or
+citation sorting. Malformed claim identifiers still fail validation. V6 completed three live cases,
+then its fourth response repeated one valid evidence ID inside a claim. V7 keeps the exact prompt,
+model, response bounds, and claim ordering, while treating each citation array as the set it already
+represents: duplicates are removed and the remaining IDs are sorted before validation. Foreign,
+malformed, and empty citation sets still fail. V2 through v6 remain checked in for exact
+reproduction. These development results inform v7 and cannot support a public quality or
 production-promotion claim.
 
 No live candidate execution or quality result is checked into this repository. Run latency and
@@ -161,8 +165,8 @@ fully declared candidate—and create the protected review sheet:
 ```bash
 uv run atlas-pulse-evaluate-grounded-answers candidate-import \
   --task artifacts/grounded-answer-evaluation/task.json \
-  --submission artifacts/grounded-answer-evaluation/submission.qwen3-v6.json \
-  --candidate-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v6.json \
+  --submission artifacts/grounded-answer-evaluation/submission.qwen3-v7.json \
+  --candidate-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v7.json \
   --output-batch artifacts/grounded-answer-evaluation/batch.json \
   --output-review-sheet artifacts/grounded-answer-evaluation/review.csv
 ```
@@ -311,4 +315,6 @@ v4 response bound is recorded in
 citation-order adapter is recorded in
 [`ADR 0045`](../../docs/adr/0045-normalize-grounded-answer-citation-order.md). The v6 canonical
 claim-identifier adapter is recorded in
-[`ADR 0046`](../../docs/adr/0046-normalize-grounded-answer-claim-identifiers.md).
+[`ADR 0046`](../../docs/adr/0046-normalize-grounded-answer-claim-identifiers.md). The v7 citation-set
+adapter is recorded in
+[`ADR 0047`](../../docs/adr/0047-normalize-grounded-answer-citation-sets.md).

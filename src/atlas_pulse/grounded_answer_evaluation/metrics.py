@@ -13,6 +13,7 @@ from atlas_pulse.evaluation.metrics import canonical_sha256
 from atlas_pulse.grounded_answer_evaluation.base import (
     GroundedAnswerCandidateBatch,
     GroundedAnswerCandidateCase,
+    GroundedAnswerDevelopmentReviewProvenance,
     GroundedAnswerIndependentAdjudicationProvenance,
     GroundedAnswerJudgment,
     GroundedAnswerStatus,
@@ -35,6 +36,14 @@ _ADJUDICATED_PROMOTION_BLOCKERS = (
     "The default-deny agent policy remains unchanged; model execution and production answers stay disabled.",
 )
 
+_DEVELOPMENT_PROMOTION_BLOCKERS = (
+    "The judgments come from one development review; no independent agreement or adjudication exists.",
+    "This development report cannot support a public quality or production-promotion claim.",
+    "No representative grounded-answer quality, citation, abstention, or latency thresholds are approved.",
+    "Candidate token and latency measurements require reproduction on the target execution hardware.",
+    "The default-deny agent policy remains unchanged; model execution and production answers stay disabled.",
+)
+
 _FIRST_PASS_REPORT_CAVEATS = (
     "This report summarizes one human first-pass review and is not adjudicated gold or a production release decision.",
     "Claim support is measured only against the bounded retrieved excerpts; it does not verify source truth, freshness, or completeness.",
@@ -44,6 +53,14 @@ _FIRST_PASS_REPORT_CAVEATS = (
 
 _ADJUDICATED_REPORT_CAVEATS = (
     "This report summarizes two independent reviews plus disagreement-only adjudication and is not a production release decision.",
+    "Claim support is measured only against the bounded retrieved excerpts; it does not verify source truth, freshness, or completeness.",
+    "Citation quality measures whether the cited excerpts support a claim, not whether the upstream public source is factually correct.",
+    "A strict case pass is descriptive: every cited claim was fully supported, citations were complete, and the answer was directly relevant, or the abstention was judged appropriate.",
+)
+
+_DEVELOPMENT_REPORT_CAVEATS = (
+    "This report summarizes one declared development review and is not independently adjudicated gold or a production release decision.",
+    "Review assistance is declared by the operator; the software cannot independently verify how judgments were produced.",
     "Claim support is measured only against the bounded retrieved excerpts; it does not verify source truth, freshness, or completeness.",
     "Citation quality measures whether the cited excerpts support a claim, not whether the upstream public source is factually correct.",
     "A strict case pass is descriptive: every cited claim was fully supported, citations were complete, and the answer was directly relevant, or the abstention was judged appropriate.",
@@ -131,7 +148,7 @@ class GroundedAnswerCaseOutcome(StrictModel):
 class GroundedAnswerEvaluationReport(StrictModel):
     """Content-addressed descriptive report that cannot promote a candidate."""
 
-    schema_version: Literal["1.0.0", "1.1.0"] = "1.0.0"
+    schema_version: Literal["1.0.0", "1.1.0", "1.2.0"] = "1.0.0"
     report_id: str = Field(pattern=r"^grounded-report-[0-9a-f]{20}$")
     report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     generated_at: datetime
@@ -143,6 +160,7 @@ class GroundedAnswerEvaluationReport(StrictModel):
     review_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     reviewer: str = Field(min_length=2, max_length=200)
     adjudication: GroundedAnswerIndependentAdjudicationProvenance | None = None
+    development_review: GroundedAnswerDevelopmentReviewProvenance | None = None
     system: CandidateSystemDefinition
     overall: GroundedAnswerMetricSummary
     slices: dict[str, GroundedAnswerMetricSummary]
@@ -162,7 +180,24 @@ class GroundedAnswerEvaluationReport(StrictModel):
             raise ValueError("grounded-answer report overall count must match outcomes")
         if any(not name or name != name.strip().casefold() for name in self.slices):
             raise ValueError("grounded-answer report slice names must be normalized")
-        if self.adjudication is None:
+        expected_blockers: tuple[str, ...]
+        expected_caveats: tuple[str, ...]
+        if self.adjudication is not None and self.development_review is not None:
+            raise ValueError("grounded-answer report cannot be both adjudicated and development")
+        if self.development_review is not None:
+            if self.schema_version != "1.2.0":
+                raise ValueError("development grounded-answer reports require schema 1.2.0")
+            provenance = self.development_review
+            if self.reviewer != provenance.reviewer:
+                raise ValueError("development report reviewer must match its provenance")
+            if (
+                self.task_sha256 != provenance.task_sha256
+                or self.batch_sha256 != provenance.batch_sha256
+            ):
+                raise ValueError("development report hashes must match its provenance")
+            expected_blockers = _DEVELOPMENT_PROMOTION_BLOCKERS
+            expected_caveats = _DEVELOPMENT_REPORT_CAVEATS
+        elif self.adjudication is None:
             if self.schema_version != "1.0.0":
                 raise ValueError("first-pass grounded-answer reports require schema 1.0.0")
             expected_blockers = _FIRST_PASS_PROMOTION_BLOCKERS
@@ -195,6 +230,8 @@ def grounded_answer_report_sha256(report: GroundedAnswerEvaluationReport) -> str
     )
     if data.get("adjudication") is None:
         data.pop("adjudication", None)
+    if data.get("development_review") is None:
+        data.pop("development_review", None)
     return canonical_sha256(data)
 
 
@@ -362,11 +399,21 @@ def score_grounded_answer_review(
         raise ValueError("grounded-answer report generated_at must be timezone-aware")
     overall = _summary(batch.cases, judgments_by_case, outcomes_by_case)
     adjudicated = review.adjudication is not None
-    schema_version: Literal["1.0.0", "1.1.0"] = "1.1.0" if adjudicated else "1.0.0"
-    promotion_blockers = (
-        _ADJUDICATED_PROMOTION_BLOCKERS if adjudicated else _FIRST_PASS_PROMOTION_BLOCKERS
-    )
-    caveats = _ADJUDICATED_REPORT_CAVEATS if adjudicated else _FIRST_PASS_REPORT_CAVEATS
+    development = review.development_review is not None
+    promotion_blockers: tuple[str, ...]
+    caveats: tuple[str, ...]
+    if adjudicated:
+        schema_version: Literal["1.0.0", "1.1.0", "1.2.0"] = "1.1.0"
+        promotion_blockers = _ADJUDICATED_PROMOTION_BLOCKERS
+        caveats = _ADJUDICATED_REPORT_CAVEATS
+    elif development:
+        schema_version = "1.2.0"
+        promotion_blockers = _DEVELOPMENT_PROMOTION_BLOCKERS
+        caveats = _DEVELOPMENT_REPORT_CAVEATS
+    else:
+        schema_version = "1.0.0"
+        promotion_blockers = _FIRST_PASS_PROMOTION_BLOCKERS
+        caveats = _FIRST_PASS_REPORT_CAVEATS
     draft = GroundedAnswerEvaluationReport.model_construct(
         schema_version=schema_version,
         report_id="grounded-report-" + "0" * 20,
@@ -380,6 +427,7 @@ def score_grounded_answer_review(
         review_sha256=review.review_sha256,
         reviewer=review.reviewer,
         adjudication=review.adjudication,
+        development_review=review.development_review,
         system=batch.system,
         overall=overall,
         slices=slices,
@@ -402,6 +450,7 @@ def score_grounded_answer_review(
         review_sha256=review.review_sha256,
         reviewer=review.reviewer,
         adjudication=review.adjudication,
+        development_review=review.development_review,
         system=batch.system,
         overall=overall,
         slices=slices,

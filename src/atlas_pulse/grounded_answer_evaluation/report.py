@@ -36,27 +36,50 @@ def _summary_row(name: str, value: GroundedAnswerMetricSummary) -> str:
 
 def render_grounded_answer_markdown(report: GroundedAnswerEvaluationReport) -> str:
     """Render first-pass or adjudicated metrics, cases, and non-promotion boundary."""
-    if report.adjudication is None:
+    if report.development_review is not None:
+        development_provenance = report.development_review
+        title = "# Development grounded-answer candidate review"
+        status = (
+            "> **Evaluation scope: SINGLE-REVIEW DEVELOPMENT ONLY. Promotion status: "
+            "BLOCKED.** This artifact cannot support a public quality or production-promotion "
+            "claim."
+        )
+        review_lines = [
+            f"- Development review: `{report.review_id}`",
+            f"- Review process: `{development_provenance.process_version}`",
+            f"- Reviewer: `{development_provenance.reviewer}`",
+            f"- Review assistance: `{development_provenance.review_assistance}`",
+            f"- Reviewed at: `{development_provenance.reviewed_at.isoformat()}`",
+        ]
+    elif report.adjudication is None:
+        title = "# Grounded-answer candidate review"
+        status = "- Promotion status: **BLOCKED**"
         review_lines = [f"- First-pass review: `{report.review_id}` by {report.reviewer}"]
     else:
-        provenance = report.adjudication
+        title = "# Grounded-answer candidate review"
+        status = "- Promotion status: **BLOCKED**"
+        adjudication_provenance = report.adjudication
         review_lines = [
             f"- Final adjudicated review: `{report.review_id}` by {report.reviewer}",
             "- Independent reviews: "
-            + ", ".join(f"`{review_id}`" for review_id in provenance.independent_review_ids),
-            f"- Agreement report: `{provenance.agreement_report_id}`",
-            f"- Disputed rows / fields resolved: {provenance.adjudication_decision_count} / "
-            f"{provenance.adjudicated_field_count}",
+            + ", ".join(
+                f"`{review_id}`" for review_id in adjudication_provenance.independent_review_ids
+            ),
+            f"- Agreement report: `{adjudication_provenance.agreement_report_id}`",
+            "- Disputed rows / fields resolved: "
+            f"{adjudication_provenance.adjudication_decision_count} / "
+            f"{adjudication_provenance.adjudicated_field_count}",
         ]
     lines = [
-        "# Grounded-answer candidate review",
+        title,
+        "",
+        status,
         "",
         f"- Report: `{report.report_id}`",
         f"- Task: `{report.task_id}`",
         f"- Candidate batch: `{report.batch_id}`",
         *review_lines,
         f"- Candidate: `{report.system.candidate_id}`",
-        "- Promotion status: **BLOCKED**",
         "",
         "## Rubric",
         "",

@@ -28,6 +28,7 @@ from atlas_pulse.grounded_answer_evaluation.candidates import (
 )
 from atlas_pulse.grounded_answer_evaluation.capture import capture_grounded_answer_task
 from atlas_pulse.grounded_answer_evaluation.judgments import (
+    apply_grounded_answer_development_review,
     apply_grounded_answer_review,
     build_grounded_answer_review_sheet,
 )
@@ -117,6 +118,29 @@ def _review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _development_review(args: argparse.Namespace) -> int:
+    _ensure_writable(
+        (args.output_review,),
+        inputs=(args.task, args.batch, args.judgments),
+        force=args.force,
+    )
+    task = _json_model(args.task, GroundedAnswerTask)
+    batch = _json_model(args.batch, GroundedAnswerCandidateBatch)
+    review = apply_grounded_answer_development_review(
+        task,
+        batch,
+        args.judgments.read_text(encoding="utf-8"),
+        reviewer=args.reviewer,
+        review_assistance=args.review_assistance,
+    )
+    _write(args.output_review, review.model_dump_json(indent=2) + "\n")
+    print(
+        f"Imported development-only {review.review_id} from {review.reviewer}; "
+        "promotion remains blocked"
+    )
+    return 0
+
+
 def _compare_reviews(args: argparse.Namespace) -> int:
     outputs = (args.output_json, args.output_markdown, args.output_adjudication_sheet)
     inputs = (args.task, args.batch, args.first_review, args.second_review)
@@ -177,10 +201,28 @@ def _score(args: argparse.Namespace) -> int:
     task = _json_model(args.task, GroundedAnswerTask)
     batch = _json_model(args.batch, GroundedAnswerCandidateBatch)
     review = _json_model(args.review, ReviewedGroundedAnswerBatch)
+    if review.development_review is not None:
+        raise ValueError("single-review development artifacts require development-score")
     report = score_grounded_answer_review(task, batch, review)
     _write(args.output_json, report.model_dump_json(indent=2) + "\n")
     _write(args.output_markdown, render_grounded_answer_markdown(report))
     print(f"Wrote blocked descriptive report {report.report_id}")
+    return 0
+
+
+def _development_score(args: argparse.Namespace) -> int:
+    outputs = (args.output_json, args.output_markdown)
+    inputs = (args.task, args.batch, args.review)
+    _ensure_writable(outputs, inputs=inputs, force=args.force)
+    task = _json_model(args.task, GroundedAnswerTask)
+    batch = _json_model(args.batch, GroundedAnswerCandidateBatch)
+    review = _json_model(args.review, ReviewedGroundedAnswerBatch)
+    if review.development_review is None:
+        raise ValueError("development-score requires a single-review development artifact")
+    report = score_grounded_answer_review(task, batch, review)
+    _write(args.output_json, report.model_dump_json(indent=2) + "\n")
+    _write(args.output_markdown, render_grounded_answer_markdown(report))
+    print(f"Wrote development-only blocked report {report.report_id}")
     return 0
 
 
@@ -220,6 +262,23 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--output-review", type=Path, required=True)
     review.add_argument("--force", action="store_true")
 
+    development_review = commands.add_parser(
+        "development-review",
+        help="import one declared review for permanently non-promoting development evidence",
+    )
+    development_review.add_argument("--task", type=Path, required=True)
+    development_review.add_argument("--batch", type=Path, required=True)
+    development_review.add_argument("--judgments", type=Path, required=True)
+    development_review.add_argument("--reviewer", required=True)
+    development_review.add_argument(
+        "--review-assistance",
+        choices=("unassisted", "ai_assisted"),
+        required=True,
+        help="declare whether AI assistance contributed to the single review",
+    )
+    development_review.add_argument("--output-review", type=Path, required=True)
+    development_review.add_argument("--force", action="store_true")
+
     compare = commands.add_parser(
         "compare-reviews",
         help="compare two independent reviews and emit a blind adjudication sheet",
@@ -257,6 +316,17 @@ def _parser() -> argparse.ArgumentParser:
     score.add_argument("--output-json", type=Path, required=True)
     score.add_argument("--output-markdown", type=Path, required=True)
     score.add_argument("--force", action="store_true")
+
+    development_score = commands.add_parser(
+        "development-score",
+        help="score one declared single review while permanently blocking promotion",
+    )
+    development_score.add_argument("--task", type=Path, required=True)
+    development_score.add_argument("--batch", type=Path, required=True)
+    development_score.add_argument("--review", type=Path, required=True)
+    development_score.add_argument("--output-json", type=Path, required=True)
+    development_score.add_argument("--output-markdown", type=Path, required=True)
+    development_score.add_argument("--force", action="store_true")
     return parser
 
 
@@ -271,10 +341,14 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             return _candidate_import(args)
         if args.command == "review":
             return _review(args)
+        if args.command == "development-review":
+            return _development_review(args)
         if args.command == "compare-reviews":
             return _compare_reviews(args)
         if args.command == "adjudicate":
             return _adjudicate(args)
+        if args.command == "development-score":
+            return _development_score(args)
         return _score(args)
     except (
         FileExistsError,

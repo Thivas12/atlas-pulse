@@ -6,13 +6,18 @@ import csv
 import hashlib
 import io
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from atlas_pulse.grounded_answer_evaluation.base import (
+    DEVELOPMENT_GROUNDED_ANSWER_REVIEW_CAVEATS,
     GROUNDING_RUBRIC_VERSION,
     GroundedAnswerCandidateBatch,
+    GroundedAnswerDevelopmentReviewProvenance,
+    GroundedAnswerEvidence,
     GroundedAnswerJudgment,
+    GroundedAnswerReviewAssistance,
     GroundedAnswerTask,
     ReviewedGroundedAnswerBatch,
     grounded_answer_review_sha256,
@@ -55,6 +60,23 @@ def _compact_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _evidence_json(items: Sequence[GroundedAnswerEvidence]) -> str:
+    return _compact_json(
+        [
+            {
+                "evidence_id": item.evidence_id,
+                "source": item.source,
+                "event_id": item.event_id,
+                "occurred_at": item.occurred_at.isoformat(),
+                "text": item.text,
+                "text_sha256": item.text_sha256,
+                "citation_url": item.citation_url,
+            }
+            for item in items
+        ]
+    )
+
+
 def _validate_pair(task: GroundedAnswerTask, batch: GroundedAnswerCandidateBatch) -> None:
     if batch.task_id != task.task_id or batch.task_sha256 != task.task_sha256:
         raise ValueError("grounded-answer candidate batch does not match the exact task")
@@ -76,6 +98,7 @@ def _review_rows(
         response = candidate_case.response
         answer_json = _compact_json(response.model_dump(mode="json", exclude_none=False))
         if response.status == "abstained":
+            available_evidence = tuple(task_case.evidence)
             rows.append(
                 {
                     "task_id": task.task_id,
@@ -90,8 +113,8 @@ def _review_rows(
                     "answer_json": answer_json,
                     "claim_id": "",
                     "claim_text_json": "",
-                    "evidence_ids": "",
-                    "evidence_json": "[]",
+                    "evidence_ids": ";".join(item.evidence_id for item in available_evidence),
+                    "evidence_json": _evidence_json(available_evidence),
                     "support_0_to_3": "",
                     "citation_quality_0_to_2": "",
                     "answer_relevance_0_to_2": "",
@@ -103,20 +126,7 @@ def _review_rows(
         evidence = {item.evidence_id: item for item in task_case.evidence}
         for claim in response.claims:
             cited = [evidence[evidence_id] for evidence_id in claim.evidence_ids]
-            evidence_json = _compact_json(
-                [
-                    {
-                        "evidence_id": item.evidence_id,
-                        "source": item.source,
-                        "event_id": item.event_id,
-                        "occurred_at": item.occurred_at.isoformat(),
-                        "text": item.text,
-                        "text_sha256": item.text_sha256,
-                        "citation_url": item.citation_url,
-                    }
-                    for item in cited
-                ]
-            )
+            evidence_json = _evidence_json(cited)
             rows.append(
                 {
                     "task_id": task.task_id,
@@ -275,4 +285,66 @@ def apply_grounded_answer_review(
         reviewed_at=timestamp,
         judgment_count=len(ordered),
         judgments=ordered,
+    )
+
+
+def apply_grounded_answer_development_review(
+    task: GroundedAnswerTask,
+    batch: GroundedAnswerCandidateBatch,
+    csv_text: str,
+    *,
+    reviewer: str,
+    review_assistance: GroundedAnswerReviewAssistance,
+    reviewed_at: datetime | None = None,
+) -> ReviewedGroundedAnswerBatch:
+    """Import one declared single review without creating independent-review evidence."""
+    first_pass = apply_grounded_answer_review(
+        task,
+        batch,
+        csv_text,
+        reviewer=reviewer,
+        reviewed_at=reviewed_at,
+    )
+    provenance = GroundedAnswerDevelopmentReviewProvenance(
+        reviewer=first_pass.reviewer,
+        reviewed_at=first_pass.reviewed_at,
+        task_sha256=task.task_sha256,
+        batch_sha256=batch.batch_sha256,
+        review_assistance=review_assistance,
+    )
+    draft = ReviewedGroundedAnswerBatch.model_construct(
+        schema_version="1.2.0",
+        review_id="grounded-review-" + "0" * 20,
+        review_sha256="0" * 64,
+        task_id=task.task_id,
+        task_sha256=task.task_sha256,
+        batch_id=batch.batch_id,
+        batch_sha256=batch.batch_sha256,
+        rubric_version=GROUNDING_RUBRIC_VERSION,
+        reviewer=first_pass.reviewer,
+        reviewed_at=first_pass.reviewed_at,
+        judgment_count=first_pass.judgment_count,
+        judgments=first_pass.judgments,
+        review_status="single_review_development_complete",
+        adjudication=None,
+        development_review=provenance,
+        promotion_status="blocked",
+        caveats=DEVELOPMENT_GROUNDED_ANSWER_REVIEW_CAVEATS,
+    )
+    digest = grounded_answer_review_sha256(draft)
+    return ReviewedGroundedAnswerBatch(
+        schema_version="1.2.0",
+        review_id=f"grounded-review-{digest[:20]}",
+        review_sha256=digest,
+        task_id=task.task_id,
+        task_sha256=task.task_sha256,
+        batch_id=batch.batch_id,
+        batch_sha256=batch.batch_sha256,
+        reviewer=first_pass.reviewer,
+        reviewed_at=first_pass.reviewed_at,
+        judgment_count=first_pass.judgment_count,
+        judgments=first_pass.judgments,
+        review_status="single_review_development_complete",
+        development_review=provenance,
+        caveats=DEVELOPMENT_GROUNDED_ANSWER_REVIEW_CAVEATS,
     )

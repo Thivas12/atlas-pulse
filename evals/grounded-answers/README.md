@@ -12,6 +12,8 @@ generator and contains no reference answer, human grade, or production release s
 | Submission JSON | `capture`, completed by external runner | Atomic cited claims or explicit abstentions, token counts, latency | Human judgments |
 | Candidate batch | `candidate-import` | Exact task binding and immutable candidate identity | Promotion approval |
 | Review CSV copies | `candidate-import`, completed independently by two humans | Model-blind claims and only their cited evidence | Candidate/model identity, preset grades |
+| Development review | `development-review` | One declared review plus `unassisted` or `ai_assisted` provenance | Independent agreement, promotion approval |
+| Development report | `development-score` | Descriptive metrics for one explicitly development-only review | Public quality or production-promotion claim |
 | First-pass reviews | `review` twice | Named, content-addressed judgments and rationales | Adjudicated judgment set |
 | Agreement report | `compare-reviews` | Per-field observed agreement, Cohen's kappa, exact disagreements, both review hashes | Release verdict |
 | Adjudication CSV | `compare-reviews`, completed by a third human | Disputed rows, blinded review A/B grades and rationales | Candidate/model/reviewer identity, agreed-row edits |
@@ -40,19 +42,19 @@ citation identity, or pack identity. A task case with no admitted evidence is re
 
 ## 2. Run the pinned local candidate
 
-The checked-in baseline is the official Apache-2.0
+The current checked-in development candidate uses the official Apache-2.0
 [`Qwen/Qwen3-1.7B-GGUF`](https://huggingface.co/Qwen/Qwen3-1.7B-GGUF) Q8 artifact. Its identity is
 fixed before review:
 
 | Field | Pinned value |
 | --- | --- |
-| Candidate | `qwen3-1.7b-q8-grounded-brief-v1` |
+| Candidate | `qwen3-1.7b-q8-grounded-brief-v7` |
 | Repository | `Qwen/Qwen3-1.7B-GGUF` |
 | Revision | `90862c4b9d2787eaed51d12237eafdfe7c5f6077` |
 | File | `Qwen3-1.7B-Q8_0.gguf` (about 1.8 GB) |
 | File SHA-256 | `061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a` |
-| Template | `grounded-brief-qwen3-v1` |
-| Context / output budget | 8,192 / 768 tokens |
+| Template | `grounded-brief-qwen3-v7` |
+| Context / output budget | 8,192 / 512 tokens |
 
 Build a local `llama-server` executable using the
 [`llama.cpp` server instructions](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md),
@@ -61,7 +63,7 @@ then provision the exact model in a network-enabled step:
 ```bash
 mkdir -p artifacts/models/qwen3-1.7b-q8
 uv run atlas-pulse-cache-grounded-answer-model \
-  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v1.json \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v7.json \
   --output artifacts/models/qwen3-1.7b-q8
 ```
 
@@ -72,19 +74,40 @@ task and the local executable:
 ```bash
 uv run atlas-pulse-run-grounded-answer \
   --task artifacts/grounded-answer-evaluation/task.json \
-  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v1.json \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v7.json \
   --model-dir artifacts/models/qwen3-1.7b-q8 \
   --llama-server /absolute/path/to/llama-server \
-  --output-submission artifacts/grounded-answer-evaluation/submission.qwen3.json \
-  --output-definition artifacts/grounded-answer-evaluation/candidate.qwen3.json \
-  --output-run artifacts/grounded-answer-evaluation/run.qwen3.json
+  --output-submission artifacts/grounded-answer-evaluation/submission.qwen3-v7.json \
+  --output-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v7.json \
+  --output-run artifacts/grounded-answer-evaluation/run.qwen3-v7.json
 ```
 
 The runner hashes the exact model and `llama-server` bytes, records the runtime version and fixed
 parameters, starts an authenticated loopback-only CPU process in llama.cpp offline mode, disables
 agent tools and thinking, counts the exact rendered prompt before generation, constrains JSON to
 case-local evidence IDs, and reimports every result through the independent evaluator contracts.
-The content-addressed run trace remains `promotion_status: blocked`.
+The runner atomically checkpoints each completed case beside the requested run artifact and resumes
+only when the task, candidate configuration, runtime identity, and completed canonical prefix match
+exactly. The content-addressed run trace remains `promotion_status: blocked`.
+
+The v3 contract narrowed the abstention policy after a single assisted development review found
+that v2 abstained on all ten cases even though only two abstentions were appropriate. On its first
+live case, v3 then deterministically consumed the complete 512-token budget in six attempts without
+closing a valid response. The versioned v4 contract keeps the same model, runtime, decoding
+parameters, task, citation limit, and 512-token ceiling while reducing the largest answer from
+three 180-character claims to two 120-character claims and preferring one. V4 completed structured
+generation but selected two valid evidence IDs in noncanonical order, which the fail-closed import
+correctly rejected. V5 kept the exact v4 prompt and response bounds and canonically sorted each
+selected citation set before validation. Its first live response then used well-formed claim IDs in
+nonconsecutive or noncanonical order. V6 preserves claim list order, text, and citation membership,
+then assigns the presentation-only IDs `claim-01`, `claim-02` by list position while retaining v5's
+citation sorting. Malformed claim identifiers still fail validation. V6 completed three live cases,
+then its fourth response repeated one valid evidence ID inside a claim. V7 keeps the exact prompt,
+model, response bounds, and claim ordering, while treating each citation array as the set it already
+represents: duplicates are removed and the remaining IDs are sorted before validation. Foreign,
+malformed, and empty citation sets still fail. V2 through v6 remain checked in for exact
+reproduction. These development results inform v7 and cannot support a public quality or
+production-promotion claim.
 
 No live candidate execution or quality result is checked into this repository. Run latency and
 answer quality remain unknown until the captured task is executed on target hardware and reviewed.
@@ -142,8 +165,8 @@ fully declared candidate—and create the protected review sheet:
 ```bash
 uv run atlas-pulse-evaluate-grounded-answers candidate-import \
   --task artifacts/grounded-answer-evaluation/task.json \
-  --submission artifacts/grounded-answer-evaluation/submission.qwen3.json \
-  --candidate-definition artifacts/grounded-answer-evaluation/candidate.qwen3.json \
+  --submission artifacts/grounded-answer-evaluation/submission.qwen3-v7.json \
+  --candidate-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v7.json \
   --output-batch artifacts/grounded-answer-evaluation/batch.json \
   --output-review-sheet artifacts/grounded-answer-evaluation/review.csv
 ```
@@ -151,7 +174,38 @@ uv run atlas-pulse-evaluate-grounded-answers candidate-import \
 Import rejects missing outputs, foreign citations, changed case identities, floating or malformed
 model identity, missing tokenizer identity, context overflow, and output-budget overflow.
 
-## 3. Complete two independent model-blind reviews
+For an answered response, each review row contains only the evidence cited by that claim. For an
+abstained response, the row contains the complete candidate-visible evidence pack so a reviewer can
+actually decide whether abstention was appropriate. Candidate and model identity remain excluded.
+
+## 3A. Bounded single-review development path
+
+An individual development loop does not need to invent independent reviewers. Complete the one
+model-blind review sheet, then import it with an explicit assistance declaration:
+
+```bash
+uv run atlas-pulse-evaluate-grounded-answers development-review \
+  --task artifacts/grounded-answer-evaluation/task.json \
+  --batch artifacts/grounded-answer-evaluation/batch.json \
+  --judgments artifacts/grounded-answer-evaluation/review.development.csv \
+  --reviewer "OpenAI Codex (AI-assisted)" \
+  --review-assistance ai_assisted \
+  --output-review artifacts/grounded-answer-evaluation/reviewed.development.json
+
+uv run atlas-pulse-evaluate-grounded-answers development-score \
+  --task artifacts/grounded-answer-evaluation/task.json \
+  --batch artifacts/grounded-answer-evaluation/batch.json \
+  --review artifacts/grounded-answer-evaluation/reviewed.development.json \
+  --output-json artifacts/grounded-answer-evaluation/report.development.json \
+  --output-markdown artifacts/grounded-answer-evaluation/report.development.md
+```
+
+This path records `single-review-development-v1`, the reviewer, timestamp, exact task and batch
+hashes, and whether assistance was declared. Its artifacts use a separate schema, remain
+permanently blocked, and cannot enter the independent agreement or adjudication workflow. Use the
+full process below only when independently adjudicated evidence is actually required.
+
+## 3B. Complete two independent model-blind reviews
 
 The CSV intentionally excludes candidate and model identity. Before either reviewer starts, make
 two independent copies of the untouched template. Reviewers grade only the question, candidate
@@ -252,3 +306,15 @@ execution boundary is recorded in
 [`ADR 0022`](../../docs/adr/0022-pinned-local-grounded-answer-runner.md). Independent review and
 field-only adjudication are recorded in
 [`ADR 0023`](../../docs/adr/0023-grounded-answer-independent-review-adjudication.md).
+The explicitly non-promoting single-review alternative is recorded in
+[`ADR 0042`](../../docs/adr/0042-single-review-grounded-answer-development-evaluation.md). The
+versioned v3 abstention-policy change is recorded in
+[`ADR 0043`](../../docs/adr/0043-narrow-grounded-answer-abstention-policy.md). The completion-safe
+v4 response bound is recorded in
+[`ADR 0044`](../../docs/adr/0044-bound-grounded-answer-completion-shape.md). The v5 canonical
+citation-order adapter is recorded in
+[`ADR 0045`](../../docs/adr/0045-normalize-grounded-answer-citation-order.md). The v6 canonical
+claim-identifier adapter is recorded in
+[`ADR 0046`](../../docs/adr/0046-normalize-grounded-answer-claim-identifiers.md). The v7 citation-set
+adapter is recorded in
+[`ADR 0047`](../../docs/adr/0047-normalize-grounded-answer-citation-sets.md).

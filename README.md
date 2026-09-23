@@ -66,7 +66,10 @@ component can run without a paid API key.
 > checked-in, revision-pinned Qwen3 1.7B Q8 candidate without review or gold access. It verifies the
 > exact GGUF and llama.cpp bytes, uses authenticated loopback-only offline inference with tools and
 > thinking disabled, constrains citations to each case, checks tokenizer context before generation,
-> and emits a content-addressed blocked trace. Two exact first-pass grounded-answer reviews can now
+> atomically checkpoints every completed case, and emits a content-addressed blocked trace. A
+> separately typed single-review development path records declared AI assistance without inventing
+> independent reviewers; abstention rows expose the complete candidate-visible evidence pack and
+> every artifact remains permanently non-promoting. Two exact first-pass grounded-answer reviews can now
 > be compared per rubric field with observed agreement and Cohen's kappa. Only disputed rows enter
 > a candidate- and reviewer-blind sheet; agreed fields are immutable, review A/B order is swapped
 > per row, and a distinct adjudicator resolves only disputed fields. The finalized review retains
@@ -658,7 +661,9 @@ deterministic for retained entries rather than an indefinite event archive.
 - Grounded-answer capture revalidates the deployed evidence-pack identity and request echo. Imports
   require task-local citations, complete token/latency measurements, and declared context limits;
   protected review fields cannot change. Dual-review agreement and disagreement-only adjudication
-  remain candidate-blind, content-addressed, and unable to promote a candidate.
+  remain candidate-blind, content-addressed, and unable to promote a candidate. The separately
+  named single-review development path declares assistance, includes candidate-visible evidence
+  for abstention review, and cannot be used as independent or promotion evidence.
 - The pinned grounded-answer runner fails closed on model/runtime byte drift, prompt drift, context
   overflow, foreign citations, reasoning output, malformed JSON, or server accounting mismatch. It
   starts only its owned authenticated loopback child in llama.cpp offline mode and never receives a
@@ -755,7 +760,21 @@ diagnostics before live capture, and
 [ADR 0039](docs/adr/0039-mode-aware-retrieval-execution.md) for mode-isolated ablation execution
 and honest per-mode latency measurement, and
 [ADR 0040](docs/adr/0040-pin-workstation-funnel-probes-to-public-relays.md) for public-DNS Funnel
-resolution, global relay pinning, and preserved hostname verification.
+resolution, global relay pinning, and preserved hostname verification, and
+[ADR 0041](docs/adr/0041-single-review-relationship-development-evaluation.md) for honest,
+permanently non-promoting single-review relationship comparisons, and
+[ADR 0042](docs/adr/0042-single-review-grounded-answer-development-evaluation.md) for declared
+single-review grounded-answer evidence and reviewable abstentions, and
+[ADR 0043](docs/adr/0043-narrow-grounded-answer-abstention-policy.md) for the versioned grounded
+brief policy that distinguishes partial bounded answers from genuinely unanswerable cases, and
+[ADR 0044](docs/adr/0044-bound-grounded-answer-completion-shape.md) for the completion-safe v4
+claim and character limits after the bounded v3 run exhausted its output budget, and
+[ADR 0045](docs/adr/0045-normalize-grounded-answer-citation-order.md) for the explicit v5 adapter
+that canonically orders model-selected citation sets without changing their membership, and
+[ADR 0046](docs/adr/0046-normalize-grounded-answer-claim-identifiers.md) for the explicit v6 adapter
+that assigns presentation-only claim IDs by preserved list position before validation, and
+[ADR 0047](docs/adr/0047-normalize-grounded-answer-citation-sets.md) for the explicit v7 adapter
+that removes repeated IDs from model-selected citation sets before canonical sorting.
 A repository-level [security policy](SECURITY.md) and versioned
 [threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current
 controls, residual risks, and owner-configured branch protections.
@@ -802,8 +821,9 @@ credential solely for transaction metering.
    revision-pinned local NLI candidate.
 2. Inspect the exact paired gains and regressions, then either improve the deterministic claim rule
    or record why the local candidate does not justify its added latency and complexity.
-3. Run one bounded Qwen grounded-answer development capture after the relationship findings are
-   settled; keep agent execution disabled until its existing release requirements are genuinely met.
+3. Review the completed bounded Qwen grounded-answer run through the declared single-review
+   development path, then inspect whether its all-abstention behavior is justified by the exact
+   evidence packs; keep agent execution disabled.
 
 Independent duplicate review, multi-capture campaigns, and 30-day operational sampling remain
 available when a future claim specifically requires them. They are not prerequisites for ongoing

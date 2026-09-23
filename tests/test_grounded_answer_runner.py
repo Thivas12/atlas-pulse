@@ -32,6 +32,7 @@ from atlas_pulse.grounded_answer_runner import (
     GroundedAnswerCandidateRun,
     GroundedAnswerGeneration,
     GroundedAnswerRunnerConfig,
+    GroundedAnswerRunnerTemplateVersion,
     LlamaServerRuntime,
     build_grounded_answer_system_definition,
     grounded_answer_candidate_run_sha256,
@@ -150,7 +151,11 @@ def _task() -> GroundedAnswerTask:
     )
 
 
-def _config(*, model_sha256: str = "c" * 64) -> GroundedAnswerRunnerConfig:
+def _config(
+    *,
+    model_sha256: str = "c" * 64,
+    template_version: GroundedAnswerRunnerTemplateVersion = GROUNDING_RUNNER_TEMPLATE_VERSION,
+) -> GroundedAnswerRunnerConfig:
     return GroundedAnswerRunnerConfig(
         candidate_id="local-grounded-runner-v1",
         model_id="example/revision-pinned-gguf",
@@ -158,6 +163,8 @@ def _config(*, model_sha256: str = "c" * 64) -> GroundedAnswerRunnerConfig:
         model_license="apache-2.0",
         model_file="model.gguf",
         model_file_sha256=model_sha256,
+        adapter_version=template_version,
+        template_version=template_version,
         context_length=4096,
         max_output_tokens=256,
         temperature=0.7,
@@ -210,6 +217,7 @@ class _FakeRuntime:
         system: CandidateSystemDefinition | None = None,
     ) -> None:
         self._system = system or _system(config)
+        self.template_version = config.template_version
         self.prompt_hash = prompt_hash
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
@@ -226,7 +234,8 @@ class _FakeRuntime:
         return GroundedAnswerGeneration(
             response=response,
             response_sha256=canonical_sha256(response),
-            prompt_sha256=self.prompt_hash or grounded_answer_prompt_sha256(case),
+            prompt_sha256=self.prompt_hash
+            or grounded_answer_prompt_sha256(case, self.template_version),
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             latency_ms=12.5,
@@ -249,12 +258,210 @@ def test_prompt_is_gold_free_injection_quoted_and_case_constrained() -> None:
     schema_text = json.dumps(schema)
     assert available.evidence[0].evidence_id in schema_text
     assert "no_traceable_evidence" not in schema_text
+    answered_schema = cast(list[dict[str, Any]], schema["oneOf"])[0]
+    claims_schema = answered_schema["properties"]["claims"]
+    assert claims_schema["maxItems"] == 2
+    claim_properties = claims_schema["items"]["properties"]
+    assert claim_properties["text"]["maxLength"] == 120
+    assert claim_properties["evidence_ids"]["maxItems"] == min(
+        2,
+        len(available.evidence),
+    )
     empty_schema = grounded_answer_response_schema(empty)
     assert empty_schema["properties"]["abstention_reason"]["enum"] == [  # type: ignore[index]
         "no_traceable_evidence"
     ]
     assert len(grounded_answer_prompt_sha256(available)) == 64
     assert len(grounded_answer_input_template_sha256()) == 64
+
+
+def test_versioned_prompts_preserve_history_and_bound_v4_completion() -> None:
+    available = next(case for case in _task().cases if case.evidence)
+    v2: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v2"
+    v3: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v3"
+    v4: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v4"
+    v5: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v5"
+    v6: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v6"
+    v7: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v7"
+
+    v2_messages = render_grounded_answer_messages(available, v2)
+    v3_messages = render_grounded_answer_messages(available, v3)
+    v4_messages = render_grounded_answer_messages(available, v4)
+    v5_messages = render_grounded_answer_messages(available, v5)
+    v6_messages = render_grounded_answer_messages(available, v6)
+    v7_messages = render_grounded_answer_messages(available, v7)
+
+    assert (
+        "excerpts are absent, insufficient, or materially conflicting" in v2_messages[0]["content"]
+    )
+    assert "zero responsive claims are possible" not in v2_messages[1]["content"]
+    assert "supported negative finding is still an answer" in v3_messages[1]["content"]
+    assert "zero responsive claims are possible" in v3_messages[1]["content"]
+    assert "never more than two" in v4_messages[1]["content"]
+    assert "Finish the JSON immediately" in v4_messages[0]["content"]
+    assert v5_messages == v4_messages
+    assert v6_messages == v5_messages
+    assert v7_messages == v6_messages
+    assert grounded_answer_input_template_sha256(v2) == (
+        "e8dfd7aba49e02d4d73b84441ffb1e217ed2a681d4c1804935359d3e36fc148f"
+    )
+    assert grounded_answer_prompt_sha256(available, v2) == (
+        "6f4936cb40acc702a3ae6f72c28be858c8ccc0b2d4d2994262a8aa3f0031fde4"
+    )
+    assert grounded_answer_input_template_sha256(v3) == (
+        "8625275563f836abd3d98022dc50fceafed1e0b44d604e53872e4aa041459ca8"
+    )
+    assert grounded_answer_prompt_sha256(available, v3) == (
+        "147b912b590ba3c0a35db80aa2fb862793576716a5ab9754c6cc85dee0ed4fa5"
+    )
+    assert grounded_answer_input_template_sha256(v2) != grounded_answer_input_template_sha256(v3)
+    assert grounded_answer_prompt_sha256(available, v2) != grounded_answer_prompt_sha256(
+        available,
+        v3,
+    )
+    assert grounded_answer_input_template_sha256(v3) != grounded_answer_input_template_sha256(v4)
+    assert grounded_answer_prompt_sha256(available, v3) != grounded_answer_prompt_sha256(
+        available,
+        v4,
+    )
+    assert grounded_answer_input_template_sha256(v4) != grounded_answer_input_template_sha256(v5)
+    assert grounded_answer_prompt_sha256(available, v4) == grounded_answer_prompt_sha256(
+        available,
+        v5,
+    )
+    assert grounded_answer_input_template_sha256(v5) != grounded_answer_input_template_sha256(v6)
+    assert grounded_answer_prompt_sha256(available, v5) == grounded_answer_prompt_sha256(
+        available,
+        v6,
+    )
+    assert grounded_answer_input_template_sha256(v6) != grounded_answer_input_template_sha256(v7)
+    assert grounded_answer_prompt_sha256(available, v6) == grounded_answer_prompt_sha256(
+        available,
+        v7,
+    )
+    v4_schema = grounded_answer_response_schema(available, v4)
+    v4_answered = cast(list[dict[str, Any]], v4_schema["oneOf"])[0]
+    v4_claims = v4_answered["properties"]["claims"]
+    assert v4_claims["maxItems"] == 2
+    assert v4_claims["items"]["properties"]["text"]["maxLength"] == 120
+
+    for legacy_version in (v2, v3, v4, v5, v6):
+        legacy_config = _config(template_version=legacy_version)
+        _submission, legacy_run, _batch = run_grounded_answer_candidate(
+            _task(),
+            legacy_config,
+            _FakeRuntime(legacy_config),
+            generated_at=GENERATED_AT,
+        )
+        assert legacy_run.template_version == legacy_version
+
+
+def test_v5_normalizes_citation_set_order_without_changing_older_versions() -> None:
+    v4: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v4"
+    v5: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v5"
+    first = "evidence-" + "a" * 64
+    second = "evidence-" + "b" * 64
+    content = json.dumps(
+        {
+            "status": "answered",
+            "claims": [
+                {
+                    "claim_id": "claim-01",
+                    "text": "Two records support this bounded statement.",
+                    "evidence_ids": [second, first],
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ValidationError, match="canonical order"):
+        runner_module._parse_grounded_answer_response(content, v4)
+
+    normalized = runner_module._parse_grounded_answer_response(content, v5)
+    assert normalized.claims[0].evidence_ids == (first, second)
+    assert "response_normalization" not in _system(_config(template_version=v4)).parameters
+    assert _system(_config(template_version=v5)).parameters["response_normalization"] == (
+        "sort-claim-evidence-ids-v1"
+    )
+
+
+def test_v6_canonicalizes_well_formed_claim_ids_without_changing_claim_order() -> None:
+    v5: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v5"
+    v6: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v6"
+    first = "evidence-" + "a" * 64
+    second = "evidence-" + "b" * 64
+    content = json.dumps(
+        {
+            "status": "answered",
+            "claims": [
+                {
+                    "claim_id": "claim-09",
+                    "text": "The first bounded statement remains first.",
+                    "evidence_ids": [second, first],
+                },
+                {
+                    "claim_id": "claim-04",
+                    "text": "The second bounded statement remains second.",
+                    "evidence_ids": [second],
+                },
+            ],
+        }
+    )
+
+    with pytest.raises(ValidationError, match="claim IDs must be consecutive"):
+        runner_module._parse_grounded_answer_response(content, v5)
+
+    normalized = runner_module._parse_grounded_answer_response(content, v6)
+    assert [claim.claim_id for claim in normalized.claims] == ["claim-01", "claim-02"]
+    assert [claim.text for claim in normalized.claims] == [
+        "The first bounded statement remains first.",
+        "The second bounded statement remains second.",
+    ]
+    assert normalized.claims[0].evidence_ids == (first, second)
+    assert normalized.claims[1].evidence_ids == (second,)
+    assert _system(_config(template_version=v5)).parameters["response_normalization"] == (
+        "sort-claim-evidence-ids-v1"
+    )
+    assert _system(_config(template_version=v6)).parameters["response_normalization"] == (
+        "canonicalize-claim-ids-and-evidence-order-v1"
+    )
+
+    malformed = content.replace('"claim-09"', '"claim-nine"')
+    with pytest.raises(ValidationError, match="claim_id"):
+        runner_module._parse_grounded_answer_response(malformed, v6)
+
+
+def test_v7_canonicalizes_duplicate_citations_without_changing_membership() -> None:
+    v6: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v6"
+    v7: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v7"
+    first = "evidence-" + "a" * 64
+    second = "evidence-" + "b" * 64
+    content = json.dumps(
+        {
+            "status": "answered",
+            "claims": [
+                {
+                    "claim_id": "claim-07",
+                    "text": "Duplicate citations do not change this bounded claim.",
+                    "evidence_ids": [second, first, second],
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ValidationError, match="evidence IDs must be unique"):
+        runner_module._parse_grounded_answer_response(content, v6)
+
+    normalized = runner_module._parse_grounded_answer_response(content, v7)
+    assert normalized.claims[0].claim_id == "claim-01"
+    assert normalized.claims[0].text == "Duplicate citations do not change this bounded claim."
+    assert normalized.claims[0].evidence_ids == (first, second)
+    assert _system(_config(template_version=v6)).parameters["response_normalization"] == (
+        "canonicalize-claim-ids-and-evidence-order-v1"
+    )
+    assert _system(_config(template_version=v7)).parameters["response_normalization"] == (
+        "canonicalize-claim-ids-and-evidence-sets-v1"
+    )
 
 
 def test_runner_produces_complete_submission_batch_and_blocked_trace() -> None:
@@ -449,6 +656,13 @@ def test_model_and_system_identity_fail_closed(tmp_path: Path) -> None:
     assert system.runtime == "llama.cpp-server-cpu"
     assert system.model_artifact_sha256 == digest
     assert system.parameters["tokenizer_artifact_sha256"] == digest
+    assert (
+        system.parameters["structured_output_transport"] == "llama.cpp-sse-json-schema-wrapper-v1"
+    )
+    assert (
+        system.parameters["token_count_transport"]
+        == "llama.cpp-chat-input-tokens-without-response-format-v1"
+    )
     assert system.runtime_version.startswith("llama.cpp build-42;")
 
     model_path.write_bytes(b"changed")
@@ -516,9 +730,16 @@ def test_model_artifact_rejects_non_directory_symlink_and_directory(tmp_path: Pa
 
 
 class _FakeResponse:
-    def __init__(self, payload: object, *, status_code: int = 200) -> None:
+    def __init__(
+        self,
+        payload: object,
+        *,
+        status_code: int = 200,
+        text: str | None = None,
+    ) -> None:
         self._payload = payload
         self.status_code = status_code
+        self.text = json.dumps(payload) if text is None else text
 
     def json(self) -> object:
         return self._payload
@@ -531,21 +752,53 @@ class _FakeResponse:
 
 
 class _QueueClient:
-    def __init__(self, responses: list[_FakeResponse]) -> None:
+    def __init__(self, responses: list[_FakeResponse | BaseException]) -> None:
         self.responses = responses
         self.requests: list[tuple[str, dict[str, object] | None]] = []
         self.closed = False
 
     def get(self, path: str) -> _FakeResponse:
         self.requests.append((path, None))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
     def post(self, path: str, *, json: dict[str, object]) -> _FakeResponse:
         self.requests.append((path, json))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
     def close(self) -> None:
         self.closed = True
+
+
+def _stream_response(completion: dict[str, object]) -> _FakeResponse:
+    events: list[dict[str, object]] = []
+    choices = completion.get("choices")
+    if isinstance(choices, list):
+        for raw_choice in choices:
+            choice = cast(dict[str, object], raw_choice)
+            message = cast(dict[str, object], choice.get("message", {}))
+            events.append(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "content": message.get("content"),
+                                "reasoning_content": message.get("reasoning_content"),
+                            },
+                            "finish_reason": choice.get("finish_reason"),
+                        }
+                    ]
+                }
+            )
+    if "usage" in completion:
+        events.append({"choices": [], "usage": completion["usage"]})
+    text = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+    return _FakeResponse(None, text=text + "data: [DONE]\n\n")
 
 
 class _FakeProcess:
@@ -594,7 +847,7 @@ def test_llama_runtime_counts_before_generation_and_validates_response() -> None
     client = _QueueClient(
         [
             _FakeResponse({"input_tokens": 120}),
-            _FakeResponse(
+            _stream_response(
                 {
                     "choices": [
                         {
@@ -618,13 +871,24 @@ def test_llama_runtime_counts_before_generation_and_validates_response() -> None
         "/v1/chat/completions/input_tokens",
         "/v1/chat/completions",
     ]
-    body = client.requests[0][1]
-    assert body is not None
-    assert body["reasoning_effort"] == "none"
-    assert body["chat_template_kwargs"] == {"enable_thinking": False}
-    assert body["response_format"] == {
+    token_body = client.requests[0][1]
+    assert token_body is not None
+    assert token_body["stream"] is False
+    assert "stream_options" not in token_body
+    assert "response_format" not in token_body
+    completion_body = client.requests[1][1]
+    assert completion_body is not None
+    assert completion_body["reasoning_effort"] == "none"
+    assert completion_body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert completion_body["stream"] is True
+    assert completion_body["stream_options"] == {"include_usage": True}
+    assert completion_body["response_format"] == {
         "type": "json_schema",
-        "schema": grounded_answer_response_schema(available),
+        "json_schema": {
+            "name": "grounded_answer_response",
+            "strict": True,
+            "schema": grounded_answer_response_schema(available),
+        },
     }
 
 
@@ -645,7 +909,7 @@ def test_llama_runtime_rejects_context_and_server_accounting_drift() -> None:
         _QueueClient(
             [
                 _FakeResponse({"input_tokens": 120}),
-                _FakeResponse(
+                _stream_response(
                     {
                         "choices": [
                             {
@@ -676,7 +940,7 @@ def test_llama_runtime_rejects_context_and_server_accounting_drift() -> None:
                 "choices": [{"finish_reason": "length", "message": {"content": "{}"}}],
                 "usage": {"prompt_tokens": 120, "completion_tokens": 18},
             },
-            "did not finish cleanly",
+            "finish_reason='length' after 18 output tokens",
         ),
         (
             {
@@ -722,7 +986,7 @@ def test_llama_runtime_rejects_malformed_completion_contracts(
     available = next(case for case in _task().cases if case.evidence)
     runtime = _bare_runtime(
         _config(),
-        _QueueClient([_FakeResponse({"input_tokens": 120}), _FakeResponse(completion)]),
+        _QueueClient([_FakeResponse({"input_tokens": 120}), _stream_response(completion)]),
         iter((0.0, 0.01)),
     )
     with pytest.raises(RuntimeError, match=message):
@@ -754,6 +1018,32 @@ def test_llama_runtime_rejects_invalid_token_payload_and_stopped_process() -> No
         stopped.generate(available)
 
 
+def test_llama_runtime_reports_timed_out_stage_and_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    available = next(case for case in _task().cases if case.evidence)
+    runtime = _bare_runtime(
+        _config(),
+        _QueueClient(
+            [
+                _FakeResponse({"input_tokens": 120}),
+                httpx.ReadTimeout("timed out"),
+            ]
+        ),
+        iter((0.0,)),
+    )
+    monkeypatch.setattr(runtime, "_log_tail", lambda: "generation still active")
+
+    with pytest.raises(
+        TimeoutError,
+        match=(
+            rf"schema-constrained completion timed out for {available.query_id} after "
+            r"10s without response progress; llama-server log tail: generation still active"
+        ),
+    ):
+        runtime.generate(available)
+
+
 def test_llama_runtime_owns_loopback_authenticated_tool_free_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -773,7 +1063,16 @@ def test_llama_runtime_owns_loopback_authenticated_tool_free_process(
     health_client = _QueueClient([_FakeResponse({"status": "ok"})])
 
     def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess([], 0, stdout="llama.cpp build-42\n", stderr="")
+        return subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=(
+                "0.00.000.343 I srv llama_server: initializing ...\n"
+                "version: 0.4.1-dev (build 11073, commit 1aa2954bd)\n"
+                "built with GNU 11.4.0 for Linux x86_64\n"
+            ),
+            stderr="",
+        )
 
     def fake_popen(command: list[str], **kwargs: object) -> _FakeProcess:
         commands.append(command)
@@ -814,7 +1113,15 @@ def test_llama_runtime_owns_loopback_authenticated_tool_free_process(
     assert client_kwargs[0]["base_url"] == "http://127.0.0.1:43123"
     assert client_kwargs[0]["trust_env"] is False
     assert client_kwargs[0]["headers"] == {"Authorization": "Bearer local-secret"}
+    timeout = cast(httpx.Timeout, client_kwargs[0]["timeout"])
+    assert timeout.connect == 10
+    assert timeout.read == config.request_timeout_seconds
+    assert timeout.write == 30
+    assert timeout.pool == 10
     assert health_client.requests == [("/health", None)]
+    assert runtime.system.runtime_version.startswith(
+        "version: 0.4.1-dev (build 11073, commit 1aa2954bd);binary_sha256="
+    )
     runtime.close()
     assert health_client.closed is True
     assert process.terminated is True
@@ -912,8 +1219,14 @@ def test_runner_cli_writes_only_gold_free_outputs_and_protects_inputs(
         str(run_path),
     ]
     assert run_cli(arguments, runtime_factory=runtime_factory) == 0
-    assert "Wrote blocked" in capsys.readouterr().out
+    cli_output = capsys.readouterr().out
+    assert "Generating grounded answer 1/2" in cli_output
+    assert "Completed grounded answer 2/2" in cli_output
+    assert "Wrote blocked" in cli_output
     assert "reviewer" not in run_path.read_text(encoding="utf-8")
+    checkpoint_path = run_path.with_name("run.checkpoint.json")
+    checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert len(checkpoint_payload["cases"]) == task.case_count
     assert (
         CandidateSystemDefinition.model_validate_json(
             definition_path.read_text(encoding="utf-8")
@@ -936,6 +1249,77 @@ def test_runner_cli_writes_only_gold_free_outputs_and_protects_inputs(
     duplicate_outputs[duplicate_outputs.index(str(definition_path))] = str(submission_path)
     assert run_cli(duplicate_outputs, runtime_factory=runtime_factory) == 2
     assert "output paths must be distinct" in capsys.readouterr().err
+
+
+def test_runner_cli_checkpoints_and_resumes_an_exact_prefix(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    task = _task()
+    config = _config()
+    task_path = tmp_path / "task.json"
+    config_path = tmp_path / "config.json"
+    task_path.write_text(task.model_dump_json(indent=2), encoding="utf-8")
+    config_path.write_text(config.model_dump_json(indent=2), encoding="utf-8")
+    submission_path = tmp_path / "submission.json"
+    definition_path = tmp_path / "definition.json"
+    run_path = tmp_path / "run.json"
+    created_runtimes: list[_FakeRuntime] = []
+
+    class _FailsOnSecondCase(_FakeRuntime):
+        def generate(self, case: GroundedAnswerTaskCase) -> GroundedAnswerGeneration:
+            if case.case_id == task.cases[1].case_id:
+                raise RuntimeError("planned second-case failure")
+            return super().generate(case)
+
+    def failing_factory(
+        supplied: GroundedAnswerRunnerConfig,
+        _model_dir: Path,
+        _server: Path,
+    ) -> _RuntimeContext:
+        runtime = _FailsOnSecondCase(supplied)
+        created_runtimes.append(runtime)
+        return _RuntimeContext(runtime)
+
+    arguments = [
+        "--task",
+        str(task_path),
+        "--candidate-config",
+        str(config_path),
+        "--model-dir",
+        str(tmp_path / "model"),
+        "--llama-server",
+        str(tmp_path / "llama-server"),
+        "--output-submission",
+        str(submission_path),
+        "--output-definition",
+        str(definition_path),
+        "--output-run",
+        str(run_path),
+    ]
+    assert run_cli(arguments, runtime_factory=failing_factory) == 2
+    assert "planned second-case failure" in capsys.readouterr().err
+    checkpoint_path = run_path.with_name("run.checkpoint.json")
+    checkpoint_payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert len(checkpoint_payload["cases"]) == 1
+
+    def resumed_factory(
+        supplied: GroundedAnswerRunnerConfig,
+        _model_dir: Path,
+        _server: Path,
+    ) -> _RuntimeContext:
+        runtime = _FakeRuntime(supplied)
+        created_runtimes.append(runtime)
+        return _RuntimeContext(runtime)
+
+    assert run_cli(arguments, runtime_factory=resumed_factory) == 0
+    resumed_output = capsys.readouterr().out
+    assert "Resuming from checkpoint: 1/2 case(s)" in resumed_output
+    assert "Reusing checkpointed case" in resumed_output
+    assert created_runtimes[1].calls == [task.cases[1].case_id]
+    assert submission_path.exists()
+    assert definition_path.exists()
+    assert run_path.exists()
 
 
 def test_cache_cli_downloads_exact_revision_and_rejects_wrong_bytes(
@@ -1003,12 +1387,26 @@ def test_cache_cli_downloads_exact_revision_and_rejects_wrong_bytes(
     assert "outside the exact output artifact" in capsys.readouterr().err
 
 
-def test_checked_in_qwen_candidate_is_exactly_pinned() -> None:
-    path = (
-        Path(__file__).parents[1]
-        / "evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v1.json"
+@pytest.mark.parametrize(
+    ("version", "is_current"),
+    (
+        ("v2", False),
+        ("v3", False),
+        ("v4", False),
+        ("v5", False),
+        ("v6", False),
+        ("v7", True),
+    ),
+)
+def test_checked_in_qwen_candidates_are_exactly_pinned(
+    version: str,
+    is_current: bool,
+) -> None:
+    path = Path(__file__).parents[1] / (
+        f"evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-{version}.json"
     )
     config = GroundedAnswerRunnerConfig.model_validate_json(path.read_text(encoding="utf-8"))
+    assert config.candidate_id == f"qwen3-1.7b-q8-grounded-brief-{version}"
     assert config.model_id == "Qwen/Qwen3-1.7B-GGUF"
     assert config.model_revision == "90862c4b9d2787eaed51d12237eafdfe7c5f6077"
     assert config.model_license == "apache-2.0"
@@ -1016,6 +1414,8 @@ def test_checked_in_qwen_candidate_is_exactly_pinned() -> None:
     assert config.model_file_sha256 == (
         "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a"
     )
-    assert config.template_version == GROUNDING_RUNNER_TEMPLATE_VERSION
+    assert config.template_version == f"grounded-brief-qwen3-{version}"
+    assert config.adapter_version == config.template_version
+    assert (config.template_version == GROUNDING_RUNNER_TEMPLATE_VERSION) is is_current
     assert config.context_length == 8192
-    assert config.max_output_tokens == 768
+    assert config.max_output_tokens == 512

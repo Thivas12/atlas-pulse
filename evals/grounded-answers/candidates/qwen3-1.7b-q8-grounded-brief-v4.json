@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "candidate_id": "qwen3-1.7b-q8-grounded-brief-v4",
+  "model_id": "Qwen/Qwen3-1.7B-GGUF",
+  "model_revision": "90862c4b9d2787eaed51d12237eafdfe7c5f6077",
+  "model_license": "apache-2.0",
+  "model_file": "Qwen3-1.7B-Q8_0.gguf",
+  "model_file_sha256": "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
+  "adapter_version": "grounded-brief-qwen3-v4",
+  "template_version": "grounded-brief-qwen3-v4",
+  "context_length": 8192,
+  "max_output_tokens": 512,
+  "temperature": 0.7,
+  "top_p": 0.8,
+  "top_k": 20,
+  "min_p": 0.0,
+  "presence_penalty": 1.5,
+  "seed": 42,
+  "threads": 4,
+  "startup_timeout_seconds": 120,
+  "request_timeout_seconds": 300
+}

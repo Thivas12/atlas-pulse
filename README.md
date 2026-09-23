@@ -768,7 +768,9 @@ single-review grounded-answer evidence and reviewable abstentions, and
 [ADR 0043](docs/adr/0043-narrow-grounded-answer-abstention-policy.md) for the versioned grounded
 brief policy that distinguishes partial bounded answers from genuinely unanswerable cases, and
 [ADR 0044](docs/adr/0044-bound-grounded-answer-completion-shape.md) for the completion-safe v4
-claim and character limits after the bounded v3 run exhausted its output budget.
+claim and character limits after the bounded v3 run exhausted its output budget, and
+[ADR 0045](docs/adr/0045-normalize-grounded-answer-citation-order.md) for the explicit v5 adapter
+that canonically orders model-selected citation sets without changing their membership.
 A repository-level [security policy](SECURITY.md) and versioned
 [threat model](docs/threat-model.md) define the disclosure path, assets, trust boundaries, current
 controls, residual risks, and owner-configured branch protections.

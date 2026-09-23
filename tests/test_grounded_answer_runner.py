@@ -280,10 +280,12 @@ def test_versioned_prompts_preserve_history_and_bound_v4_completion() -> None:
     v2: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v2"
     v3: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v3"
     v4: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v4"
+    v5: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v5"
 
     v2_messages = render_grounded_answer_messages(available, v2)
     v3_messages = render_grounded_answer_messages(available, v3)
     v4_messages = render_grounded_answer_messages(available, v4)
+    v5_messages = render_grounded_answer_messages(available, v5)
 
     assert (
         "excerpts are absent, insufficient, or materially conflicting" in v2_messages[0]["content"]
@@ -293,6 +295,7 @@ def test_versioned_prompts_preserve_history_and_bound_v4_completion() -> None:
     assert "zero responsive claims are possible" in v3_messages[1]["content"]
     assert "never more than two" in v4_messages[1]["content"]
     assert "Finish the JSON immediately" in v4_messages[0]["content"]
+    assert v5_messages == v4_messages
     assert grounded_answer_input_template_sha256(v2) == (
         "e8dfd7aba49e02d4d73b84441ffb1e217ed2a681d4c1804935359d3e36fc148f"
     )
@@ -315,13 +318,18 @@ def test_versioned_prompts_preserve_history_and_bound_v4_completion() -> None:
         available,
         v4,
     )
+    assert grounded_answer_input_template_sha256(v4) != grounded_answer_input_template_sha256(v5)
+    assert grounded_answer_prompt_sha256(available, v4) == grounded_answer_prompt_sha256(
+        available,
+        v5,
+    )
     v4_schema = grounded_answer_response_schema(available, v4)
     v4_answered = cast(list[dict[str, Any]], v4_schema["oneOf"])[0]
     v4_claims = v4_answered["properties"]["claims"]
     assert v4_claims["maxItems"] == 2
     assert v4_claims["items"]["properties"]["text"]["maxLength"] == 120
 
-    for legacy_version in (v2, v3):
+    for legacy_version in (v2, v3, v4):
         legacy_config = _config(template_version=legacy_version)
         _submission, legacy_run, _batch = run_grounded_answer_candidate(
             _task(),
@@ -330,6 +338,35 @@ def test_versioned_prompts_preserve_history_and_bound_v4_completion() -> None:
             generated_at=GENERATED_AT,
         )
         assert legacy_run.template_version == legacy_version
+
+
+def test_v5_normalizes_citation_set_order_without_changing_older_versions() -> None:
+    v4: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v4"
+    v5: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v5"
+    first = "evidence-" + "a" * 64
+    second = "evidence-" + "b" * 64
+    content = json.dumps(
+        {
+            "status": "answered",
+            "claims": [
+                {
+                    "claim_id": "claim-01",
+                    "text": "Two records support this bounded statement.",
+                    "evidence_ids": [second, first],
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ValidationError, match="canonical order"):
+        runner_module._parse_grounded_answer_response(content, v4)
+
+    normalized = runner_module._parse_grounded_answer_response(content, v5)
+    assert normalized.claims[0].evidence_ids == (first, second)
+    assert "response_normalization" not in _system(_config(template_version=v4)).parameters
+    assert _system(_config(template_version=v5)).parameters["response_normalization"] == (
+        "sort-claim-evidence-ids-v1"
+    )
 
 
 def test_runner_produces_complete_submission_batch_and_blocked_trace() -> None:
@@ -1257,7 +1294,7 @@ def test_cache_cli_downloads_exact_revision_and_rejects_wrong_bytes(
 
 @pytest.mark.parametrize(
     ("version", "is_current"),
-    (("v2", False), ("v3", False), ("v4", True)),
+    (("v2", False), ("v3", False), ("v4", False), ("v5", True)),
 )
 def test_checked_in_qwen_candidates_are_exactly_pinned(
     version: str,

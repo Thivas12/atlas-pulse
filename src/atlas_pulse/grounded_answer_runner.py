@@ -39,8 +39,9 @@ GroundedAnswerRunnerTemplateVersion = Literal[
     "grounded-brief-qwen3-v2",
     "grounded-brief-qwen3-v3",
     "grounded-brief-qwen3-v4",
+    "grounded-brief-qwen3-v5",
 ]
-GROUNDING_RUNNER_TEMPLATE_VERSION: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v4"
+GROUNDING_RUNNER_TEMPLATE_VERSION: GroundedAnswerRunnerTemplateVersion = "grounded-brief-qwen3-v5"
 
 _SYSTEM_PROMPT_V2 = (
     "You produce a short operational evidence brief from a bounded AtlasPulse evidence pack. "
@@ -125,12 +126,14 @@ _PROMPTS: dict[GroundedAnswerRunnerTemplateVersion, tuple[str, str]] = {
     "grounded-brief-qwen3-v2": (_SYSTEM_PROMPT_V2, _USER_TEMPLATE_V2),
     "grounded-brief-qwen3-v3": (_SYSTEM_PROMPT_V3, _USER_TEMPLATE_V3),
     "grounded-brief-qwen3-v4": (_SYSTEM_PROMPT_V4, _USER_TEMPLATE_V4),
+    "grounded-brief-qwen3-v5": (_SYSTEM_PROMPT_V4, _USER_TEMPLATE_V4),
 }
 
 _RESPONSE_LIMITS: dict[GroundedAnswerRunnerTemplateVersion, tuple[int, int]] = {
     "grounded-brief-qwen3-v2": (3, 180),
     "grounded-brief-qwen3-v3": (3, 180),
     "grounded-brief-qwen3-v4": (2, 120),
+    "grounded-brief-qwen3-v5": (2, 120),
 }
 
 _RUN_CAVEATS = (
@@ -232,7 +235,7 @@ def grounded_answer_input_template_sha256(
         "output_schema_algorithm": "case-local-concise-grounded-answer-json-schema-v2",
         "thinking": False,
     }
-    if template_version == "grounded-brief-qwen3-v4":
+    if template_version in {"grounded-brief-qwen3-v4", "grounded-brief-qwen3-v5"}:
         payload.update(
             {
                 "output_schema_algorithm": "case-local-concise-grounded-answer-json-schema-v3",
@@ -240,6 +243,8 @@ def grounded_answer_input_template_sha256(
                 "max_claim_characters": max_claim_characters,
             }
         )
+    if template_version == "grounded-brief-qwen3-v5":
+        payload["response_normalization"] = "sort-claim-evidence-ids-v1"
     return canonical_sha256(payload)
 
 
@@ -392,7 +397,7 @@ def _candidate_parameters(
     *,
     executable_sha256: str,
 ) -> dict[str, str | int | float | bool]:
-    return {
+    parameters: dict[str, str | int | float | bool] = {
         "candidate_config_sha256": canonical_sha256(config),
         "model_license": config.model_license,
         "model_file": config.model_file,
@@ -420,6 +425,31 @@ def _candidate_parameters(
         "tool_access": False,
         "offline": True,
     }
+    if config.template_version == "grounded-brief-qwen3-v5":
+        parameters["response_normalization"] = "sort-claim-evidence-ids-v1"
+    return parameters
+
+
+def _parse_grounded_answer_response(
+    content: str,
+    template_version: GroundedAnswerRunnerTemplateVersion,
+) -> GroundedAnswerResponse:
+    """Validate exact output, canonically sorting only v5 citation-set order."""
+    if template_version != "grounded-brief-qwen3-v5":
+        return GroundedAnswerResponse.model_validate_json(content)
+    payload = json.loads(content)
+    if isinstance(payload, dict) and payload.get("status") == "answered":
+        claims = payload.get("claims")
+        if isinstance(claims, list):
+            for claim in claims:
+                if not isinstance(claim, dict):
+                    continue
+                evidence_ids = claim.get("evidence_ids")
+                if isinstance(evidence_ids, list) and all(
+                    isinstance(evidence_id, str) for evidence_id in evidence_ids
+                ):
+                    claim["evidence_ids"] = sorted(evidence_ids)
+    return GroundedAnswerResponse.model_validate(payload)
 
 
 def build_grounded_answer_system_definition(
@@ -1051,7 +1081,7 @@ class LlamaServerRuntime:
             raise RuntimeError("llama-server token preflight and completion usage disagree")
         if output_tokens > self._config.max_output_tokens:
             raise RuntimeError("llama-server exceeded the requested output-token maximum")
-        model_response = GroundedAnswerResponse.model_validate_json(content)
+        model_response = _parse_grounded_answer_response(content, self._config.template_version)
         return GroundedAnswerGeneration(
             response=model_response,
             response_sha256=canonical_sha256(model_response),

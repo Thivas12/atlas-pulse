@@ -48,12 +48,12 @@ fixed before review:
 
 | Field | Pinned value |
 | --- | --- |
-| Candidate | `qwen3-1.7b-q8-grounded-brief-v4` |
+| Candidate | `qwen3-1.7b-q8-grounded-brief-v5` |
 | Repository | `Qwen/Qwen3-1.7B-GGUF` |
 | Revision | `90862c4b9d2787eaed51d12237eafdfe7c5f6077` |
 | File | `Qwen3-1.7B-Q8_0.gguf` (about 1.8 GB) |
 | File SHA-256 | `061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a` |
-| Template | `grounded-brief-qwen3-v4` |
+| Template | `grounded-brief-qwen3-v5` |
 | Context / output budget | 8,192 / 512 tokens |
 
 Build a local `llama-server` executable using the
@@ -63,7 +63,7 @@ then provision the exact model in a network-enabled step:
 ```bash
 mkdir -p artifacts/models/qwen3-1.7b-q8
 uv run atlas-pulse-cache-grounded-answer-model \
-  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v4.json \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v5.json \
   --output artifacts/models/qwen3-1.7b-q8
 ```
 
@@ -74,12 +74,12 @@ task and the local executable:
 ```bash
 uv run atlas-pulse-run-grounded-answer \
   --task artifacts/grounded-answer-evaluation/task.json \
-  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v4.json \
+  --candidate-config evals/grounded-answers/candidates/qwen3-1.7b-q8-grounded-brief-v5.json \
   --model-dir artifacts/models/qwen3-1.7b-q8 \
   --llama-server /absolute/path/to/llama-server \
-  --output-submission artifacts/grounded-answer-evaluation/submission.qwen3-v4.json \
-  --output-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v4.json \
-  --output-run artifacts/grounded-answer-evaluation/run.qwen3-v4.json
+  --output-submission artifacts/grounded-answer-evaluation/submission.qwen3-v5.json \
+  --output-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v5.json \
+  --output-run artifacts/grounded-answer-evaluation/run.qwen3-v5.json
 ```
 
 The runner hashes the exact model and `llama-server` bytes, records the runtime version and fixed
@@ -95,9 +95,12 @@ that v2 abstained on all ten cases even though only two abstentions were appropr
 live case, v3 then deterministically consumed the complete 512-token budget in six attempts without
 closing a valid response. The versioned v4 contract keeps the same model, runtime, decoding
 parameters, task, citation limit, and 512-token ceiling while reducing the largest answer from
-three 180-character claims to two 120-character claims and preferring one. The v2 and v3
-configurations remain checked in for exact reproduction. These development results inform v4 and
-cannot support a public quality or production-promotion claim.
+three 180-character claims to two 120-character claims and preferring one. V4 completed structured
+generation but selected two valid evidence IDs in noncanonical order, which the fail-closed import
+correctly rejected. V5 keeps the exact v4 prompt and response bounds and adds one declared,
+semantics-preserving adapter step: sort each selected citation set before validation. V2 through v4
+remain checked in for exact reproduction. These development results inform v5 and cannot support a
+public quality or production-promotion claim.
 
 No live candidate execution or quality result is checked into this repository. Run latency and
 answer quality remain unknown until the captured task is executed on target hardware and reviewed.
@@ -155,8 +158,8 @@ fully declared candidate—and create the protected review sheet:
 ```bash
 uv run atlas-pulse-evaluate-grounded-answers candidate-import \
   --task artifacts/grounded-answer-evaluation/task.json \
-  --submission artifacts/grounded-answer-evaluation/submission.qwen3-v4.json \
-  --candidate-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v4.json \
+  --submission artifacts/grounded-answer-evaluation/submission.qwen3-v5.json \
+  --candidate-definition artifacts/grounded-answer-evaluation/candidate.qwen3-v5.json \
   --output-batch artifacts/grounded-answer-evaluation/batch.json \
   --output-review-sheet artifacts/grounded-answer-evaluation/review.csv
 ```
@@ -301,4 +304,6 @@ The explicitly non-promoting single-review alternative is recorded in
 versioned v3 abstention-policy change is recorded in
 [`ADR 0043`](../../docs/adr/0043-narrow-grounded-answer-abstention-policy.md). The completion-safe
 v4 response bound is recorded in
-[`ADR 0044`](../../docs/adr/0044-bound-grounded-answer-completion-shape.md).
+[`ADR 0044`](../../docs/adr/0044-bound-grounded-answer-completion-shape.md). The v5 canonical
+citation-order adapter is recorded in
+[`ADR 0045`](../../docs/adr/0045-normalize-grounded-answer-citation-order.md).
